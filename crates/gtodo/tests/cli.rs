@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::SystemTime;
 
+use chrono::{Days, Local};
 use serde_json::Value;
 
 struct Fixture {
@@ -210,6 +211,58 @@ fn search_rejects_terms_other_than_project_or_context() {
 }
 
 #[test]
+fn queue_groups_open_tasks_by_due_date_relative_to_today() {
+    let today = Local::now().date_naive();
+    let day = |offset: i64| {
+        let d = if offset < 0 {
+            today.checked_sub_days(Days::new(offset.unsigned_abs()))
+        } else {
+            today.checked_add_days(Days::new(offset as u64))
+        };
+        d.unwrap().format("%Y-%m-%d").to_string()
+    };
+    let f = Fixture::new();
+    f.write("inbox.md", &format!("# Inbox\n- [ ] 受信の期限切れ due:{}\n", day(-2)));
+    f.write(
+        "todo.md",
+        &format!(
+            "# Todo\n## Today\n- [ ] 今日 due:{}\n- [x] 完了済み due:{}\n- [ ] いつか due:someday\n\
+             ## Next\n- [ ] 明日 due:{}\n- [ ] 期日なし\n",
+            day(0),
+            day(-5),
+            day(1)
+        ),
+    );
+    let out = f.stdout(&["queue"]);
+    let lines: Vec<&str> = out.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines[0], format!("Queue (Due)  {today}"));
+    assert_eq!(lines[1], "期限切れ");
+    assert!(lines[2].ends_with("⚠ 受信の期限切れ (2日超過)"), "{out}");
+    assert!(lines[3].starts_with("今日 ("), "{out}");
+    assert!(lines[4].ends_with("▶ 今日"), "{out}");
+    assert!(lines[5].starts_with("明日 ("), "{out}");
+    assert!(lines[6].ends_with("▶ 明日"), "{out}");
+    assert_eq!(lines[7], "期日を解釈できない");
+    assert!(lines[8].ends_with("▶ いつか (due:someday)"), "{out}");
+    assert_eq!(lines.len(), 9, "{out}");
+}
+
+#[test]
+fn queue_wait_groups_by_person_and_reports_when_empty() {
+    let f = sample();
+    let out = f.stdout(&["queue", "--wait"]);
+    assert!(out.contains("bob 待ち\n  cccccc   ▶ 待ち1\n"), "{out}");
+
+    let empty = Fixture::new();
+    assert!(
+        empty
+            .stdout(&["queue", "--wait"])
+            .contains("誰かの作業を待っているタスクはありません")
+    );
+    assert!(empty.stdout(&["queue"]).contains("期限付きタスクはありません"));
+}
+
+#[test]
 fn missing_data_dir_is_an_error() {
     let f = Fixture::new();
     fs::remove_dir(f.data_dir()).unwrap();
@@ -241,6 +294,8 @@ const READ_ONLY_COMMANDS: &[&[&str]] = &[
     &["list", "cancelled"],
     &["search", "+work"],
     &["search", "@office", "--open", "--json"],
+    &["queue"],
+    &["queue", "--wait"],
 ];
 
 /// 読むだけのコマンドが書き込むと、Neovim 側の未保存の編集が破棄されるため、一切書かないこと。

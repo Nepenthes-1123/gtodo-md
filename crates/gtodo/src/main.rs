@@ -52,6 +52,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Show open tasks grouped by due date
+    Queue {
+        /// Group by the person being waited for (wait:) instead
+        #[arg(long)]
+        wait: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -97,5 +103,6 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
             };
             commands::search::run(&ws, &terms, status, json, out)
         }
+        Command::Queue { wait } => commands::queue::run(&ws, wait, out),
     }
 }

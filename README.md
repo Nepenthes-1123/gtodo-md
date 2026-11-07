@@ -11,6 +11,7 @@ Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled
 gtodo list                    # inbox.md と todo.md のタスク
 gtodo list today              # inbox | todo | today | next | waiting | someday | done | cancelled
 gtodo search +work @office    # +project / @context の AND 検索 (--open / --done で絞り込み)
+gtodo queue                   # 期日ごとの一覧 (--wait で待ち先ごと)
 ```
 
 `list` と `search` は `--json` で JSON を出力します。
