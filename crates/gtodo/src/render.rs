@@ -1,8 +1,16 @@
 //! タスクの表示形式。
 
+use gtodo_core::key::task_key;
 use gtodo_core::task::{Status, Task};
 use gtodo_core::view::Entry;
 use serde::Serialize;
+
+/// キーの表示幅 (ID は6桁、一時キーは `~` + 6桁)。
+pub const KEY_WIDTH: usize = 7;
+
+pub fn key_of(entry: &Entry) -> String {
+    task_key(entry.task(), &entry.item.line)
+}
 
 /// 一覧用の1行表示。内部用のタグ (`id:`・`created:`・`done:`・`from:`) は出さない。
 pub fn summary(task: &Task) -> String {
@@ -45,6 +53,7 @@ pub fn tags(task: &Task) -> String {
 
 #[derive(Serialize)]
 pub struct TaskJson<'a> {
+    key: String,
     file: &'static str,
     lnum: usize,
     section: Option<&'a str>,
@@ -68,6 +77,7 @@ impl<'a> TaskJson<'a> {
         let t = entry.task();
         let opt = |v: &'a Option<String>| v.as_deref().filter(|s| !s.is_empty());
         TaskJson {
+            key: key_of(entry),
             file: entry.file.file_name(),
             lnum: entry.item.lnum,
             section: entry.section,

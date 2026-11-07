@@ -8,6 +8,7 @@
 pub mod config;
 pub mod date;
 pub mod document;
+pub mod key;
 mod lua_compat;
 pub mod sections;
 pub mod settings;

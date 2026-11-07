@@ -36,6 +36,8 @@ CLI (`gtodo`)
 - [ ] `gtodo add <text> [--to …] [--due …] [-p project] [-c context] [--priority X]`
 - [x] `gtodo list [inbox|todo|today|next|waiting|someday|done|cancelled] [--json]`
 - [ ] `gtodo done | undone | cancel <task>`
+  - 一時キーが一致しないときは、Neovim 側で ID が付いた可能性があるので `list` し直すよう案内する (Neovim 版は保存のたびに ID の無い行へ ID を付ける)
+  - ID はファイル内でしか重複が直されないため、ファイルをまたいで複数一致したらエラーにする
 - [ ] `gtodo move <task> <section> [--wait who]`
 - [ ] `gtodo edit <task> …`
 - [ ] `gtodo search [+project] [@context] [--open|--done]`

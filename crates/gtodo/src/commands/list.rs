@@ -6,7 +6,7 @@ use gtodo_core::sections::SectionKey;
 use gtodo_core::store::FileKind;
 use gtodo_core::view::{Entry, entries};
 
-use crate::render::{TaskJson, summary};
+use crate::render::{KEY_WIDTH, TaskJson, key_of, summary};
 use crate::workspace::Workspace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -82,7 +82,7 @@ pub fn run(ws: &Workspace, target: Option<Target>, json: bool, out: &mut String)
             }
             current_group = Some(group);
         }
-        writeln!(out, "  {}", summary(entry.task()))?;
+        writeln!(out, "  {:<KEY_WIDTH$}  {}", key_of(entry), summary(entry.task()))?;
     }
     Ok(())
 }

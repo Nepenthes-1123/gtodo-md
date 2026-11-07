@@ -97,7 +97,7 @@ fn list_without_target_shows_inbox_and_todo_grouped_by_file_and_section() {
         groups,
         ["inbox.md", "todo.md / Today", "todo.md / Next", "todo.md / Waiting"]
     );
-    assert!(out.contains("  [ ] (A) 今日1 +work @office\n"), "{out}");
+    assert!(out.contains("  aaaaaa   [ ] (A) 今日1 +work @office\n"), "{out}");
     assert!(!out.contains("過去の完了") && !out.contains("取りやめ"), "{out}");
 }
 
@@ -112,6 +112,20 @@ fn list_target_selects_one_file_or_one_section() {
     assert_eq!(contents(&f.json(&["list", "done", "--json"])), ["過去の完了"]);
     assert_eq!(contents(&f.json(&["list", "cancelled", "--json"])), ["取りやめ"]);
     assert_eq!(f.stdout(&["list", "someday"]), "No tasks.\n");
+}
+
+#[test]
+fn list_keys_are_ids_or_line_based_temporary_keys() {
+    let rows = sample().json(&["list", "inbox", "--json"]);
+    let keys: Vec<&str> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["key"].as_str().unwrap())
+        .collect();
+    assert!(keys[0].starts_with('~') && keys[0].len() == 7, "{keys:?}");
+    assert_eq!(keys[1], "111111");
+    assert_eq!(rows[0]["id"], Value::Null);
 }
 
 #[test]
