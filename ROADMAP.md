@@ -31,7 +31,7 @@ core (`gtodo-core`)
 CLI (`gtodo`)
 
 - [ ] `gtodo add <text> [--to …] [--due …] [-p project] [-c context] [--priority X]`
-- [ ] `gtodo list [inbox|todo|today|next|waiting|someday|done|cancelled] [--json]`
+- [x] `gtodo list [inbox|todo|today|next|waiting|someday|done|cancelled] [--json]`
 - [ ] `gtodo done | undone | cancel <task>`
 - [ ] `gtodo move <task> <section> [--wait who]`
 - [ ] `gtodo edit <task> …`

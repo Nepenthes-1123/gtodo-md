@@ -12,4 +12,5 @@ mod lua_compat;
 pub mod sections;
 pub mod store;
 pub mod task;
+pub mod view;
 mod vim_class;

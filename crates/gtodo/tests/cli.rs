@@ -1,0 +1,162 @@
+//! `gtodo` コマンドの結合テスト。実際のバイナリを一時ディレクトリのデータに対して実行する。
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::time::SystemTime;
+
+use serde_json::Value;
+
+struct Fixture {
+    dir: tempfile::TempDir,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let f = Fixture {
+            dir: tempfile::tempdir().unwrap(),
+        };
+        fs::create_dir(f.data_dir()).unwrap();
+        // 利用者自身の設定ファイルを読まないよう、空の設定ファイルを明示する。
+        fs::write(f.config_path(), "{}").unwrap();
+        f
+    }
+
+    fn data_dir(&self) -> PathBuf {
+        self.dir.path().join("data")
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.dir.path().join("config.json")
+    }
+
+    fn write(&self, name: &str, content: &str) -> &Self {
+        fs::write(self.data_dir().join(name), content).unwrap();
+        self
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_gtodo"))
+            .arg("--data-dir")
+            .arg(self.data_dir())
+            .args(args)
+            .env("GTODO_CONFIG", self.config_path())
+            .env_remove("GTODO_DATA_DIR")
+            .output()
+            .unwrap()
+    }
+
+    fn stdout(&self, args: &[&str]) -> String {
+        let out = self.run(args);
+        assert!(
+            out.status.success(),
+            "gtodo {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn json(&self, args: &[&str]) -> Value {
+        serde_json::from_str(&self.stdout(args)).unwrap()
+    }
+}
+
+fn contents(rows: &Value) -> Vec<&str> {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["content"].as_str().unwrap())
+        .collect()
+}
+
+fn sample() -> Fixture {
+    let f = Fixture::new();
+    f.write("inbox.md", "# Inbox\n\n- [ ] 受信1\n- [ ] 受信2 +work id:111111\n");
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [ ] (A) 今日1 +work @office id:aaaaaa\n- [x] 完了済み id:bbbbbb\n\n\
+         ## Next\n\n- [ ] 次1 @home\n\n## Waiting\n\n- [ ] 待ち1 wait:bob id:cccccc\n\n## Someday\n",
+    );
+    f.write(
+        "done.md",
+        "# Done\n\n## 2026-01\n\n- [x] 過去の完了 +work completed_at:2026-01-10 id:dddddd\n",
+    );
+    f.write(
+        "cancelled.md",
+        "# Cancelled\n\n## 2026-01\n\n- [ ] 取りやめ +work cancelled:2026-01-11 id:eeeeee\n",
+    );
+    f
+}
+
+#[test]
+fn list_without_target_shows_inbox_and_todo_grouped_by_file_and_section() {
+    let out = sample().stdout(&["list"]);
+    let groups: Vec<&str> = out.lines().filter(|l| !l.starts_with(' ') && !l.is_empty()).collect();
+    assert_eq!(
+        groups,
+        ["inbox.md", "todo.md / Today", "todo.md / Next", "todo.md / Waiting"]
+    );
+    assert!(out.contains("  [ ] (A) 今日1 +work @office\n"), "{out}");
+    assert!(!out.contains("過去の完了") && !out.contains("取りやめ"), "{out}");
+}
+
+#[test]
+fn list_target_selects_one_file_or_one_section() {
+    let f = sample();
+    assert_eq!(contents(&f.json(&["list", "today", "--json"])), ["今日1", "完了済み"]);
+    assert_eq!(
+        contents(&f.json(&["list", "todo", "--json"])),
+        ["今日1", "完了済み", "次1", "待ち1"]
+    );
+    assert_eq!(contents(&f.json(&["list", "done", "--json"])), ["過去の完了"]);
+    assert_eq!(contents(&f.json(&["list", "cancelled", "--json"])), ["取りやめ"]);
+    assert_eq!(f.stdout(&["list", "someday"]), "No tasks.\n");
+}
+
+#[test]
+fn missing_data_dir_is_an_error() {
+    let f = Fixture::new();
+    fs::remove_dir(f.data_dir()).unwrap();
+    let out = f.run(&["list"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("data directory not found"));
+}
+
+/// ディレクトリ内の全エントリ (サブディレクトリを含む) の内容と更新時刻。
+fn snapshot(dir: &Path) -> BTreeMap<PathBuf, (Option<Vec<u8>>, SystemTime)> {
+    let mut out = BTreeMap::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let meta = fs::symlink_metadata(&path).unwrap();
+        if meta.is_dir() {
+            out.extend(snapshot(&path));
+            out.insert(path, (None, meta.modified().unwrap()));
+        } else {
+            out.insert(path.clone(), (Some(fs::read(&path).unwrap()), meta.modified().unwrap()));
+        }
+    }
+    out
+}
+
+const READ_ONLY_COMMANDS: &[&[&str]] = &[
+    &["list"],
+    &["list", "today", "--json"],
+    &["list", "done", "--json"],
+    &["list", "cancelled"],
+];
+
+/// 読むだけのコマンドが書き込むと、Neovim 側の未保存の編集が破棄されるため、一切書かないこと。
+#[test]
+fn read_only_commands_never_create_or_modify_files() {
+    let f = sample();
+    let before = snapshot(&f.data_dir());
+    for args in READ_ONLY_COMMANDS {
+        f.stdout(args);
+    }
+    assert_eq!(
+        snapshot(&f.data_dir()),
+        before,
+        "no file may be created, including .state.json"
+    );
+}

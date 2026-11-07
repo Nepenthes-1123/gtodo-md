@@ -34,8 +34,13 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `sections.rs` — 管理対象セクションの名前と別名 (現在の名前・デフォルト名・Neovim 版が最後に起動したときの名前)。
   - `store.rs` — `data_dir` のファイル配置と読み込み。
   - `config.rs` — `config.json` と `data_dir` の場所の解決 (Neovim 版と共有する規則)。OS ごとの場所の規則は `Platform` で受け取り、どの OS 上でもテストする (パスの区切りや絶対パスの判定はホスト OS の規則になる)。
+  - `view.rs` — 読み取り専用のビュー (一覧)。CLI と TUI で共有する。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
   - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。
+- `crates/gtodo` — CLI (`gtodo` コマンド)。`workspace.rs` が `data_dir` を読む。
+  **読むだけのコマンドはファイルを一切書き換えない** (書くと Neovim 側の未保存の編集が破棄されるため)。
+  `tests/cli.rs` の `read_only_commands_never_create_or_modify_files` で固定している。
+  結合テストは利用者の設定を読まないよう、`GTODO_CONFIG` に空の `config.json` を指定して実行する。
 
 ## 互換性の不変条件
 
