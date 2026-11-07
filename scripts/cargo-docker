@@ -1,0 +1,27 @@
+#!/bin/sh
+# Docker 上で cargo を実行する。例: scripts/cargo-docker test
+#
+# ホストに C リンカ (build-essential) を入れずにビルドするための手段。
+# リポジトリはホストと同じパスにマウントし、エラーメッセージのパスをホスト側でそのまま辿れるようにする。
+# ホスト上の cargo (rust-analyzer 等) と成果物が混ざらないよう、target と CARGO_HOME は
+# target/docker 配下に分ける。コンテナはホストのユーザーで動かし、root 所有のファイルを残さない。
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+image=gtodo-md-dev
+
+docker build --quiet --tag "$image" --file "$root/docker/dev.Dockerfile" "$root/docker" >/dev/null
+
+tty_flag=
+if [ -t 0 ] && [ -t 1 ]; then
+	tty_flag=-t
+fi
+
+exec docker run --rm -i $tty_flag \
+	--user "$(id -u):$(id -g)" \
+	--volume "$root:$root" \
+	--workdir "$root" \
+	--env CARGO_HOME="$root/target/docker/cargo-home" \
+	--env CARGO_TARGET_DIR="$root/target/docker/build" \
+	--env CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-auto}" \
+	"$image" cargo "$@"
