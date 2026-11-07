@@ -33,6 +33,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `document.rs` — ファイル構造 (`header` / `preamble` / `sections`)。Lua 版 `io.parse_markdown` の移植。
   - `sections.rs` — 管理対象セクションの名前と別名 (現在の名前・デフォルト名・Neovim 版が最後に起動したときの名前)。
   - `store.rs` — `data_dir` のファイル配置と読み込み。
+  - `config.rs` — `config.json` と `data_dir` の場所の解決 (Neovim 版と共有する規則)。OS ごとの場所の規則は `Platform` で受け取り、どの OS 上でもテストする (パスの区切りや絶対パスの判定はホスト OS の規則になる)。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
   - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。
 
@@ -42,6 +43,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
 - Lua 版の不具合と判断して挙動を変えた箇所は、ゴールデンテストに含めず、Rust 側の個別のテストと `ROADMAP.md` の決定事項に記録する。
 - Vim の正規表現を移植するときは、`\s` は `[ \t]`、`\w` は `[0-9A-Za-z_]`、`[:space:]` は `[\t\n\x0B\x0C\r ]` に置き換える。Rust の `\s`/`\w`/`\b` は Unicode の範囲で判定するため、そのまま使うと全角スペースや日本語の直後で結果が変わる。`\<` は `task.rs` の `is_vim_word_start` を使う。
 - 意図して Lua 版と挙動を変えた箇所は、コードコメントに理由を書く (例: `date.rs` の夏時間の扱い)。
+- `config.json` は Neovim 版と共有する。知らないキーで止めてはならない (警告して無視する)。項目を足すときは ROADMAP の決定事項と README を更新し、Neovim 版でも同じ意味で読めるようにする。
 
 ## ローカライズ
 
