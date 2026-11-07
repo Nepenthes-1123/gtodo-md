@@ -12,9 +12,10 @@ gtodo list                    # inbox.md と todo.md のタスク
 gtodo list today              # inbox | todo | today | next | waiting | someday | done | cancelled
 gtodo search +work @office    # +project / @context の AND 検索 (--open / --done で絞り込み)
 gtodo queue                   # 期日ごとの一覧 (--wait で待ち先ごと)
+gtodo stats                   # ステータスライン向けの件数
 ```
 
-`list` と `search` は `--json` で JSON を出力します。
+`list`・`search`・`stats` は `--json` で JSON を出力します。
 各タスクの先頭に表示されるキーは、タスクの ID (`id:` タグ) です。ID の無いタスクには、行の内容から作った一時キー (`~` で始まる) を表示します。
 
 読み取り系のコマンドはファイルを一切書き換えません。Neovim 版で編集中のファイルがあっても安全に使えます。

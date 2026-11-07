@@ -58,6 +58,12 @@ enum Command {
         #[arg(long)]
         wait: bool,
     },
+    /// Show task counts for status lines
+    Stats {
+        /// Print as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -104,5 +110,6 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
             commands::search::run(&ws, &terms, status, json, out)
         }
         Command::Queue { wait } => commands::queue::run(&ws, wait, out),
+        Command::Stats { json } => commands::stats::run(&ws, json, out),
     }
 }

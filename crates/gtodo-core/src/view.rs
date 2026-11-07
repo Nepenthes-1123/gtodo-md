@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use chrono::NaiveDate;
 
 use crate::document::{Document, TaskItem};
+use crate::sections::{SectionKey, SectionNames};
 use crate::store::FileKind;
 use crate::task::{Status, Task};
 
@@ -109,6 +110,49 @@ impl SearchQuery {
     }
 }
 
+/// ステータスライン向けの件数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Stats {
+    /// `todo.md` の Today セクションの未完了タスク数。
+    pub today: usize,
+    /// `inbox.md` の未完了タスク数。
+    pub inbox: usize,
+}
+
+impl Stats {
+    /// Lua 版 `api.get_stats()` は高速化のため `[ ]` を含む行を数え、Today の見出しも前方一致で判定するが、
+    /// ここでは解析したタスクを数える。説明文中の `[ ]` や `## Today (仕事)` のような別の見出しまで
+    /// 数えると、`list today` の件数と食い違うため。
+    pub fn collect(todo: &Document, inbox: &Document, names: &SectionNames) -> Stats {
+        let today_name = names.name(SectionKey::Today);
+        let open = |t: &&TaskItem| t.task.status == Status::Open;
+        Stats {
+            today: todo
+                .tasks()
+                .filter(|(s, _)| *s == Some(today_name))
+                .map(|(_, t)| t)
+                .filter(open)
+                .count(),
+            inbox: inbox.tasks().map(|(_, t)| t).filter(open).count(),
+        }
+    }
+
+    /// Lua 版 `api.get_statusline_string()` (既定のアイコン) と同じ形式。
+    pub fn statusline(&self) -> String {
+        let mut parts = Vec::new();
+        if self.today > 0 {
+            parts.push(format!("📝 Today: {}", self.today));
+        }
+        if self.inbox > 0 {
+            parts.push(format!("📥 Inbox: {}", self.inbox));
+        }
+        if parts.is_empty() {
+            return "✨ All Done!".to_string();
+        }
+        parts.join(" | ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +228,23 @@ mod tests {
         assert!(!q.matches(&t("- [ ] a +work @home")));
         assert!(!q.matches(&t("- [ ] a @office")));
         assert!(SearchQuery::default().matches(&t("- [x] 条件なしは全件")));
+    }
+
+    #[test]
+    fn stats_count_open_today_and_inbox_tasks() {
+        let todo = doc("## Today
+- [ ] a
+- [x] 完了済み
+  - [ ] 字下げされたサブタスク
+## Next
+- [ ] b");
+        let inbox = doc("# Inbox
+- [ ] c
+- [ ] d
+- [x] e");
+        let stats = Stats::collect(&todo, &inbox, &SectionNames::default());
+        assert_eq!(stats, Stats { today: 2, inbox: 2 });
+        assert_eq!(stats.statusline(), "📝 Today: 2 | 📥 Inbox: 2");
+        assert_eq!(Stats::default().statusline(), "✨ All Done!");
     }
 }

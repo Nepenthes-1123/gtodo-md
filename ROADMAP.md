@@ -43,7 +43,7 @@ CLI (`gtodo`)
 - [x] `gtodo search [+project] [@context] [--open|--done] [--json]`
 - [x] `gtodo queue [--wait]`
 - [ ] `gtodo sort` (期日チェックとソート)
-- [ ] `gtodo stats`
+- [x] `gtodo stats [--json]`
 
 ## gtodo-md.nvim 側の対応
 
@@ -102,4 +102,5 @@ CLI (`gtodo`)
 - **Lua 版の不具合と判断した挙動は、Rust 版では直したうえで差異として記録する。**
   - `## default` という見出し: Lua 版は最初の `##` より前の行を内部キー `"default"` で持つため衝突して見出しが消える。Rust 版は別に持つ。
   - 日付として解釈できない期日: `due:someday` などでは Lua 版の Queue は例外で開けなくなり、`due:2026-02-30` のような存在しない日付は、書いたとおりの日付を表示する一方で、曜日・日数・期限切れの判定は `os.time` が補正した別の日付で行う。Rust 版はどちらも「期日を解釈できない」グループに表示する。
+- **`stats` は解析したタスクを数える。** Lua 版は高速化のため `[ ]` を含む行をすべて数え、Today の見出しも前方一致で判定する (`## Today (仕事)` も Today に入る)。それでは `list today` の件数と食い違うため。ステータスラインの数値が Neovim 版と異なることがある。
 - **Queue の見出しの文言 (「期限切れ」「今日」など) は Neovim 版の Queue ビューに合わせて日本語にする。** エラーや警告のメッセージは英語。

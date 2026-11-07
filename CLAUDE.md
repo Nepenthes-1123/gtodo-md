@@ -37,7 +37,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `settings.rs` — `data_dir/gtodo.json` (セクション名など、データの形と自動処理の設定。Neovim 版と共有する)。
   - `state.rs` — `.state.json` の読み取り。`last_sections` は Neovim 版の記録であり、CLI から書き換えてはならない。
   - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`)。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
-  - `view.rs` — 読み取り専用のビュー (一覧・検索・Queue)。CLI と TUI で共有する。
+  - `view.rs` — 読み取り専用のビュー (一覧・検索・Queue・件数)。CLI と TUI で共有する。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
   - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。
 - `crates/gtodo` — CLI (`gtodo` コマンド)。`workspace.rs` が `data_dir` とその設定を読む。

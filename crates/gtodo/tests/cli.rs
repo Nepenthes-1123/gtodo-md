@@ -263,6 +263,25 @@ fn queue_wait_groups_by_person_and_reports_when_empty() {
 }
 
 #[test]
+fn stats_counts_today_tasks_under_the_section_name_neovim_used_last() {
+    let f = sample();
+    f.write("todo.md", "# Todo\n\n## 本日\n\n- [ ] 旧名の見出し\n");
+    f.write(".state.json", r#"{"last_sections":{"TODAY":"本日"}}"#);
+    assert_eq!(f.stdout(&["stats"]), "📝 Today: 1 | 📥 Inbox: 2\n");
+}
+
+#[test]
+fn stats_counts_open_today_and_inbox_tasks() {
+    let f = sample();
+    assert_eq!(f.stdout(&["stats"]), "📝 Today: 1 | 📥 Inbox: 2\n");
+    assert_eq!(
+        f.json(&["stats", "--json"]),
+        serde_json::json!({"today": 1, "inbox": 2})
+    );
+    assert_eq!(Fixture::new().stdout(&["stats"]), "✨ All Done!\n");
+}
+
+#[test]
 fn missing_data_dir_is_an_error() {
     let f = Fixture::new();
     fs::remove_dir(f.data_dir()).unwrap();
@@ -296,6 +315,8 @@ const READ_ONLY_COMMANDS: &[&[&str]] = &[
     &["search", "@office", "--open", "--json"],
     &["queue"],
     &["queue", "--wait"],
+    &["stats"],
+    &["stats", "--json"],
 ];
 
 /// 読むだけのコマンドが書き込むと、Neovim 側の未保存の編集が破棄されるため、一切書かないこと。
