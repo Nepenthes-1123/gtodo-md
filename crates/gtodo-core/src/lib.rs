@@ -10,6 +10,7 @@ pub mod date;
 pub mod document;
 mod lua_compat;
 pub mod sections;
+pub mod settings;
 pub mod store;
 pub mod task;
 pub mod view;

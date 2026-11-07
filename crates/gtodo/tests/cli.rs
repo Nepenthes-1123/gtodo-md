@@ -115,6 +115,43 @@ fn list_target_selects_one_file_or_one_section() {
 }
 
 #[test]
+fn section_names_from_gtodo_json_accept_default_headings() {
+    let f = sample();
+    f.write("gtodo.json", r#"{"sections":{"today":"今日"}}"#);
+    let rows = f.json(&["list", "today", "--json"]);
+    assert_eq!(contents(&rows), ["今日1", "完了済み"]);
+    assert_eq!(rows[0]["section"], "今日");
+}
+
+#[test]
+fn broken_gtodo_json_stops_instead_of_misreading_sections() {
+    let f = sample();
+    f.write("gtodo.json", r#"{"sections":{"today":1}}"#);
+    let out = f.run(&["list"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("gtodo.json"), "{out:?}");
+}
+
+#[test]
+fn unknown_keys_in_shared_settings_are_warned_but_ignored() {
+    let f = sample();
+    f.write("gtodo.json", r#"{"added_in_a_newer_version":true}"#);
+    let config = serde_json::json!({"data_dir": f.data_dir(), "also_newer": 1});
+    fs::write(f.config_path(), config.to_string()).unwrap();
+    // --data-dir や GTODO_DATA_DIR があると config.json は読まれないため、どちらも渡さない。
+    let out = Command::new(env!("CARGO_BIN_EXE_gtodo"))
+        .arg("list")
+        .env("GTODO_CONFIG", f.config_path())
+        .env_remove("GTODO_DATA_DIR")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("\"also_newer\""), "{stderr}");
+    assert!(stderr.contains("\"added_in_a_newer_version\""), "{stderr}");
+}
+
+#[test]
 fn missing_data_dir_is_an_error() {
     let f = Fixture::new();
     fs::remove_dir(f.data_dir()).unwrap();

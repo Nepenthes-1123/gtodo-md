@@ -19,13 +19,14 @@ core (`gtodo-core`)
 
 - [x] ファイル構造の解析 (`parse_markdown` 相当。セクション別名を含む。Lua 版から生成するゴールデンテスト)
 - [ ] ファイル構造の書き出し (`write_todo_file` 相当。ID 重複の再発行・連続空行の圧縮)
-- [ ] 共有設定の読み込み: `config.json` (`data_dir` の場所)・`<data_dir>/gtodo.json` (セクション名・`auto_move_inbox_to_today`)。`GTODO_DATA_DIR`・`--data-dir`
+- [x] 共有設定の読み込み: `config.json` (`data_dir` の場所)・`<data_dir>/gtodo.json` (セクション名・`auto_move_inbox_to_today`)。`GTODO_DATA_DIR`・`--data-dir`
 - [ ] 書き込み: アトミック置換 (同じディレクトリの一時ファイル + fsync + rename)・内容が同じなら書かない
 - [ ] 並行更新の検出 (読んだ時点と書く直前の stat の比較)。stat は読む**前に**取り、改行コード (CRLF か) と一緒に読み込み結果に持たせる (今の `read_lines` は行しか返さない)
 - [ ] `.gtodo.lock` (Lua 版と同じ手順)
 - [ ] `.state.json` (未知のキーを保持した読み書き)
 - [ ] ソート・期日による昇格・完了タスクの履歴への移動・2ファイルにまたがる移動 (追記してから削除)
 - [ ] 日次ロールオーバー
+- [ ] `gtodo.json` を作る契機を決める (読み取り系のコマンドは作らない)
 - [ ] 保存時バリデーション (必須セクション・ヘッダ・`## YYYY-MM` 見出しの削除保護)
 
 CLI (`gtodo`)
@@ -44,7 +45,7 @@ CLI (`gtodo`)
 
 このリポジトリとは別の作業。
 
-- [ ] 共有設定 (`config.json`) を読む。`setup()` の同じ項目との関係 (食い違ったら警告する) と、既存の利用者の移行を決める
+- [ ] 共有設定 (`config.json`・`gtodo.json`) を読む。`setup()` の同じ項目との関係 (食い違ったら警告する) と、既存の利用者の移行を決める
 - [ ] 既定の `data_dir` を `$XDG_DATA_HOME/gtodo-md` にし、旧い場所 (`stdpath("data")/gtodo-md`) へ後退する。移ったら CLI/TUI 側の優先順位も入れ替える
 - [ ] 決定事項に記載した Lua 版の不具合を、Lua 版でも直すか決める
 - [ ] セクション名の重複を検査する (Lua 版の `sanitize_sections` は検査しない)
@@ -84,9 +85,10 @@ CLI (`gtodo`)
 - **Neovim 側で未保存の編集があるファイルに CLI が書き込んだ場合の挙動は、Neovim 版の仕様に従う。** 外部ツールによる変更と同じく、Neovim 側の未保存の編集は破棄される (undo で戻せる)。
 - **Neovim 版と CLI/TUI は同列に扱う。どちらかを正本にはしない。** 両方が守るべき設定は、どちらのツールにも属さない共有ファイルに置き、両方が読む。
   - `config.json` (`$XDG_CONFIG_HOME/gtodo-md/`、Windows は `%APPDATA%\gtodo-md\`): `data_dir` の場所だけ。絶対パスか `~` 始まりに限る (実行したディレクトリで場所が変わらないように)。
+  - `<data_dir>/gtodo.json`: セクション名・`auto_move_inbox_to_today` など、データの形と自動処理に関わる設定。セクション名は見出しとしてファイルに書かれるため、データと一緒に同期されるようにする。`sections` のキーは JSON の慣習に合わせて小文字 (`today` など)。Lua 版の `setup()` と `.state.json` は大文字 (`TODAY`)。
   - キーマップ・見た目などツール固有の設定は共有しない (Neovim 版は `setup()`、CLI/TUI は今のところ無し)。
   - 形式は JSON。Neovim (`vim.json`) と Rust のどちらも追加の依存なしで読めるため。TOML は Lua 側にパーサーが要る。
-  - 知らないキーはエラーにせず警告する。バージョンの違うツール同士で同じファイルを読むため。値の型が違うものはエラーにする。
+  - 知らないキーはエラーにせず警告する。バージョンの違うツール同士で同じファイルを読むため。値の型が違う・セクション名が空・他のセクションの名前と重複する、などはエラーにする (セクションを読み違えるため)。
 - **既定の `data_dir` は `$XDG_DATA_HOME/gtodo-md` (Windows は `%LOCALAPPDATA%\gtodo-md`)。ただし Neovim 版の既定 (`stdpath("data")/gtodo-md`) が存在する間はそちらを優先する。** 新規の利用者は Neovim に依存しない場所から始められ、既存のデータは移動せずに使える。現行の Neovim 版は旧い既定を使い続けるため、新しい場所を優先すると、何かの拍子にそこが作られたとき CLI だけが別の (空かもしれない) ディレクトリを黙って見ることになる。Neovim 版が新しい既定へ移ったら、優先順位を入れ替える。
   - macOS も `~/.config`・`~/.local/share` を使う (Neovim 自身と同じ)。`XDG_*` が設定されていれば、Windows でもそちらを優先する (Neovim 自身と同じ)。
   - 相対パスの `XDG_*` は XDG の仕様どおり無視する。Neovim はそのまま使うが、カレントディレクトリで場所が変わる設定は意図したものと考えにくい。

@@ -42,6 +42,10 @@ impl DataDir {
     pub fn path(&self, kind: FileKind) -> PathBuf {
         self.root.join(kind.file_name())
     }
+
+    pub fn settings_file(&self) -> PathBuf {
+        self.root.join("gtodo.json")
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

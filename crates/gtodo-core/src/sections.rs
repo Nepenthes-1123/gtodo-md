@@ -28,6 +28,16 @@ impl SectionKey {
         }
     }
 
+    /// `gtodo.json` の `sections` で使うキー。
+    pub fn settings_key(self) -> &'static str {
+        match self {
+            SectionKey::Today => "today",
+            SectionKey::Next => "next",
+            SectionKey::Waiting => "waiting",
+            SectionKey::Someday => "someday",
+        }
+    }
+
     /// `.state.json` の `last_sections` で使われるキー。
     pub fn state_key(self) -> &'static str {
         match self {

@@ -64,7 +64,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
     let mut warn = |msg: String| eprintln!("gtodo: warning: {msg}");
     let data_dir = config::resolve_data_dir(cli.data_dir, &ProcessEnv, Platform::current(), &mut warn)?;
     let today = Local::now().date_naive();
-    let ws = Workspace::open(data_dir, today)?;
+    let ws = Workspace::open(data_dir, today, &mut warn)?;
 
     match cli.command {
         Command::List { target, json } => commands::list::run(&ws, target, json, out),

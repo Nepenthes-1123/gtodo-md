@@ -18,8 +18,8 @@ gtodo list today              # inbox | todo | today | next | waiting | someday 
 
 ## 設定
 
-設定は Neovim 版と共有するファイルに書きます。
-ただし、Neovim 版はまだこのファイルを読みません ([ROADMAP.md](ROADMAP.md) の「gtodo-md.nvim 側の対応」)。それまでは Neovim 版の `setup()` にも同じ値を書いてください。
+設定は Neovim 版と共有するファイルに書きます。どちらのツールで使っても同じ結果になるよう、2 つのファイルに分けています。
+ただし、Neovim 版はまだこれらのファイルを読みません ([ROADMAP.md](ROADMAP.md) の「gtodo-md.nvim 側の対応」)。それまでは Neovim 版の `setup()` にも同じ値を書いてください。
 キーマップや見た目など、ツールごとの設定はここには含めません。
 
 ### データディレクトリの場所 (`config.json`)
@@ -42,6 +42,23 @@ gtodo list today              # inbox | todo | today | next | waiting | someday 
 Neovim 版がまだ 4 の場所を使うため、存在する間はそちらを優先します。
 
 環境変数 `XDG_CONFIG_HOME` / `XDG_DATA_HOME` が設定されていれば、どの OS でも `~/.config` / `~/.local/share` の代わりに使います。
+
+### データの設定 (`<データディレクトリ>/gtodo.json`)
+
+セクション名など、ファイルの中身に関わる設定です。データと一緒に置くので、データを別のマシンへ同期しても設定が付いていきます。
+ファイルが無ければ、すべて既定値を使います。
+
+```json
+{
+  "sections": { "today": "Today", "next": "Next", "waiting": "Waiting", "someday": "Someday" },
+  "auto_move_inbox_to_today": true
+}
+```
+
+- `sections`: `todo.md` の見出しの名前。書かなかったものは既定の名前になります。既定の名前の見出しは、名前を変えた後も同じセクションとして読みます。他のセクションの名前 (既定の名前を含む) と同じ名前は使えません。キーは小文字です (Neovim 版の `setup()` では `TODAY` などの大文字)。
+- `auto_move_inbox_to_today`: 期日が来た Inbox のタスクを Today へ移すか。
+
+知らないキーは警告して無視します (バージョンの違うツール同士で同じファイルを読むため)。
 
 ## 開発
 
