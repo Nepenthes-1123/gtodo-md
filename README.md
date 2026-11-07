@@ -3,7 +3,66 @@
 GTD 志向の Markdown Todo 管理ツール [gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) の TUI/CLI 版です。
 Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled.md` / `projects/*.md`) を読み書きし、同じデータを同時に使えることを目指しています。
 
-開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。
+開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドだけが使えます。
+
+## 使い方
+
+```sh
+gtodo list                    # inbox.md と todo.md のタスク
+gtodo list today              # inbox | todo | today | next | waiting | someday | done | cancelled
+gtodo search +work @office    # +project / @context の AND 検索 (--open / --done で絞り込み)
+gtodo queue                   # 期日ごとの一覧 (--wait で待ち先ごと)
+gtodo stats                   # ステータスライン向けの件数
+```
+
+`list`・`search`・`stats` は `--json` で JSON を出力します。
+各タスクの先頭に表示されるキーは、タスクの ID (`id:` タグ) です。ID の無いタスクには、行の内容から作った一時キー (`~` で始まる) を表示します。
+
+読み取り系のコマンドはファイルを一切書き換えません。Neovim 版で編集中のファイルがあっても安全に使えます。
+
+## 設定
+
+設定は Neovim 版と共有するファイルに書きます。どちらのツールで使っても同じ結果になるよう、2 つのファイルに分けています。
+ただし、Neovim 版はまだこれらのファイルを読みません ([ROADMAP.md](ROADMAP.md) の「gtodo-md.nvim 側の対応」)。それまでは Neovim 版の `setup()` にも同じ値を書いてください。
+キーマップや見た目など、ツールごとの設定はここには含めません。
+
+### データディレクトリの場所 (`config.json`)
+
+`~/.config/gtodo-md/config.json` (Windows は `%APPDATA%\gtodo-md\config.json`)。環境変数 `GTODO_CONFIG` で変更できます。
+`data_dir` には絶対パスか `~` で始まるパスを書きます。
+
+```json
+{ "data_dir": "~/Documents/gtodo-md" }
+```
+
+データディレクトリは次の順で決まります。
+
+1. `--data-dir`
+2. 環境変数 `GTODO_DATA_DIR`
+3. `config.json` の `data_dir`
+4. Neovim 版の既定 `stdpath("data")/gtodo-md` (通常は `~/.local/share/nvim/gtodo-md`) が存在すればそこ
+5. それ以外は `~/.local/share/gtodo-md` (Windows は `%LOCALAPPDATA%\gtodo-md`)
+
+Neovim 版がまだ 4 の場所を使うため、存在する間はそちらを優先します。
+
+環境変数 `XDG_CONFIG_HOME` / `XDG_DATA_HOME` が設定されていれば、どの OS でも `~/.config` / `~/.local/share` の代わりに使います。
+
+### データの設定 (`<データディレクトリ>/gtodo.json`)
+
+セクション名など、ファイルの中身に関わる設定です。データと一緒に置くので、データを別のマシンへ同期しても設定が付いていきます。
+ファイルが無ければ、すべて既定値を使います。
+
+```json
+{
+  "sections": { "today": "Today", "next": "Next", "waiting": "Waiting", "someday": "Someday" },
+  "auto_move_inbox_to_today": true
+}
+```
+
+- `sections`: `todo.md` の見出しの名前。書かなかったものは既定の名前になります。既定の名前の見出しは、名前を変えた後も同じセクションとして読みます。他のセクションの名前 (既定の名前を含む) と同じ名前は使えません。キーは小文字です (Neovim 版の `setup()` では `TODAY` などの大文字)。
+- `auto_move_inbox_to_today`: 期日が来た Inbox のタスクを Today へ移すか。
+
+知らないキーは警告して無視します (バージョンの違うツール同士で同じファイルを読むため)。
 
 ## 開発
 

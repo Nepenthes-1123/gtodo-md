@@ -5,7 +5,15 @@
 //!
 //! [gtodo-md.nvim]: https://github.com/Nepenthes-1123/gtodo-md.nvim
 
+pub mod config;
 pub mod date;
+pub mod document;
+pub mod key;
 mod lua_compat;
+pub mod sections;
+pub mod settings;
+pub mod state;
+pub mod store;
 pub mod task;
+pub mod view;
 mod vim_class;

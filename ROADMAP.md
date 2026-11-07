@@ -17,27 +17,42 @@
 
 core (`gtodo-core`)
 
-- [ ] ファイル構造のモデル (`parse_markdown` / `write_todo_file` 相当。セクション別名・ID 重複の再発行・連続空行の圧縮)
-- [ ] 設定 (`data_dir`・セクション名) の読み込み。`~/.config/gtodo-md/config.toml`、`GTODO_DATA_DIR`、`--data-dir`
+- [x] ファイル構造の解析 (`parse_markdown` 相当。セクション別名を含む。Lua 版から生成するゴールデンテスト)
+- [ ] ファイル構造の書き出し (`write_todo_file` 相当。ID 重複の再発行・連続空行の圧縮)
+- [x] 共有設定の読み込み: `config.json` (`data_dir` の場所)・`<data_dir>/gtodo.json` (セクション名・`auto_move_inbox_to_today`)。`GTODO_DATA_DIR`・`--data-dir`
+- [x] `.state.json` の `last_sections` (Neovim 版が最後に起動したときに使っていたセクション名) の読み取り
 - [ ] 書き込み: アトミック置換 (同じディレクトリの一時ファイル + fsync + rename)・内容が同じなら書かない
-- [ ] 並行更新の検出 (読んだ時点と書く直前の stat の比較)
+- [ ] 並行更新の検出 (読んだ時点と書く直前の stat の比較)。stat は読む**前に**取り、改行コード (CRLF か) と一緒に読み込み結果に持たせる (今の `read_lines` は行しか返さない)
 - [ ] `.gtodo.lock` (Lua 版と同じ手順)
 - [ ] `.state.json` (未知のキーを保持した読み書き)
 - [ ] ソート・期日による昇格・完了タスクの履歴への移動・2ファイルにまたがる移動 (追記してから削除)
 - [ ] 日次ロールオーバー
+- [ ] `gtodo.json` を作る契機を決める (読み取り系のコマンドは作らない)
+- [ ] `gtodo.json` が無いとき、Neovim 版の名前 (`last_sections`) を現在の名前として使うか決める。決めずに書き込み系を入れると、CLI が既定名で見出しを書き、Neovim 版が書き戻す往復が起きる
 - [ ] 保存時バリデーション (必須セクション・ヘッダ・`## YYYY-MM` 見出しの削除保護)
 
 CLI (`gtodo`)
 
 - [ ] `gtodo add <text> [--to …] [--due …] [-p project] [-c context] [--priority X]`
-- [ ] `gtodo list [inbox|todo|today|next|waiting|someday|done|cancelled] [--json]`
+- [x] `gtodo list [inbox|todo|today|next|waiting|someday|done|cancelled] [--json]`
 - [ ] `gtodo done | undone | cancel <task>`
+  - 一時キーが一致しないときは、Neovim 側で ID が付いた可能性があるので `list` し直すよう案内する (Neovim 版は保存のたびに ID の無い行へ ID を付ける)
+  - ID はファイル内でしか重複が直されないため、ファイルをまたいで複数一致したらエラーにする
 - [ ] `gtodo move <task> <section> [--wait who]`
 - [ ] `gtodo edit <task> …`
-- [ ] `gtodo search [+project] [@context] [--open|--done]`
-- [ ] `gtodo queue`
+- [x] `gtodo search [+project] [@context] [--open|--done] [--json]`
+- [x] `gtodo queue [--wait]`
 - [ ] `gtodo sort` (期日チェックとソート)
-- [ ] `gtodo stats`
+- [x] `gtodo stats [--json]`
+
+## gtodo-md.nvim 側の対応
+
+このリポジトリとは別の作業。
+
+- [ ] 共有設定 (`config.json`・`gtodo.json`) を読む。`setup()` の同じ項目との関係 (食い違ったら警告する) と、既存の利用者の移行を決める
+- [ ] 既定の `data_dir` を `$XDG_DATA_HOME/gtodo-md` にし、旧い場所 (`stdpath("data")/gtodo-md`) へ後退する。移ったら CLI/TUI 側の優先順位も入れ替える
+- [ ] 決定事項に記載した Lua 版の不具合を、Lua 版でも直すか決める
+- [ ] セクション名の重複を検査する (Lua 版の `sanitize_sections` は検査しない)
 
 ## M2: TUI
 
@@ -59,7 +74,7 @@ CLI (`gtodo`)
 
 ## 決定事項
 
-2026-11-07 時点。
+2026-11-08 時点。
 
 - **言語は Rust。** clap + ratatui。`Result` によってエラーの握りつぶしをコンパイラに防がせられることを重視した。
 - **ビルドとテストは Docker 上で行う。** ホスト環境を汚さないため、C リンカ (`build-essential`) はホストに入れない。ホストの Rust (mise) はフォーマットとエディタの補完に使う。
@@ -72,3 +87,20 @@ CLI (`gtodo`)
   - `list` などの読むだけのコマンドは書き込まない (ID の発行もしない)。書くと Neovim 側の未保存の編集が破棄され、全インスタンスで無駄なリロードが起きるため。ID は書き込むコマンドが実行されたときに付く。
 - **書き込むコマンドは、実行前に日次ロールオーバーを確認する。** Neovim 版の 60 秒タイマーの代わり。日付が変わっていればロックを取って1日1回だけ実行する。
 - **Neovim 側で未保存の編集があるファイルに CLI が書き込んだ場合の挙動は、Neovim 版の仕様に従う。** 外部ツールによる変更と同じく、Neovim 側の未保存の編集は破棄される (undo で戻せる)。
+- **Neovim 版と CLI/TUI は同列に扱う。どちらかを正本にはしない。** 両方が守るべき設定は、どちらのツールにも属さない共有ファイルに置き、両方が読む。
+  - `config.json` (`$XDG_CONFIG_HOME/gtodo-md/`、Windows は `%APPDATA%\gtodo-md\`): `data_dir` の場所だけ。絶対パスか `~` 始まりに限る (実行したディレクトリで場所が変わらないように)。
+  - `<data_dir>/gtodo.json`: セクション名・`auto_move_inbox_to_today` など、データの形と自動処理に関わる設定。セクション名は見出しとしてファイルに書かれるため、データと一緒に同期されるようにする。`sections` のキーは JSON の慣習に合わせて小文字 (`today` など)。Lua 版の `setup()` と `.state.json` は大文字 (`TODAY`)。
+  - キーマップ・見た目などツール固有の設定は共有しない (Neovim 版は `setup()`、CLI/TUI は今のところ無し)。
+  - 形式は JSON。Neovim (`vim.json`) と Rust のどちらも追加の依存なしで読めるため。TOML は Lua 側にパーサーが要る。
+  - 知らないキーはエラーにせず警告する。バージョンの違うツール同士で同じファイルを読むため。値の型が違う・セクション名が空・他のセクションの名前と重複する、などはエラーにする (セクションを読み違えるため)。
+- **既定の `data_dir` は `$XDG_DATA_HOME/gtodo-md` (Windows は `%LOCALAPPDATA%\gtodo-md`)。ただし Neovim 版の既定 (`stdpath("data")/gtodo-md`) が存在する間はそちらを優先する。** 新規の利用者は Neovim に依存しない場所から始められ、既存のデータは移動せずに使える。現行の Neovim 版は旧い既定を使い続けるため、新しい場所を優先すると、何かの拍子にそこが作られたとき CLI だけが別の (空かもしれない) ディレクトリを黙って見ることになる。Neovim 版が新しい既定へ移ったら、優先順位を入れ替える。
+  - macOS も `~/.config`・`~/.local/share` を使う (Neovim 自身と同じ)。`XDG_*` が設定されていれば、Windows でもそちらを優先する (Neovim 自身と同じ)。
+  - 相対パスの `XDG_*` は XDG の仕様どおり無視する。Neovim はそのまま使うが、カレントディレクトリで場所が変わる設定は意図したものと考えにくい。
+- **CLI は `.state.json` の `last_sections` を読むが書き換えない。** 中身は Neovim 版が最後に起動したときに使っていたセクション名で、Neovim 版が自身の設定変更を追跡するための記録。CLI はこれを別名として読み、Neovim 版が `setup()` で付けた名前の見出しを認識する。
+  - 既知の制約: Neovim 版は起動時に旧い名前を読んだ直後、新しい名前で上書きする。そのため Neovim 版で名前を変えた直後に残っている旧い名前の見出しは、Neovim 版が書き直すまで CLI からは管理対象外に見える。
+- **セクション名の別名が他のキーの名前と衝突したときは、全キーの現在の名前 → デフォルト名 → 前回の名前の順に照合する。** Lua 版はこの順序が `pairs` 任せで定まっていない。現在の名前が他のセクションの現在の名前・デフォルト名と重複する設定は、照合以前にエラーにする (2 つのセクションが合流して読まれ、そのまま書き戻されるため)。
+- **Lua 版の不具合と判断した挙動は、Rust 版では直したうえで差異として記録する。**
+  - `## default` という見出し: Lua 版は最初の `##` より前の行を内部キー `"default"` で持つため衝突して見出しが消える。Rust 版は別に持つ。
+  - 日付として解釈できない期日: `due:someday` などでは Lua 版の Queue は例外で開けなくなり、`due:2026-02-30` のような存在しない日付は、書いたとおりの日付を表示する一方で、曜日・日数・期限切れの判定は `os.time` が補正した別の日付で行う。Rust 版はどちらも「期日を解釈できない」グループに表示する。
+- **`stats` は解析したタスクを数える。** Lua 版は高速化のため `[ ]` を含む行をすべて数え、Today の見出しも前方一致で判定する (`## Today (仕事)` も Today に入る)。それでは `list today` の件数と食い違うため。ステータスラインの数値が Neovim 版と異なることがある。
+- **Queue の見出しの文言 (「期限切れ」「今日」など) は Neovim 版の Queue ビューに合わせて日本語にする。** エラーや警告のメッセージは英語。
