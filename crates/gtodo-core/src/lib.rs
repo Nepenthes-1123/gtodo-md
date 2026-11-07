@@ -6,6 +6,9 @@
 //! [gtodo-md.nvim]: https://github.com/Nepenthes-1123/gtodo-md.nvim
 
 pub mod date;
+pub mod document;
 mod lua_compat;
+pub mod sections;
+pub mod store;
 pub mod task;
 mod vim_class;

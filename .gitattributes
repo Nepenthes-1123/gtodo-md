@@ -1,0 +1,2 @@
+# CRLF の改行を読むテストのための入力。改行を変換させない。
+testdata/golden/markdown/todo_crlf.md -text

@@ -1,0 +1,17 @@
+[
+  { "file": "todo_standard.md" },
+  { "file": "todo_preamble.md" },
+  { "file": "todo_duplicate_sections.md" },
+  {
+    "file": "todo_aliases.md",
+    "sections": { "TODAY": "今日", "SOMEDAY": "いつか" },
+    "last_sections": { "NEXT": "次" }
+  },
+  { "file": "headings_edge.md" },
+  { "file": "inbox.md" },
+  { "file": "done.md" },
+  { "file": "empty.md" },
+  { "file": "header_only.md" },
+  { "file": "todo_crlf.md" },
+  { "file": "heading_fullwidth_space.md" }
+]
