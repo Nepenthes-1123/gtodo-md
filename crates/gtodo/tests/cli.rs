@@ -152,6 +152,23 @@ fn unknown_keys_in_shared_settings_are_warned_but_ignored() {
 }
 
 #[test]
+fn section_names_neovim_used_last_are_still_recognized() {
+    let f = sample();
+    f.write("todo.md", "# Todo\n\n## 本日\n\n- [ ] 旧名の見出し\n");
+    f.write(".state.json", r#"{"last_sections":{"TODAY":"本日"}}"#);
+    assert_eq!(contents(&f.json(&["list", "today", "--json"])), ["旧名の見出し"]);
+}
+
+#[test]
+fn broken_state_file_is_reported_but_listing_continues() {
+    let f = sample();
+    f.write(".state.json", "{broken");
+    let out = f.run(&["list", "today"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("warning"), "{out:?}");
+}
+
+#[test]
 fn missing_data_dir_is_an_error() {
     let f = Fixture::new();
     fs::remove_dir(f.data_dir()).unwrap();
@@ -196,4 +213,16 @@ fn read_only_commands_never_create_or_modify_files() {
         before,
         "no file may be created, including .state.json"
     );
+}
+
+#[test]
+fn read_only_commands_never_modify_existing_state_and_settings() {
+    let f = sample();
+    f.write(".state.json", r#"{"last_opened":"2000-01-01"}"#);
+    f.write("gtodo.json", r#"{"sections":{"today":"Today"}}"#);
+    let before = snapshot(&f.data_dir());
+    for args in READ_ONLY_COMMANDS {
+        f.stdout(args);
+    }
+    assert_eq!(snapshot(&f.data_dir()), before);
 }

@@ -43,6 +43,10 @@ impl DataDir {
         self.root.join(kind.file_name())
     }
 
+    pub fn state_file(&self) -> PathBuf {
+        self.root.join(".state.json")
+    }
+
     pub fn settings_file(&self) -> PathBuf {
         self.root.join("gtodo.json")
     }
