@@ -1,0 +1,74 @@
+# ロードマップ
+
+[gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) と同じデータを扱う TUI/CLI を Rust で作る。
+完了した項目はチェックを付け、方針を変えたら「決定事項」を更新する。
+
+## M0: 土台
+
+- [x] Cargo ワークスペース (`gtodo-core` ライブラリ)
+- [x] タスク行の文法 (`task.rs`): parse / serialize / ID 発行
+- [x] 期日表記の正規化 (`date.rs`)
+- [x] Lua 版から生成するゴールデンテスト (`scripts/gen-golden-task.lua`)
+- [x] Vim の単語境界判定に使う文字クラス表の生成 (`scripts/gen-vim-charclass.lua`)
+- [x] ビルド・テスト・lint を通す
+- [x] Docker 上でビルド・テストする手順 (`scripts/cargo-docker`)
+
+## M1: core と CLI
+
+core (`gtodo-core`)
+
+- [ ] ファイル構造のモデル (`parse_markdown` / `write_todo_file` 相当。セクション別名・ID 重複の再発行・連続空行の圧縮)
+- [ ] 設定 (`data_dir`・セクション名) の読み込み。`~/.config/gtodo-md/config.toml`、`GTODO_DATA_DIR`、`--data-dir`
+- [ ] 書き込み: アトミック置換 (同じディレクトリの一時ファイル + fsync + rename)・内容が同じなら書かない
+- [ ] 並行更新の検出 (読んだ時点と書く直前の stat の比較)
+- [ ] `.gtodo.lock` (Lua 版と同じ手順)
+- [ ] `.state.json` (未知のキーを保持した読み書き)
+- [ ] ソート・期日による昇格・完了タスクの履歴への移動・2ファイルにまたがる移動 (追記してから削除)
+- [ ] 日次ロールオーバー
+- [ ] 保存時バリデーション (必須セクション・ヘッダ・`## YYYY-MM` 見出しの削除保護)
+
+CLI (`gtodo`)
+
+- [ ] `gtodo add <text> [--to …] [--due …] [-p project] [-c context] [--priority X]`
+- [ ] `gtodo list [inbox|todo|today|next|waiting|someday|done|cancelled] [--json]`
+- [ ] `gtodo done | undone | cancel <task>`
+- [ ] `gtodo move <task> <section> [--wait who]`
+- [ ] `gtodo edit <task> …`
+- [ ] `gtodo search [+project] [@context] [--open|--done]`
+- [ ] `gtodo queue`
+- [ ] `gtodo sort` (期日チェックとソート)
+- [ ] `gtodo stats`
+
+## M2: TUI
+
+- [ ] セクションをタブで切り替える一覧 (`gtodo tui`、引数なしでも起動)
+- [ ] Neovim 版と同じキーでの操作 (`d`/`n`/`w`/`s`/`x`/`c`)
+- [ ] 追加・編集フォーム
+- [ ] Queue ビュー
+- [ ] 検索
+- [ ] カンバン
+- [ ] 外部変更の検知と再読み込み
+- [ ] `$EDITOR` で生のファイルを開く
+
+## M3 以降
+
+- [ ] プロジェクトファイル (フロントマター・進捗)
+- [ ] テンプレート
+- [ ] タスクの分割・プロジェクトへの昇格
+- [ ] Waiting タスクの期限警告
+
+## 決定事項
+
+2026-11-07 時点。
+
+- **言語は Rust。** clap + ratatui。`Result` によってエラーの握りつぶしをコンパイラに防がせられることを重視した。
+- **ビルドとテストは Docker 上で行う。** ホスト環境を汚さないため、C リンカ (`build-essential`) はホストに入れない。ホストの Rust (mise) はフォーマットとエディタの補完に使う。
+- **Neovim 版と同じ `data_dir` を同時に共有できる互換性を持たせる。** タスク行の文法・`.gtodo.lock`・`.state.json`・アトミック置換・2ファイルにまたがる移動の順序を Lua 版に合わせる。
+- **タスク行の文法は Lua 版をゴールデンテストで固定する。** Lua 版は Vim の正規表現で書かれており、単語境界 (`\<`) や `\s` の範囲が Rust の正規表現と異なるため、手で移植するだけでは細部がずれる。
+- **CLI でのタスクの指定方法。**
+  - ID があるタスクは ID で指定する (一意に絞れれば先頭の一部でもよい)。
+  - ID が無いタスクは、行の内容から作った一時キー (例: `~3fa91c`) で指定する。操作時に読み直して一致する行を探し、見つからない・複数ある場合はエラーにする。
+  - 行番号では指定しない。`list` から操作までの間に自動ソートや他インスタンスの書き込みで行がずれると、別のタスクを操作してしまうため。
+  - `list` などの読むだけのコマンドは書き込まない (ID の発行もしない)。書くと Neovim 側の未保存の編集が破棄され、全インスタンスで無駄なリロードが起きるため。ID は書き込むコマンドが実行されたときに付く。
+- **書き込むコマンドは、実行前に日次ロールオーバーを確認する。** Neovim 版の 60 秒タイマーの代わり。日付が変わっていればロックを取って1日1回だけ実行する。
+- **Neovim 側で未保存の編集があるファイルに CLI が書き込んだ場合の挙動は、Neovim 版の仕様に従う。** 外部ツールによる変更と同じく、Neovim 側の未保存の編集は破棄される (undo で戻せる)。

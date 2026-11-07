@@ -1,0 +1,43 @@
+# CLAUDE.md
+
+## プロジェクト概要
+
+gtodo-md は Neovim プラグイン [gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) の TUI/CLI 版 (Rust)。
+Neovim 版と同じ `data_dir` を**同時に**共有できることを前提とする。進捗と決定事項は `ROADMAP.md` で管理する。
+
+リポジトリ構成: 親ディレクトリの bare リポジトリ (`.git`) から作ったブランチごとの git worktree の1つ (`.main` が `main`)。
+
+## コマンド
+
+ホストには C リンカが無い (意図的に入れていない) ため、ビルド・テスト・clippy は Docker 上で実行する。
+`cargo fmt` はリンカ不要なのでホストの cargo (mise) で実行してよい。
+
+```sh
+scripts/cargo-docker test
+scripts/cargo-docker clippy --all-targets -- -D warnings
+cargo fmt --all            # 列幅は 120 (rustfmt.toml)
+
+# 生成物の再生成 (Neovim と gtodo-md.nvim のチェックアウトが必要)
+nvim --clean --headless -l scripts/gen-golden-task.lua <path/to/gtodo-md.nvim>
+nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src/vim_class.rs
+```
+
+生成スクリプトは必ず `--clean` で実行すること。Vim の `\<` と `charclass()` はカレントバッファの `'iskeyword'` に依存するため、ユーザー設定が混ざると既定と異なる結果が記録される。
+
+## 構成
+
+- `crates/gtodo-core` — Neovim に依存しない中核 (ライブラリ)。
+  - `task.rs` — タスク行の文法。**ディスク上のタスク形式を知っているのはこのモジュールだけ**。他のモジュールがタグの正規表現を組んではならない (Lua 版ではこれを破って3件の静かな破損が起きた)。
+  - `date.rs` — 期日表記の正規化。
+  - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
+  - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。
+
+## 互換性の不変条件
+
+- タスク行の解析結果・文字列化は Lua 版と一致させる。`testdata/golden/task_parse.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` に足して再生成する。
+- Vim の正規表現を移植するときは、`\s` は `[ \t]`、`\w` は `[0-9A-Za-z_]`、`[:space:]` は `[\t\n\x0B\x0C\r ]` に置き換える。Rust の `\s`/`\w`/`\b` は Unicode の範囲で判定するため、そのまま使うと全角スペースや日本語の直後で結果が変わる。`\<` は `task.rs` の `is_vim_word_start` を使う。
+- 意図して Lua 版と挙動を変えた箇所は、コードコメントに理由を書く (例: `date.rs` の夏時間の扱い)。
+
+## ローカライズ
+
+コードコメントとドキュメントは日本語、識別子とユーザー向けメッセージは英語。
