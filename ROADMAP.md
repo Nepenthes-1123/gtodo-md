@@ -40,8 +40,8 @@ CLI (`gtodo`)
   - ID はファイル内でしか重複が直されないため、ファイルをまたいで複数一致したらエラーにする
 - [ ] `gtodo move <task> <section> [--wait who]`
 - [ ] `gtodo edit <task> …`
-- [ ] `gtodo search [+project] [@context] [--open|--done]`
 - [ ] `gtodo queue`
+- [x] `gtodo search [+project] [@context] [--open|--done] [--json]`
 - [ ] `gtodo sort` (期日チェックとソート)
 - [ ] `gtodo stats`
 

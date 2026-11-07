@@ -183,6 +183,33 @@ fn broken_state_file_is_reported_but_listing_continues() {
 }
 
 #[test]
+fn search_combines_terms_and_status_with_and_and_skips_cancelled() {
+    let f = sample();
+    assert_eq!(
+        contents(&f.json(&["search", "+work", "--json"])),
+        ["受信2", "今日1", "過去の完了"]
+    );
+    assert_eq!(contents(&f.json(&["search", "+work", "@office", "--json"])), ["今日1"]);
+    assert_eq!(
+        contents(&f.json(&["search", "+work", "--open", "--json"])),
+        ["受信2", "今日1"]
+    );
+    assert_eq!(
+        contents(&f.json(&["search", "--done", "--json"])),
+        ["完了済み", "過去の完了"]
+    );
+    let out = f.stdout(&["search", "@home"]);
+    assert!(out.contains("todo.md:10  [ ] 次1 @home"), "{out}");
+}
+
+#[test]
+fn search_rejects_terms_other_than_project_or_context() {
+    let out = sample().run(&["search", "word"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("+project or @context"));
+}
+
+#[test]
 fn missing_data_dir_is_an_error() {
     let f = Fixture::new();
     fs::remove_dir(f.data_dir()).unwrap();
@@ -212,6 +239,8 @@ const READ_ONLY_COMMANDS: &[&[&str]] = &[
     &["list", "today", "--json"],
     &["list", "done", "--json"],
     &["list", "cancelled"],
+    &["search", "+work"],
+    &["search", "@office", "--open", "--json"],
 ];
 
 /// 読むだけのコマンドが書き込むと、Neovim 側の未保存の編集が破棄されるため、一切書かないこと。

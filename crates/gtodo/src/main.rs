@@ -10,6 +10,7 @@ use anyhow::Result;
 use chrono::Local;
 use clap::{Parser, Subcommand};
 use gtodo_core::config::{self, Platform, ProcessEnv};
+use gtodo_core::task::Status;
 
 use crate::commands::list::Target;
 use crate::workspace::Workspace;
@@ -32,6 +33,21 @@ enum Command {
     List {
         #[arg(value_enum)]
         target: Option<Target>,
+        /// Print as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Search inbox.md, todo.md and done.md by +project and @context (all terms must match)
+    Search {
+        /// +project or @context
+        #[arg(value_name = "TERM")]
+        terms: Vec<String>,
+        /// Only open tasks
+        #[arg(long, conflicts_with = "done")]
+        open: bool,
+        /// Only completed tasks
+        #[arg(long)]
+        done: bool,
         /// Print as JSON
         #[arg(long)]
         json: bool,
@@ -68,5 +84,18 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
 
     match cli.command {
         Command::List { target, json } => commands::list::run(&ws, target, json, out),
+        Command::Search {
+            terms,
+            open,
+            done,
+            json,
+        } => {
+            let status = match (open, done) {
+                (true, _) => Some(Status::Open),
+                (_, true) => Some(Status::Done),
+                _ => None,
+            };
+            commands::search::run(&ws, &terms, status, json, out)
+        }
     }
 }
