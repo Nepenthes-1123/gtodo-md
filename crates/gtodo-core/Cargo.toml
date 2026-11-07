@@ -1,0 +1,15 @@
+[package]
+name = "gtodo-core"
+version = "0.1.0"
+description = "Core of gtodo-md: task grammar, file model and automation shared by the CLI and TUI"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

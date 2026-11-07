@@ -1,0 +1,11 @@
+//! gtodo-md の中核。CLI と TUI が共有する、Neovim に依存しない部分を持つ。
+//!
+//! データ形式は Neovim プラグイン [gtodo-md.nvim] と互換であり、同じ `data_dir` を
+//! 同時に共有できることを前提とする。
+//!
+//! [gtodo-md.nvim]: https://github.com/Nepenthes-1123/gtodo-md.nvim
+
+pub mod date;
+mod lua_compat;
+pub mod task;
+mod vim_class;
