@@ -34,5 +34,8 @@
   { "dir": "move_todo_missing_section", "op": "move", "file": "todo.md", "line": "- [ ] いつか id:n00001", "to": "SOMEDAY" },
   { "dir": "move_todo_custom_names", "op": "move", "file": "todo.md", "line": "- [ ] 移す id:n00001", "to": "TODAY", "sections": { "TODAY": "今日", "NEXT": "次" } },
   { "dir": "move_todo_duplicate_headings", "op": "move", "file": "todo.md", "line": "- [ ] 移す id:n00003", "to": "TODAY" },
-  { "dir": "move_todo_duplicate_headings_same", "op": "move", "file": "todo.md", "line": "- [ ] 移す id:n00003", "to": "NEXT" }
+  { "dir": "move_todo_duplicate_headings_same", "op": "move", "file": "todo.md", "line": "- [ ] 移す id:n00003", "to": "NEXT" },
+  { "dir": "move_inbox", "op": "move", "file": "inbox.md", "line": "- [ ] 移す   IDなし   ", "to": "NEXT" },
+  { "dir": "move_inbox_no_sections", "op": "move", "file": "inbox.md", "line": "- [ ] 受信 id:i00001", "to": "NEXT" },
+  { "dir": "move_inbox_indented", "op": "move", "file": "inbox.md", "line": "    - [ ] 子 id:i00002", "to": "NEXT" }
 ]

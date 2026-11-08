@@ -68,7 +68,7 @@ enum Command {
         /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
         task: String,
     },
-    /// Move a task in todo.md to another section
+    /// Move a task in inbox.md or todo.md to a section of todo.md
     Move {
         /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
         task: String,

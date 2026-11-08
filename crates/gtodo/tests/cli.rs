@@ -770,6 +770,7 @@ fn the_reported_id_of_a_task_without_one_is_the_id_written() {
         (&["cancel"], "todo.md", "- [ ] 今日", "cancelled.md"),
         (&["cancel"], "inbox.md", "- [ ] 受信", "cancelled.md"),
         (&["move", "next"], "todo.md", "- [ ] 今日", "todo.md"),
+        (&["move", "next"], "inbox.md", "- [ ] 受信", "todo.md"),
     ] {
         let f = Fixture::new();
         f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
@@ -807,6 +808,15 @@ fn moving_to_waiting_keeps_the_wait() {
         "moved aaaaaa to Waiting (wait:bob): 今日\n"
     );
     assert!(read(&f, "todo.md").contains("## Waiting\n\n- [ ] 今日 wait:bob id:aaaaaa\n"));
+}
+
+#[test]
+fn move_takes_a_task_out_of_the_inbox() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(f.stdout(&["move", "111111", "today"]), "moved 111111 to Today: 受信2\n");
+    assert!(!read(&f, "inbox.md").contains("111111"));
+    assert!(read(&f, "todo.md").contains("- [ ] 受信2 +work id:111111"));
 }
 
 #[test]
