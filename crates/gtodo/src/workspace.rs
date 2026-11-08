@@ -32,7 +32,7 @@ impl Workspace {
     }
 
     pub fn load(&self, kind: FileKind) -> Result<Document> {
-        let lines = store::read_lines(&self.data_dir.path(kind))?;
+        let lines = store::read_file(&self.data_dir.path(kind))?.lines;
         Ok(Document::parse(&lines, &self.names, self.today))
     }
 }
