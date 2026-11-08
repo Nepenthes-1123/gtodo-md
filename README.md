@@ -3,7 +3,7 @@
 GTD 志向の Markdown Todo 管理ツール [gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) の TUI/CLI 版です。
 Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled.md` / `projects/*.md`) を読み書きし、同じデータを同時に使えることを目指しています。
 
-開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`undone`・`cancel`・`sort` が使えます。
+開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`undone`・`cancel`・`move`・`sort` が使えます。
 
 ## 使い方
 
@@ -18,6 +18,7 @@ gtodo add 資料 --due fri -p work -c office --priority A
 gtodo done a1b2               # 完了にする (done.md へ移るのは翌日の整理のとき)
 gtodo undone a1b2             # 完了を取り消す (done.md へ移る前まで)
 gtodo cancel ~3fa91c          # cancelled.md へ移す
+gtodo move a1b2 next          # todo.md のセクションへ移す (today | next | waiting | someday)
 gtodo sort                    # 期日が来たタスクを Today へ移し、todo.md を並べ替える
 ```
 
@@ -28,6 +29,8 @@ gtodo sort                    # 期日が来たタスクを Today へ移し、to
 各タスクの先頭に表示されるキーは、タスクの ID (`id:` タグ) です。ID の無いタスクには、行の内容から作った一時キー (`~` で始まる) を表示します。
 `done` などでタスクを指定するときは、このキーを使います。ID は他のタスクと区別できれば先頭の一部だけでも構いません。一時キーは行が書き換わると使えなくなるので (Neovim 版は保存のたびに ID を付けます)、そのときは `list` し直してください。
 同じ ID のタスクが複数あるとどれも指定できないので、Neovim 版で片方の `id:` を消してください (保存したときに新しい ID が付きます)。
+
+`move` は todo.md のタスクを別のセクションへ移します。Waiting 以外へ移すと待ち先 (`wait:`) は消えます。Waiting へ移すときは今の待ち先を残します。
 
 読み取り系のコマンドはファイルを一切書き換えません。Neovim 版で編集中のファイルがあっても安全に使えます。
 

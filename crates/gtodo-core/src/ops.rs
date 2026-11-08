@@ -31,6 +31,10 @@ pub enum OpError {
     AlreadyCompleted(String),
     #[error("{0} is not completed")]
     NotCompleted(String),
+    #[error("{0} is completed; completed tasks cannot be moved")]
+    MoveCompleted(String),
+    #[error("{0} is in inbox.md; only tasks in todo.md can be moved")]
+    InInbox(String),
     /// 2 ファイルにまたがる移動で、追記した後の削除に失敗した。削除できなかったタスクは両方のファイルにある。
     #[error(
         "the tasks were added to {} but some could not be removed from where they were, so they may appear in both files; remove the duplicates by hand: {source}",
@@ -299,6 +303,73 @@ pub fn cancel(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, key: &
     };
     append_then_remove(data_dir.root(), cancelled_path.clone(), append, remove)?;
     Ok(result)
+}
+
+/// [`move_task`] の結果。どれも操作したタスクを持つ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Moved {
+    /// 別のセクションへ移した。
+    Moved(Task),
+    /// すでに移動先のセクションにあり、何も書かなかった。
+    AlreadyThere(Task),
+}
+
+/// キーで指定した todo.md のタスクを別のセクションへ移す (Lua 版 `editor.lua` の
+/// `move_current_task_to`)。
+///
+/// 移動先が Waiting でなければ待ち先を消す。移した後は、移動元と移動先のセクションを並べ替える。
+/// 移動先の見出しが無ければ末尾に作る (Lua 版と同じ)。
+pub fn move_task(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    key: &str,
+    to: SectionKey,
+) -> Result<Moved, OpError> {
+    let inbox = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+    let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let at = locate(data_dir, names, today, &inbox.doc, &todo.doc, key)?;
+    if at.file == FileKind::Inbox {
+        return Err(OpError::InInbox(key.to_string()));
+    }
+    let id = unused_id(&[&inbox.doc, &todo.doc]);
+    let target = names.name(to);
+    let same = at.section.map(|i| todo.doc.sections[i].name.as_str()) == Some(target);
+
+    let items = todo.items_mut(at.section);
+    let Item::Task(item) = &items[at.index] else {
+        unreachable!("key::find only returns tasks");
+    };
+    // 完了したタスクは次の日次の整理で done.md へ移るため、セクションを変える意味が無い (Lua 版と同じ)。
+    if item.task.status == Status::Done {
+        return Err(OpError::MoveCompleted(key.to_string()));
+    }
+    if same {
+        return Ok(Moved::AlreadyThere(item.task.clone()));
+    }
+
+    let Item::Task(item) = items.remove(at.index) else {
+        unreachable!("key::find only returns tasks");
+    };
+    let mut task = item.task;
+    if to != SectionKey::Waiting {
+        task.wait = None;
+    }
+    // 書き出すときにファイル内の重複として振り直されると、利用者に知らせた ID と食い違うため、先に決める。
+    task.id.get_or_insert(id);
+    let result = task.clone();
+    let moved = Item::Task(Box::new(TaskItem {
+        line: task.clone().serialize(),
+        task,
+        lnum: 0,
+    }));
+
+    sort::sort_items(todo.items_mut(at.section));
+    let items = section_items(&mut todo.doc, target);
+    items.push(moved);
+    sort::sort_items(items);
+    todo.write()?;
+    Ok(Moved::Moved(result))
 }
 
 /// todo.md の各セクションのタスクを並べ替える。
@@ -639,6 +710,41 @@ mod tests {
                 .unwrap()
                 .contains("id:bbbbbb")
         );
+        assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
+    }
+
+    /// Lua 版は見出しが別名 (現在の名前でない) のセクションのタスクを見つけられず、何も書かない。
+    #[test]
+    fn tasks_under_an_alias_heading_can_be_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let todo = "# Todo\n\n## Today\n\n- [ ] 今日 id:aaaaaa\n\n## Next\n";
+        fs::write(dir.path().join("todo.md"), todo).unwrap();
+        let names = SectionNames::from_last(&[Some("今日".into()), None, None, None]).unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let move_to = |to| move_task(&data_dir, &names, today(), "aaaaaa", to).unwrap();
+
+        assert!(matches!(move_to(SectionKey::Today), Moved::AlreadyThere(_)));
+        assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), todo);
+        assert!(matches!(move_to(SectionKey::Next), Moved::Moved(_)));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("todo.md")).unwrap(),
+            "# Todo\n\n## 今日\n\n## Next\n\n- [ ] 今日 id:aaaaaa\n"
+        );
+    }
+
+    #[test]
+    fn completed_tasks_are_not_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("todo.md"), TODO).unwrap();
+        let err = move_task(
+            &DataDir::new(dir.path()),
+            &SectionNames::default(),
+            today(),
+            "bbbbbb",
+            SectionKey::Next,
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::MoveCompleted(_)), "{err}");
         assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
     }
 

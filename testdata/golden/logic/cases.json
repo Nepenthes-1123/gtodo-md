@@ -23,5 +23,16 @@
   { "dir": "undone_inbox_uppercase", "op": "undone", "file": "inbox.md", "line": "- [X] 大文字 completed_at:2026-02-01 id:i00001" },
   { "dir": "cancel_inbox_under_heading", "op": "cancel", "file": "inbox.md", "line": "- [ ] 下  の行   " },
   { "dir": "cancel_todo_between_months", "op": "cancel", "file": "todo.md", "line": "- [ ] 取り消す id:t00001" },
-  { "dir": "cancel_todo_completed_in_preamble", "op": "cancel", "file": "todo.md", "line": "- [x] 前2 completed_at:2026-02-01" }
+  { "dir": "cancel_todo_completed_in_preamble", "op": "cancel", "file": "todo.md", "line": "- [x] 前2 completed_at:2026-02-01" },
+  { "dir": "move_todo", "op": "move", "file": "todo.md", "line": "- [ ] 移す due:2026-02-10 id:n00002", "to": "TODAY" },
+  { "dir": "move_todo_no_id", "op": "move", "file": "todo.md", "line": "- [ ] IDの無いタスク +work", "to": "SOMEDAY" },
+  { "dir": "move_todo_from_waiting", "op": "move", "file": "todo.md", "line": "- [ ] 返事待ち wait:bob id:w00001", "to": "NEXT" },
+  { "dir": "move_todo_to_waiting_keep", "op": "move", "file": "todo.md", "line": "- [ ] 待ち先つき wait:bob id:n00001", "to": "WAITING" },
+  { "dir": "move_todo_same", "op": "move", "file": "todo.md", "line": "- [ ] (A) そのまま id:n00002", "to": "NEXT" },
+  { "dir": "move_todo_preamble", "op": "move", "file": "todo.md", "line": "- [ ] 前1 id:p00001", "to": "NEXT" },
+  { "dir": "move_todo_unmanaged_section", "op": "move", "file": "todo.md", "line": "- [ ] P1 id:x00001", "to": "TODAY" },
+  { "dir": "move_todo_missing_section", "op": "move", "file": "todo.md", "line": "- [ ] いつか id:n00001", "to": "SOMEDAY" },
+  { "dir": "move_todo_custom_names", "op": "move", "file": "todo.md", "line": "- [ ] 移す id:n00001", "to": "TODAY", "sections": { "TODAY": "今日", "NEXT": "次" } },
+  { "dir": "move_todo_duplicate_headings", "op": "move", "file": "todo.md", "line": "- [ ] 移す id:n00003", "to": "TODAY" },
+  { "dir": "move_todo_duplicate_headings_same", "op": "move", "file": "todo.md", "line": "- [ ] 移す id:n00003", "to": "NEXT" }
 ]
