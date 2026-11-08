@@ -39,7 +39,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `settings.rs` — `data_dir/gtodo.json` (セクション名など、データの形と自動処理の設定。Neovim 版と共有する)。
   - `state.rs` — `.state.json` の読み書き。知らないキーも保ったまま書き戻す。`last_sections` は Neovim 版の記録であり、CLI から書き換えてはならない。
   - `lock.rs` — `.gtodo.lock` (Neovim 版と共有する排他ロック)。
-  - `logic/` — タスクリストに対する操作 (並べ替え・期日による昇格)。Lua 版 `logic/` の移植で、ファイルには触れない。
+  - `logic/` — タスクリストに対する操作 (並べ替え・期日による昇格・完了タスクの取り出し・履歴への追記)。Lua 版 `logic/` の移植で、ファイルには触れない。
   - `ops.rs` — `data_dir` のファイルを読み、`logic/` の操作をして書き戻す。2 ファイルにまたがる移動の書き込み順 (追記してから削除) もここで固定する。ロックは呼び出し元が持つ。
   - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`)。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
   - `view.rs` — 読み取り専用のビュー (一覧・検索・Queue・件数)。CLI と TUI で共有する。

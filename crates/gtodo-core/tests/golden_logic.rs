@@ -1,4 +1,4 @@
-//! タスクの並べ替え・期日による昇格が Lua 版 (gtodo-md.nvim の `logic/`) と
+//! タスクの並べ替え・期日による昇格・完了タスクの移動が Lua 版 (gtodo-md.nvim の `logic/`) と
 //! 同じファイルを書くことを検証する。期待値は `scripts/gen-golden-logic.lua` で Lua 版から生成する。
 
 use std::collections::HashSet;
@@ -65,6 +65,7 @@ fn file_operations_match_lua_implementation() {
                 let auto_move = case["auto_move_inbox_to_today"].as_bool().unwrap();
                 ops::check_dues(&data_dir, &names, today, auto_move).map(drop)
             }
+            "move_completed" => ops::move_completed(&data_dir, &names, today).map(drop),
             op => panic!("unknown op {op}"),
         };
         if let Err(e) = result {

@@ -1,4 +1,4 @@
--- タスクの並べ替え・期日による昇格のゴールデンデータを、Lua 版 (gtodo-md.nvim) の
+-- タスクの並べ替え・期日による昇格・完了タスクの移動のゴールデンデータを、Lua 版 (gtodo-md.nvim) の
 -- logic/ から生成する。
 --
 -- 使い方:
@@ -16,7 +16,7 @@ if not plugin_dir or plugin_dir == "" then
 end
 package.path = table.concat({ plugin_dir .. "/lua/?.lua", plugin_dir .. "/lua/?/init.lua", package.path }, ";")
 
--- 正午にする理由は gen-golden-task.lua と同じ。
+-- 月をまたぐ完了タスクを検査できるよう、月初に近い日にする。正午にする理由は gen-golden-task.lua と同じ。
 local TODAY = { year = 2026, month = 2, day = 3 }
 local real_time, real_date = os.time, os.date
 local fixed_now = real_time({ year = TODAY.year, month = TODAY.month, day = TODAY.day, hour = 12 })
@@ -84,11 +84,13 @@ for i, case in ipairs(cases) do
 	config.last_sections = {}
 
 	writes = {}
-	local inbox, todo = dir .. "/inbox.md", dir .. "/todo.md"
+	local inbox, todo, done = dir .. "/inbox.md", dir .. "/todo.md", dir .. "/done.md"
 	if case.op == "sort" then
 		logic.sort_todo_file(todo)
 	elseif case.op == "check_dues" then
 		logic.check_dues(inbox, todo)
+	elseif case.op == "move_completed" then
+		logic.move_completed_tasks(inbox, todo, done)
 	else
 		error("unknown op: " .. tostring(case.op))
 	end

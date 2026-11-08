@@ -3,5 +3,8 @@
   { "dir": "dues", "op": "check_dues" },
   { "dir": "dues_no_auto", "op": "check_dues", "auto_move_inbox_to_today": false },
   { "dir": "dues_none", "op": "check_dues" },
-  { "dir": "dues_custom_names", "op": "check_dues", "sections": { "TODAY": "今日", "NEXT": "次" } }
+  { "dir": "dues_custom_names", "op": "check_dues", "sections": { "TODAY": "今日", "NEXT": "次" } },
+  { "dir": "completed", "op": "move_completed" },
+  { "dir": "completed_no_done_file", "op": "move_completed" },
+  { "dir": "completed_none", "op": "move_completed" }
 ]
