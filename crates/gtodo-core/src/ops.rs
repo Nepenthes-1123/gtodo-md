@@ -125,19 +125,27 @@ pub fn add_task(
     match to {
         Destination::Inbox => file.doc.preamble.push(item),
         Destination::Section(key) => {
-            let name = names.name(key);
-            match file.doc.sections.iter_mut().find(|s| s.name == name) {
-                Some(section) => section.items.push(item),
-                None => file.doc.sections.push(Section {
-                    name: name.to_string(),
-                    items: vec![item],
-                }),
-            }
+            section_items(&mut file.doc, names.name(key)).push(item);
             sort::sort_sections(&mut file.doc);
         }
     }
     file.write()?;
     Ok(id)
+}
+
+/// 名前のセクションの項目を返す。見出しが無ければ末尾に作る。
+fn section_items<'a>(doc: &'a mut Document, name: &str) -> &'a mut Vec<Item> {
+    let i = match doc.sections.iter().position(|s| s.name == name) {
+        Some(i) => i,
+        None => {
+            doc.sections.push(Section {
+                name: name.to_string(),
+                items: Vec::new(),
+            });
+            doc.sections.len() - 1
+        }
+    };
+    &mut doc.sections[i].items
 }
 
 /// どの文書でも使われていない ID を発行する。
