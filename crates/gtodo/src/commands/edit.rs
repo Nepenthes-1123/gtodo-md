@@ -11,9 +11,25 @@ use crate::commands::task_input;
 use crate::workspace::Workspace;
 use crate::writing;
 
-pub fn run(ws: &Workspace, key: &str, text: &str, warn: &mut impl FnMut(String), out: &mut String) -> Result<()> {
+/// 本文以外で指定する項目。空にするとその項目を消す。本文中のタグより優先する。
+#[derive(Debug, Default)]
+pub struct Fields {
+    pub due: Option<String>,
+    pub project: Option<String>,
+    pub context: Option<String>,
+    pub priority: Option<String>,
+}
+
+pub fn run(
+    ws: &Workspace,
+    key: &str,
+    text: &str,
+    fields: Fields,
+    warn: &mut impl FnMut(String),
+    out: &mut String,
+) -> Result<()> {
     // ロックを取る前に検証し、受け付けられない入力では何も書かない。
-    let changes = changes(text, ws.today)?;
+    let changes = changes(text, fields, ws.today)?;
     let (task, dues) = writing::with_lock(ws, true, warn, || {
         let edited = ops::edit_task(&ws.data_dir, &ws.names, ws.today, key, &changes)?;
         let dues = check_dues_and_sort(ws, edited.file == FileKind::Todo);
@@ -43,7 +59,7 @@ fn check_dues_and_sort(ws: &Workspace, sort: bool) -> Result<DueOutcome> {
     Ok(dues)
 }
 
-fn changes(text: &str, today: NaiveDate) -> Result<Changes> {
+fn changes(text: &str, fields: Fields, today: NaiveDate) -> Result<Changes> {
     let mut changes = Changes::default();
     if !text.trim().is_empty() {
         let task = task_input::parse_text(text, today, "editing")?;
@@ -61,11 +77,35 @@ fn changes(text: &str, today: NaiveDate) -> Result<Changes> {
         changes.wait = task.wait.map(Some);
     }
 
+    // `+` だけの値は消す指定ではなく空の名前として扱い、`add` と同じく書けない値としてはじく。
+    let unless_empty = |value: String, prefix: char| {
+        (!value.is_empty()).then(|| value.strip_prefix(prefix).unwrap_or(&value).to_string())
+    };
+    if let Some(due) = fields.due {
+        changes.due = Some(match due.as_str() {
+            "" => None,
+            due => Some(task_input::parse_due(due, today)?),
+        });
+    }
+    if let Some(project) = fields.project {
+        changes.project = Some(unless_empty(project, '+'));
+    }
+    if let Some(context) = fields.context {
+        changes.context = Some(unless_empty(context, '@'));
+    }
+    if let Some(priority) = fields.priority {
+        let mut chars = priority.chars();
+        changes.priority = Some(match (chars.next(), chars.next()) {
+            (None, _) => None,
+            (Some(p), None) => Some(p),
+            _ => bail!("--priority takes one letter (A-Z)"),
+        });
+    }
     if let Some(Some(due)) = &changes.due {
         task_input::check_due(due, today)?;
     }
     if changes.is_empty() {
-        bail!("nothing to change: give the new text");
+        bail!("nothing to change: give the new text or an option such as --due");
     }
 
     let mut probe = Task {
@@ -86,7 +126,7 @@ mod tests {
     }
 
     fn text(text: &str) -> Result<Changes> {
-        changes(text, today())
+        changes(text, Fields::default(), today())
     }
 
     #[test]
@@ -113,6 +153,39 @@ mod tests {
     }
 
     #[test]
+    fn options_override_the_text_and_empty_options_remove_values() {
+        let fields = Fields {
+            due: Some(String::new()),
+            project: Some(String::new()),
+            context: Some("@office".into()),
+            priority: Some(String::new()),
+        };
+        assert_eq!(
+            changes("(A) 本文 +home due:today", fields, today()).unwrap(),
+            Changes {
+                content: Some("本文".into()),
+                priority: Some(None),
+                project: Some(None),
+                context: Some(Some("office".into())),
+                due: Some(None),
+                ..Changes::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_due_option_replaces_an_unreadable_due_in_the_text() {
+        let fields = Fields {
+            due: Some("today".into()),
+            ..Fields::default()
+        };
+        assert_eq!(
+            changes("x due:someday", fields, today()).unwrap().due,
+            Some(Some("2026-02-03".into()))
+        );
+    }
+
+    #[test]
     fn nothing_to_change_is_an_error() {
         assert!(text("").is_err());
         assert!(text("  ").is_err());
@@ -122,6 +195,31 @@ mod tests {
     fn values_that_cannot_be_written_are_rejected() {
         for t in ["x id:abcdef", "x created:2026-01-01", "x due:someday", "two\nlines"] {
             assert!(text(t).is_err(), "{t:?}");
+        }
+        let field = |f: Fields| changes("", f, today());
+        for f in [
+            Fields {
+                project: Some("two words".into()),
+                ..Fields::default()
+            },
+            Fields {
+                priority: Some("a".into()),
+                ..Fields::default()
+            },
+            Fields {
+                priority: Some("AB".into()),
+                ..Fields::default()
+            },
+            Fields {
+                project: Some("+".into()),
+                ..Fields::default()
+            },
+            Fields {
+                due: Some("2026-02-30".into()),
+                ..Fields::default()
+            },
+        ] {
+            assert!(field(f).is_err());
         }
     }
 }

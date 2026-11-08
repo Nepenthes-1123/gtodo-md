@@ -920,6 +920,30 @@ fn edit_changes_only_what_is_given() {
 }
 
 #[test]
+fn edit_options_change_or_remove_values() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let next_week = (Local::now().date_naive() + Days::new(7))
+        .format("%Y-%m-%d")
+        .to_string();
+    f.stdout(&[
+        "edit",
+        "aaaaaa",
+        "wait:bob",
+        "--due",
+        "+1w",
+        "-p",
+        "",
+        "--priority",
+        "B",
+    ]);
+    assert!(read(&f, "todo.md").contains(&format!(
+        "- [ ] (B) 今日1 @office due:{next_week} created:{} wait:bob id:aaaaaa\n",
+        today_str()
+    )));
+}
+
+#[test]
 fn a_task_edited_to_be_due_moves_to_today() {
     let f = sample();
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
@@ -945,6 +969,8 @@ fn edits_that_cannot_be_done_as_asked_change_nothing() {
         (&["edit", "aaaaaa", "x", "created:2026-01-01"], "created:"),
         (&["edit", "aaaaaa", "due:someday"], "invalid due date"),
         (&["edit", "dddddd", "x"], "done.md"),
+        (&["edit", "aaaaaa", "--priority", "ab"], "--priority"),
+        (&["edit", "aaaaaa", "--due", "2026-02-30"], "invalid due date"),
     ] {
         let out = f.run(args);
         assert!(!out.status.success(), "{args:?}");
