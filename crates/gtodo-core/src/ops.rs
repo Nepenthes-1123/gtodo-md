@@ -31,6 +31,8 @@ pub enum OpError {
     AlreadyCompleted(String),
     #[error("{0} is not completed")]
     NotCompleted(String),
+    #[error("{0} is completed; completed tasks cannot be moved")]
+    MoveCompleted(String),
     /// 2 ファイルにまたがる移動で、追記した後の削除に失敗した。削除できなかったタスクは両方のファイルにある。
     #[error(
         "the tasks were added to {} but some could not be removed from where they were, so they may appear in both files; remove the duplicates by hand: {source}",
@@ -125,19 +127,27 @@ pub fn add_task(
     match to {
         Destination::Inbox => file.doc.preamble.push(item),
         Destination::Section(key) => {
-            let name = names.name(key);
-            match file.doc.sections.iter_mut().find(|s| s.name == name) {
-                Some(section) => section.items.push(item),
-                None => file.doc.sections.push(Section {
-                    name: name.to_string(),
-                    items: vec![item],
-                }),
-            }
+            section_items(&mut file.doc, names.name(key)).push(item);
             sort::sort_sections(&mut file.doc);
         }
     }
     file.write()?;
     Ok(id)
+}
+
+/// 名前のセクションの項目を返す。見出しが無ければ末尾に作る。
+fn section_items<'a>(doc: &'a mut Document, name: &str) -> &'a mut Vec<Item> {
+    let i = match doc.sections.iter().position(|s| s.name == name) {
+        Some(i) => i,
+        None => {
+            doc.sections.push(Section {
+                name: name.to_string(),
+                items: Vec::new(),
+            });
+            doc.sections.len() - 1
+        }
+    };
+    &mut doc.sections[i].items
 }
 
 /// どの文書でも使われていない ID を発行する。
@@ -291,6 +301,125 @@ pub fn cancel(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, key: &
     };
     append_then_remove(data_dir.root(), cancelled_path.clone(), append, remove)?;
     Ok(result)
+}
+
+/// [`move_task`] で、移動先が Waiting のときの待ち先 (`wait:`) の扱い。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wait {
+    /// 今の待ち先を残す (Neovim 版で、待ち先の入力欄を初期値のまま確定したときと同じ)。
+    Keep,
+    Set(String),
+    /// 待ち先を消す (Neovim 版で、入力欄を空にして確定したときと同じ)。
+    Remove,
+}
+
+/// [`move_task`] の結果。どれも操作したタスクを持つ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Moved {
+    /// 別のセクションへ移した。
+    Moved(Task),
+    /// Waiting にあるタスクの待ち先だけを変えた。
+    WaitChanged(Task),
+    /// すでに移動先のセクションにあり、何も書かなかった。
+    AlreadyThere(Task),
+}
+
+/// キーで指定したタスクを todo.md のセクションへ移す (Lua 版 `editor.lua` の
+/// `move_current_task_to`)。
+///
+/// 移動先が Waiting でなければ待ち先を消す (`wait` は見ない)。すでに Waiting にあるタスクは、
+/// 待ち先を変えるときだけ書く。移した後は、移動元と移動先のセクションを並べ替える
+/// (inbox.md からの移動では移動先だけ)。
+///
+/// 移動先の見出しが無ければ末尾に作る。Lua 版は inbox.md から移すとき、見出しの無いセクションへ
+/// 加えたタスクを書き出さずに失う。
+pub fn move_task(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    key: &str,
+    to: SectionKey,
+    wait: Wait,
+) -> Result<Moved, OpError> {
+    let mut inbox = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+    let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let at = locate(data_dir, names, today, &inbox.doc, &todo.doc, key)?;
+    let id = unused_id(&[&inbox.doc, &todo.doc]);
+    let target = names.name(to);
+    let same = at.file == FileKind::Todo && at.section.map(|i| todo.doc.sections[i].name.as_str()) == Some(target);
+    let file = match at.file {
+        FileKind::Inbox => &mut inbox,
+        _ => &mut todo,
+    };
+
+    let items = file.items_mut(at.section);
+    let Item::Task(item) = &mut items[at.index] else {
+        unreachable!("key::find only returns tasks");
+    };
+    // 完了したタスクは次の日次の整理で done.md へ移るため、セクションを変える意味が無い (Lua 版と同じ)。
+    if item.task.status == Status::Done {
+        return Err(OpError::MoveCompleted(key.to_string()));
+    }
+    let new_wait = match (to, wait) {
+        (SectionKey::Waiting, Wait::Keep) => item.task.wait.clone(),
+        (SectionKey::Waiting, Wait::Set(w)) => Some(w),
+        _ => None,
+    };
+    if same {
+        if to != SectionKey::Waiting || new_wait == item.task.wait {
+            return Ok(Moved::AlreadyThere(item.task.clone()));
+        }
+        // Lua 版は待ち先だけを変えるときは並べ替えない。
+        item.task.wait = new_wait;
+        item.task.id.get_or_insert(id);
+        let result = item.task.clone();
+        file.write()?;
+        return Ok(Moved::WaitChanged(result));
+    }
+
+    let Item::Task(item) = items.remove(at.index) else {
+        unreachable!("key::find only returns tasks");
+    };
+    let lnum = item.lnum;
+    let mut task = item.task;
+    task.wait = new_wait;
+    // 書き出すときにファイル内の重複として振り直されると、利用者に知らせた ID と食い違うため、先に決める。
+    task.id.get_or_insert(id);
+    let result = task.clone();
+    let moved = Item::Task(Box::new(TaskItem {
+        line: task.clone().serialize(),
+        task,
+        lnum: 0,
+    }));
+
+    match at.file {
+        FileKind::Todo => {
+            sort::sort_items(todo.items_mut(at.section));
+            let items = section_items(&mut todo.doc, target);
+            items.push(moved);
+            sort::sort_items(items);
+            todo.write()?;
+        }
+        _ => {
+            // Lua 版は todo.md に見出しが 1 つも無ければ、すべてのセクションの見出しを書く。
+            if todo.doc.sections.is_empty() {
+                for k in SectionKey::ALL {
+                    section_items(&mut todo.doc, names.name(k));
+                }
+            }
+            let items = section_items(&mut todo.doc, target);
+            items.push(moved);
+            sort::sort_items(items);
+            let added = todo.path.clone();
+            // set_status で 1 行だけを書き換えるのと同じ理由。
+            let remove = || {
+                inbox.lines.remove(lnum - 1);
+                inbox.write_lines()
+            };
+            append_then_remove(data_dir.root(), added, || todo.write(), remove)?;
+        }
+    }
+    Ok(Moved::Moved(result))
 }
 
 /// todo.md の各セクションのタスクを並べ替える。
@@ -632,6 +761,109 @@ mod tests {
                 .contains("id:bbbbbb")
         );
         assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
+    }
+
+    const MOVE_INBOX: &str = "# Inbox\n- [ ] 受信 id:aaaaaa\n";
+
+    fn move_to_next(d: &DataDir) -> Result<(), OpError> {
+        move_task(
+            d,
+            &SectionNames::default(),
+            today(),
+            "aaaaaa",
+            SectionKey::Next,
+            Wait::Keep,
+        )
+        .map(drop)
+    }
+
+    #[test]
+    fn a_moved_inbox_task_stays_in_the_inbox_when_todo_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("inbox.md"), MOVE_INBOX).unwrap();
+        make_unwritable(dir.path(), "todo.md", "# Todo\n\n## Next\n");
+
+        assert!(matches!(run(dir.path(), move_to_next), Err(OpError::Write(_))));
+        assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), MOVE_INBOX);
+    }
+
+    #[test]
+    fn a_moved_inbox_task_is_left_in_both_files_when_the_inbox_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        make_unwritable(dir.path(), "inbox.md", MOVE_INBOX);
+        fs::write(dir.path().join("todo.md"), "# Todo\n\n## Next\n").unwrap();
+
+        let err = run(dir.path(), move_to_next).unwrap_err();
+        assert!(
+            matches!(&err, OpError::PartiallyMoved { added, .. } if added.ends_with("todo.md")),
+            "{err}"
+        );
+        assert!(
+            fs::read_to_string(dir.path().join("todo.md"))
+                .unwrap()
+                .contains("id:aaaaaa")
+        );
+        assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), MOVE_INBOX);
+    }
+
+    /// Lua 版は todo.md に書き出さないまま inbox.md から消すため、タスクが無くなる。
+    #[test]
+    fn a_task_moved_from_the_inbox_to_a_missing_section_is_kept_under_a_new_heading() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("inbox.md"), MOVE_INBOX).unwrap();
+        fs::write(dir.path().join("todo.md"), "# Todo\n\n## Today\n").unwrap();
+        move_to_next(&DataDir::new(dir.path())).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("todo.md")).unwrap(),
+            "# Todo\n\n## Today\n\n## Next\n\n- [ ] 受信 id:aaaaaa\n"
+        );
+        assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), "# Inbox\n");
+    }
+
+    /// Lua 版は見出しが別名 (現在の名前でない) のセクションのタスクを見つけられず、何も書かない。
+    #[test]
+    fn tasks_under_an_alias_heading_can_be_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let todo = "# Todo\n\n## Today\n\n- [ ] 今日 id:aaaaaa\n\n## Next\n";
+        fs::write(dir.path().join("todo.md"), todo).unwrap();
+        let names = SectionNames::from_last(&[Some("今日".into()), None, None, None]).unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let move_to = |to| move_task(&data_dir, &names, today(), "aaaaaa", to, Wait::Keep).unwrap();
+
+        assert!(matches!(move_to(SectionKey::Today), Moved::AlreadyThere(_)));
+        assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), todo);
+        assert!(matches!(move_to(SectionKey::Next), Moved::Moved(_)));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("todo.md")).unwrap(),
+            "# Todo\n\n## 今日\n\n## Next\n\n- [ ] 今日 id:aaaaaa\n"
+        );
+    }
+
+    #[test]
+    fn completed_tasks_are_not_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("todo.md"), TODO).unwrap();
+        let err = move_task(
+            &DataDir::new(dir.path()),
+            &SectionNames::default(),
+            today(),
+            "bbbbbb",
+            SectionKey::Next,
+            Wait::Keep,
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::MoveCompleted(_)), "{err}");
+        assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
+    }
+
+    #[test]
+    fn crlf_is_kept_when_a_task_is_moved_out_of_the_inbox() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("inbox.md"), MOVE_INBOX.replace('\n', "\r\n")).unwrap();
+        fs::write(dir.path().join("todo.md"), "# Todo\r\n\r\n## Next\r\n").unwrap();
+        move_to_next(&DataDir::new(dir.path())).unwrap();
+        assert_crlf(&dir.path().join("inbox.md"));
+        assert_crlf(&dir.path().join("todo.md"));
     }
 
     #[test]

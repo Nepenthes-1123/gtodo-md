@@ -1,5 +1,5 @@
--- タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了・キャンセルの
--- ゴールデンデータを、Lua 版 (gtodo-md.nvim) の logic/ と editor.lua から生成する。
+-- タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了・キャンセル・
+-- セクション間の移動のゴールデンデータを、Lua 版 (gtodo-md.nvim) の logic/ と editor.lua から生成する。
 --
 -- 使い方:
 --   nvim --clean --headless -l scripts/gen-golden-logic.lua <gtodo-md.nvim のパス>
@@ -92,7 +92,7 @@ for i, case in ipairs(cases) do
 		logic.check_dues(inbox, todo)
 	elseif case.op == "move_completed" then
 		logic.move_completed_tasks(inbox, todo, done)
-	elseif case.op == "done" or case.op == "undone" or case.op == "cancel" then
+	elseif case.op == "done" or case.op == "undone" or case.op == "cancel" or case.op == "move" then
 		-- editor.lua の操作はカーソル行のタスクを対象にするため、ファイルを開いて対象の行へ移る。
 		vim.cmd("silent! %bwipeout!")
 		vim.cmd.edit(vim.fn.fnameescape(dir .. "/" .. case.file))
@@ -106,6 +106,12 @@ for i, case in ipairs(cases) do
 		vim.api.nvim_win_set_cursor(0, { row, 0 })
 		if case.op == "cancel" then
 			editor.cancel_current_task()
+		elseif case.op == "move" then
+			-- Waiting へ移すときの待ち先の入力欄。`wait` の無いケースは初期値 (今の待ち先) のまま確定する。
+			vim.ui.input = function(opts, on_confirm)
+				on_confirm(case.wait == nil and opts.default or case.wait)
+			end
+			editor.move_current_task_to(config.sections[case.to])
 		else
 			editor.toggle_complete()
 		end
@@ -120,6 +126,12 @@ for i, case in ipairs(cases) do
 	local target = ""
 	if case.file then
 		target = string.format('"file":%s,"line":%s,', vim.json.encode(case.file), vim.json.encode(case.line))
+	end
+	if case.to then
+		target = target .. string.format('"to":%s,', vim.json.encode(case.to))
+	end
+	if case.wait then
+		target = target .. string.format('"wait":%s,', vim.json.encode(case.wait))
 	end
 	local entry = string.format(
 		'{"dir":%s,"op":%s,%s"auto_move_inbox_to_today":%s,"sections_config":%s,"writes":[%s]}',

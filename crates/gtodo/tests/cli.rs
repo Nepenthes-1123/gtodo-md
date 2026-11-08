@@ -765,18 +765,135 @@ fn cancel_moves_the_task_under_this_month_in_cancelled_md() {
 #[test]
 fn the_reported_id_of_a_task_without_one_is_the_id_written() {
     for (op, file, line, written_to) in [
-        ("done", "todo.md", "- [ ] 今日", "todo.md"),
-        ("done", "inbox.md", "- [ ] 受信", "inbox.md"),
-        ("cancel", "todo.md", "- [ ] 今日", "cancelled.md"),
-        ("cancel", "inbox.md", "- [ ] 受信", "cancelled.md"),
+        (&["done"][..], "todo.md", "- [ ] 今日", "todo.md"),
+        (&["done"], "inbox.md", "- [ ] 受信", "inbox.md"),
+        (&["cancel"], "todo.md", "- [ ] 今日", "cancelled.md"),
+        (&["cancel"], "inbox.md", "- [ ] 受信", "cancelled.md"),
+        (&["move", "next"], "todo.md", "- [ ] 今日", "todo.md"),
+        (&["move", "next"], "inbox.md", "- [ ] 受信", "todo.md"),
     ] {
         let f = Fixture::new();
         f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
         f.write("inbox.md", "# Inbox\n\n- [ ] 受信\n");
         f.write("todo.md", "# Todo\n\n## Today\n\n- [ ] 今日\n- [ ] 他\n");
-        let out = f.stdout(&[op, &gtodo_core::key::line_key(line)]);
+        let key = gtodo_core::key::line_key(line);
+        let args: Vec<&str> = [op[0], &key].into_iter().chain(op[1..].iter().copied()).collect();
+        let out = f.stdout(&args);
         let id = out.split_whitespace().nth(1).unwrap().trim_end_matches(':');
-        assert_eq!(id.len(), 6, "{op} {file}: {out}");
-        assert!(read(&f, written_to).contains(&format!("id:{id}")), "{op} {file}");
+        assert_eq!(id.len(), 6, "{op:?} {file}: {out}");
+        assert!(read(&f, written_to).contains(&format!("id:{id}")), "{op:?} {file}");
     }
+}
+
+#[test]
+fn move_puts_a_task_in_another_section_and_drops_its_wait_outside_waiting() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(f.stdout(&["move", "ccc", "next"]), "moved cccccc to Next: 待ち1\n");
+    let todo = read(&f, "todo.md");
+    let next = &todo[todo.find("## Next").unwrap()..todo.find("## Waiting").unwrap()];
+    assert!(next.contains("- [ ] 待ち1 id:cccccc\n"), "{todo}");
+}
+
+#[test]
+fn moving_to_waiting_keeps_the_wait() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [ ] 今日 wait:bob id:aaaaaa\n\n## Next\n\n## Waiting\n\n## Someday\n",
+    );
+    assert_eq!(
+        f.stdout(&["move", "aaaaaa", "waiting"]),
+        "moved aaaaaa to Waiting (wait:bob): 今日\n"
+    );
+    assert!(read(&f, "todo.md").contains("## Waiting\n\n- [ ] 今日 wait:bob id:aaaaaa\n"));
+}
+
+#[test]
+fn move_takes_a_task_out_of_the_inbox() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(f.stdout(&["move", "111111", "today"]), "moved 111111 to Today: 受信2\n");
+    assert!(!read(&f, "inbox.md").contains("111111"));
+    assert!(read(&f, "todo.md").contains("- [ ] 受信2 +work id:111111"));
+}
+
+#[test]
+fn the_wait_option_sets_or_removes_the_wait() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(
+        f.stdout(&["move", "aaaaaa", "waiting", "--wait", "alice"]),
+        "moved aaaaaa to Waiting (wait:alice): 今日1\n"
+    );
+    assert_eq!(
+        f.stdout(&["move", "aaaaaa", "waiting", "--wait", "carol"]),
+        "set wait:carol on aaaaaa: 今日1\n"
+    );
+    assert!(read(&f, "todo.md").contains("- [ ] (A) 今日1 +work @office wait:carol id:aaaaaa"));
+    assert_eq!(
+        f.stdout(&["move", "aaaaaa", "waiting", "--wait", ""]),
+        "removed wait: from aaaaaa: 今日1\n"
+    );
+    assert!(read(&f, "todo.md").contains("- [ ] (A) 今日1 +work @office id:aaaaaa"));
+
+    assert_eq!(
+        f.stdout(&["move", "111111", "waiting", "--wait", "bob"]),
+        "moved 111111 to Waiting (wait:bob): 受信2\n"
+    );
+    assert!(read(&f, "todo.md").contains("- [ ] 受信2 +work wait:bob id:111111"));
+}
+
+/// 待ち先だけを変えたときも、ID の無いタスクに付いた ID を知らせる。
+#[test]
+fn changing_the_wait_of_a_task_without_an_id_reports_the_id_written() {
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write("todo.md", "# Todo\n\n## Waiting\n\n- [ ] 待ち\n- [ ] 他\n");
+    let key = gtodo_core::key::line_key("- [ ] 待ち");
+    let out = f.stdout(&["move", &key, "waiting", "--wait", "bob"]);
+    let id = out
+        .strip_prefix("set wait:bob on ")
+        .and_then(|rest| rest.strip_suffix(": 待ち\n"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(read(&f, "todo.md").contains(&format!("- [ ] 待ち wait:bob id:{id}\n")));
+}
+
+#[test]
+fn moving_a_task_to_the_section_it_is_in_writes_nothing() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let before = snapshot(&f.data_dir());
+    assert_eq!(f.stdout(&["move", "aaaaaa", "today"]), "aaaaaa is already in Today\n");
+    assert_eq!(
+        f.stdout(&["move", "cccccc", "waiting"]),
+        "cccccc is already in Waiting\n"
+    );
+    assert_eq!(
+        f.stdout(&["move", "cccccc", "waiting", "--wait", "bob"]),
+        "cccccc is already in Waiting\n"
+    );
+    let key = gtodo_core::key::line_key("- [ ] 次1 @home");
+    assert_eq!(f.stdout(&["move", &key, "next"]), format!("{key} is already in Next\n"));
+    assert_eq!(snapshot(&f.data_dir()), before);
+}
+
+#[test]
+fn moves_that_cannot_be_done_as_asked_change_nothing() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let before = snapshot(&f.data_dir());
+    for (args, message) in [
+        (&["move", "aaaaaa", "next", "--wait", "bob"][..], "--wait"),
+        (&["move", "aaaaaa", "waiting", "--wait", "bob smith"], "wait:"),
+        (&["move", "bbbbbb", "next"], "completed"),
+        (&["move", "dddddd", "next"], "done.md"),
+    ] {
+        let out = f.run(args);
+        assert!(!out.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+    assert_eq!(snapshot(&f.data_dir()), before);
 }

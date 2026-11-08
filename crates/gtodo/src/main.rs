@@ -15,6 +15,7 @@ use gtodo_core::task::Status;
 
 use crate::commands::add::{Fields, To};
 use crate::commands::list::Target;
+use crate::commands::move_task::To as MoveTo;
 use crate::workspace::Workspace;
 
 /// GTD-style todo manager backed by Markdown, compatible with gtodo-md.nvim.
@@ -66,6 +67,16 @@ enum Command {
     Cancel {
         /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
         task: String,
+    },
+    /// Move a task in inbox.md or todo.md to a section of todo.md
+    Move {
+        /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
+        task: String,
+        #[arg(value_enum)]
+        to: MoveTo,
+        /// Who you are waiting for (only with waiting; "" removes it, omitted keeps it)
+        #[arg(long, value_name = "WHO")]
+        wait: Option<String>,
     },
     /// List tasks (inbox.md and todo.md by default)
     List {
@@ -154,6 +165,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
         Command::Done { task } => commands::done::done(&ws, &task, &mut warn, out),
         Command::Undone { task } => commands::done::undone(&ws, &task, &mut warn, out),
         Command::Cancel { task } => commands::cancel::run(&ws, &task, &mut warn, out),
+        Command::Move { task, to, wait } => commands::move_task::run(&ws, &task, to, wait, &mut warn, out),
         Command::List { target, json } => commands::list::run(&ws, target, json, out),
         Command::Search {
             terms,
