@@ -105,16 +105,7 @@ pub fn add_task(
         _ => FileKind::Inbox,
     };
     let other = Loaded::read(data_dir, other, names, today)?;
-    let used: HashSet<&str> = [&file.doc, &other.doc]
-        .into_iter()
-        .flat_map(|doc| doc.tasks().filter_map(|(_, t)| t.task.id.as_deref()))
-        .collect();
-    let id = loop {
-        let id = task::generate_id();
-        if !used.contains(id.as_str()) {
-            break id;
-        }
-    };
+    let id = unused_id(&[&file.doc, &other.doc]);
     task.id = Some(id.clone());
     let item = Item::Task(Box::new(TaskItem {
         line: task.clone().serialize(),
@@ -138,6 +129,20 @@ pub fn add_task(
     }
     file.write()?;
     Ok(id)
+}
+
+/// どの文書でも使われていない ID を発行する。
+fn unused_id(docs: &[&Document]) -> String {
+    let used: HashSet<&str> = docs
+        .iter()
+        .flat_map(|doc| doc.tasks().filter_map(|(_, t)| t.task.id.as_deref()))
+        .collect();
+    loop {
+        let id = task::generate_id();
+        if !used.contains(id.as_str()) {
+            return id;
+        }
+    }
 }
 
 /// todo.md の各セクションのタスクを並べ替える。
