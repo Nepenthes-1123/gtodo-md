@@ -7,6 +7,7 @@
 
 pub mod atomic;
 pub mod config;
+pub mod daily;
 pub mod date;
 pub mod document;
 pub mod key;

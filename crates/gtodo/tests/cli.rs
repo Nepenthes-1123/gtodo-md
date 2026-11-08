@@ -383,19 +383,23 @@ fn sort_moves_due_tasks_to_today_and_sorts_todo() {
     assert!(order.is_sorted(), "{todo}");
 }
 
+/// 日付が変わった日にも、ロールオーバーで inbox のタスクを移さず、警告は 1 回だけ出すこと。
 #[test]
-fn due_inbox_tasks_are_reported_when_they_are_not_moved_automatically() {
-    let f = Fixture::new();
-    f.write("gtodo.json", r#"{"auto_move_inbox_to_today":false}"#);
-    f.write(
-        "inbox.md",
-        &format!("# Inbox\n\n- [ ] 受信 due:{} id:aaaaaa\n", today_str()),
-    );
-    let out = f.run(&["sort"]);
-    assert!(out.status.success(), "{out:?}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(stderr.matches("受信").count(), 1, "{stderr}");
-    assert!(read(&f, "inbox.md").contains("id:aaaaaa"));
+fn due_inbox_tasks_are_reported_once_when_they_are_not_moved_automatically() {
+    for last_opened in [today_str(), "2000-01-01".to_string()] {
+        let f = Fixture::new();
+        f.write(".state.json", &format!(r#"{{"last_opened":"{last_opened}"}}"#));
+        f.write("gtodo.json", r#"{"auto_move_inbox_to_today":false}"#);
+        f.write(
+            "inbox.md",
+            &format!("# Inbox\n\n- [ ] 受信 due:{} id:aaaaaa\n", today_str()),
+        );
+        let out = f.run(&["sort"]);
+        assert!(out.status.success(), "{out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.matches("受信").count(), 1, "{last_opened}: {stderr}");
+        assert!(read(&f, "inbox.md").contains("id:aaaaaa"), "{last_opened}");
+    }
 }
 
 #[test]
@@ -424,6 +428,39 @@ fn headings_keep_the_section_names_neovim_used_last_without_gtodo_json() {
         read(&f, "todo.md").starts_with("# Todo\n\n## 本日\n"),
         "{}",
         read(&f, "todo.md")
+    );
+}
+
+#[test]
+fn the_daily_rollover_runs_before_the_command_once_a_day() {
+    let f = Fixture::new();
+    f.write(".state.json", r#"{"last_opened":"2000-01-01","last_notify_time":5}"#);
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [x] 完了 completed_at:2026-01-10 id:aaaaaa\n",
+    );
+    let out = f.run(&["sort"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("moved 1 completed task(s) to done.md"));
+    assert!(
+        read(&f, "done.md").contains("## 2026-01\n\n- [x] 完了"),
+        "{}",
+        read(&f, "done.md")
+    );
+    let state: Value = serde_json::from_str(&read(&f, ".state.json")).unwrap();
+    assert_eq!(
+        state,
+        serde_json::json!({"last_opened": today_str(), "last_notify_time": 5})
+    );
+
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [x] 今日の完了 completed_at:2026-01-11 id:bbbbbb\n",
+    );
+    f.stdout(&["sort"]);
+    assert!(
+        read(&f, "todo.md").contains("id:bbbbbb"),
+        "the rollover already ran today"
     );
 }
 
@@ -487,4 +524,26 @@ fn write_commands_clean_up_stale_temporary_files() {
     f.stdout(&["sort"]);
     assert!(!f.data_dir().join(".todo.md.1.1.tmp").exists());
     assert!(!f.data_dir().join("projects/.p.md.1.1.tmp").exists());
+}
+
+/// 記録だけ失敗してもコマンドは成功させ、次の機会にもう一度実行されることを知らせる。
+#[cfg(unix)]
+#[test]
+fn a_rollover_that_cannot_be_recorded_is_warned_and_the_command_still_runs() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let f = sample();
+    // 読めるが書けない .state.json (書き込めないディレクトリにある実体へのリンク)。
+    let ro = f.dir.path().join("ro");
+    fs::create_dir(&ro).unwrap();
+    fs::write(ro.join(".state.json"), r#"{"last_opened":"2000-01-01"}"#).unwrap();
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o500)).unwrap();
+    symlink(ro.join(".state.json"), f.data_dir().join(".state.json")).unwrap();
+
+    let out = f.run(&["sort"]);
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("will run again"), "{stderr}");
+    assert!(read(&f, "done.md").contains("id:bbbbbb"), "the rollover itself ran");
 }

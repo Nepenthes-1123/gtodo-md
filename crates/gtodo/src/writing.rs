@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, bail};
 use gtodo_core::atomic;
+use gtodo_core::daily;
 use gtodo_core::lock::Lock;
 use gtodo_core::logic::due::DueOutcome;
 use gtodo_core::ops;
@@ -15,8 +16,17 @@ use crate::workspace::Workspace;
 /// それと重なっただけなら待てば取れる。長く待っても取れないのは他の CLI が実行中の場合。
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 
-/// ロックを持ったまま `command` を実行する。その前に、無いファイルを作る。
-pub fn with_lock<T>(ws: &Workspace, warn: &mut impl FnMut(String), command: impl FnOnce() -> Result<T>) -> Result<T> {
+/// ロックを持ったまま `command` を実行する。その前に、無いファイルを作り、
+/// 日付が変わっていれば日次ロールオーバーを実行する (Neovim 版の 60 秒タイマーの代わり)。
+///
+/// `command` が自分で期日をチェックして知らせるなら `checks_dues` を真にする。ロールオーバーでの
+/// 期日の警告と同じ内容を 2 回出さないため。
+pub fn with_lock<T>(
+    ws: &Workspace,
+    checks_dues: bool,
+    warn: &mut impl FnMut(String),
+    command: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     if let Some(e) = &ws.unusable_last_names {
         // 既定の名前で書くと、Neovim 版の見出しを別のセクションとして書き換えてしまう。
         bail!(
@@ -30,6 +40,19 @@ pub fn with_lock<T>(ws: &Workspace, warn: &mut impl FnMut(String), command: impl
     for dir in [root.to_path_buf(), root.join("projects")] {
         if let Err(e) = atomic::sweep_stale_tmp(&dir, SystemTime::now()) {
             warn(format!("failed to clean up temporary files in {}: {e}", dir.display()));
+        }
+    }
+    if let Some(r) = daily::rollover(&ws.data_dir, &ws.names, ws.today, ws.auto_move_inbox_to_today)? {
+        if r.completed > 0 {
+            eprintln!("gtodo: moved {} completed task(s) to done.md", r.completed);
+        }
+        let mut dues = r.dues;
+        if checks_dues {
+            dues.inbox_due.clear();
+        }
+        report_dues(ws, &dues, warn, |msg| eprintln!("gtodo: {msg}"));
+        if let Some(e) = r.not_recorded {
+            warn(format!("{e}; the daily rollover will run again next time"));
         }
     }
 

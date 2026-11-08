@@ -40,13 +40,14 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `state.rs` — `.state.json` の読み書き。知らないキーも保ったまま書き戻す。`last_sections` は Neovim 版の記録であり、CLI から書き換えてはならない。
   - `lock.rs` — `.gtodo.lock` (Neovim 版と共有する排他ロック)。
   - `logic/` — タスクリストに対する操作 (並べ替え・期日による昇格・完了タスクの取り出し・履歴への追記)。Lua 版 `logic/` の移植で、ファイルには触れない。
+  - `daily.rs` — 日次ロールオーバー (完了タスクの移動・期日による昇格・並べ替え。1 日 1 回を `.state.json` の `last_opened` で判定する)。ロックは呼び出し元が持つ。
   - `ops.rs` — `data_dir` のファイルを読み、`logic/` の操作をして書き戻す。2 ファイルにまたがる移動の書き込み順 (追記してから削除) もここで固定する。ロックは呼び出し元が持つ。
   - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`)。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
   - `view.rs` — 読み取り専用のビュー (一覧・検索・Queue・件数)。CLI と TUI で共有する。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
   - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。
 - `crates/gtodo` — CLI (`gtodo` コマンド)。`workspace.rs` が `data_dir` とその設定を読む。
-  書き込むコマンドは必ず `writing.rs` の `with_lock` の中で書く (ロック・無いファイルの作成を済ませるため)。
+  書き込むコマンドは必ず `writing.rs` の `with_lock` の中で書く (ロック・無いファイルの作成・日次ロールオーバーを済ませるため)。
   **読むだけのコマンドはファイルを一切書き換えない** (書くと Neovim 側の未保存の編集が破棄されるため)。
   `tests/cli.rs` の `read_only_commands_never_create_or_modify_files` で固定している。
   結合テストは利用者の設定を読まないよう、`GTODO_CONFIG` に空の `config.json` を指定して実行する。
