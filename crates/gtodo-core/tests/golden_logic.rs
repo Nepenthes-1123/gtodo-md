@@ -11,7 +11,7 @@ use chrono::NaiveDate;
 use gtodo_core::key::task_key;
 use gtodo_core::ops;
 use gtodo_core::sections::{SectionKey, SectionNames};
-use gtodo_core::store::{DataDir, read_file};
+use gtodo_core::store::{DataDir, FileKind, read_file};
 use gtodo_core::task::Task;
 use serde_json::Value;
 
@@ -39,7 +39,8 @@ fn read_lines(path: &Path) -> Option<Vec<String>> {
     path.exists().then(|| read_file(path).unwrap().lines)
 }
 
-/// Lua 版の編集の入力欄と選択肢への答えのとおりに書き換える。
+/// Lua 版の編集の入力欄と選択肢への答えを、CLI の `gtodo edit` と同じ順で行う
+/// (書き換えてから、期日をチェックし、todo.md のタスクか期日で動いたものがあれば並べ替える)。
 fn edit(
     data_dir: &DataDir,
     names: &SectionNames,
@@ -59,7 +60,12 @@ fn edit(
         context: Some(skip_or(answer("context"), '@')),
         ..ops::Changes::default()
     };
-    ops::edit_task(data_dir, names, today, key, &changes)?;
+    let edited = ops::edit_task(data_dir, names, today, key, &changes)?;
+    let auto_move = case["auto_move_inbox_to_today"].as_bool().unwrap();
+    let dues = ops::check_dues(data_dir, names, today, auto_move)?;
+    if edited.file == FileKind::Todo || dues.todo_changed {
+        ops::sort_todo(data_dir, names, today)?;
+    }
     Ok(())
 }
 

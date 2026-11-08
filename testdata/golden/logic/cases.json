@@ -43,5 +43,11 @@
   { "dir": "move_waiting_remove", "op": "move", "file": "todo.md", "line": "- [ ] (A) 待ち先を変える wait:bob id:w00002", "to": "WAITING", "wait": "" },
   { "dir": "move_inbox_to_waiting", "op": "move", "file": "inbox.md", "line": "- [ ] 頼んだ id:i00001", "to": "WAITING", "wait": "bob" },
   { "dir": "edit_inbox", "op": "edit", "file": "inbox.md", "line": "- [ ] 直す  IDなし ", "edit": {"content": "直した", "due": "", "project": "[Skip]", "context": "[Skip]"} },
-  { "dir": "edit_inbox_indented", "op": "edit", "file": "inbox.md", "line": "    - [ ] 子 id:i00002", "edit": {"content": "子を直した", "due": "", "project": "[Skip]", "context": "@15"} }
+  { "dir": "edit_inbox_indented", "op": "edit", "file": "inbox.md", "line": "    - [ ] 子 id:i00002", "edit": {"content": "子を直した", "due": "", "project": "[Skip]", "context": "@15"} },
+  { "dir": "edit_todo", "op": "edit", "file": "todo.md", "line": "- [ ] (B) 直す +old @15 due:2026-03-01 created:2026-01-01 wait:bob id:n00002", "edit": {"content": "直した", "due": "+3d", "project": "old", "context": "@30"} },
+  { "dir": "edit_todo_clear", "op": "edit", "file": "todo.md", "line": "- [ ] (A) 消す +old @15 due:2026-03-01 created:2026-01-01 id:n00001", "edit": {"content": "消す", "due": "", "project": "[Skip]", "context": "[Skip]"} },
+  { "dir": "edit_todo_no_id", "op": "edit", "file": "todo.md", "line": "- [ ] IDも作成日も無い", "edit": {"content": "IDも作成日も無い", "due": "", "project": "[Skip]", "context": "[Skip]"} },
+  { "dir": "edit_todo_completed", "op": "edit", "file": "todo.md", "line": "- [x] 完了済み completed_at:2026-02-01 id:n00001", "edit": {"content": "完了済みを直す", "due": "", "project": "[Skip]", "context": "[Skip]"} },
+  { "dir": "edit_inbox_due", "op": "edit", "file": "inbox.md", "line": "- [ ] 期日を付ける id:i00001", "edit": {"content": "期日を付ける", "due": "today", "project": "[Skip]", "context": "[Skip]"} },
+  { "dir": "edit_todo_due_today", "op": "edit", "file": "todo.md", "line": "- [ ] 今日やる id:n00001", "edit": {"content": "今日やる", "due": "today", "project": "[Skip]", "context": "[Skip]"} }
 ]
