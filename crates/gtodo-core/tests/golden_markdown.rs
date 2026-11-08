@@ -1,12 +1,15 @@
-//! ファイル構造の解析が Lua 版 (gtodo-md.nvim の `io.parse_markdown`) と一致することを検証する。
+//! ファイル構造の解析と書き出しが Lua 版 (gtodo-md.nvim の `io.parse_markdown` / `io.write_todo_file`) と
+//! 一致することを検証する。
 //! 期待値は `scripts/gen-golden-markdown.lua` で Lua 版から生成する。
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
 use gtodo_core::document::{Document, Item};
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::read_file;
+use gtodo_core::task::Task;
 use serde_json::{Value, json};
 
 fn golden_dir() -> PathBuf {
@@ -82,12 +85,72 @@ fn parse_matches_lua_implementation() {
     );
 }
 
+/// 新しく発行された ID (入力に無い ID) は乱数なので、出現順の番号に置き換える。
+/// どのタスクが元の ID を保ち、どのタスクが振り直されたかに加え、新しい ID どうしが
+/// 重なっていないことも比べられる。置き換えるのはタスク行の ID だけ。
+fn mask_new_ids(lines: &[String], known: &HashSet<String>, today: NaiveDate) -> Vec<String> {
+    let mut issued: Vec<String> = Vec::new();
+    lines
+        .iter()
+        .map(|line| {
+            let Some(id) = Task::parse_at(line, today).and_then(|t| t.id) else {
+                return line.clone();
+            };
+            if known.contains(&id) {
+                return line.clone();
+            }
+            let n = issued.iter().position(|i| *i == id).unwrap_or_else(|| {
+                issued.push(id.clone());
+                issued.len() - 1
+            });
+            let rest = line.strip_suffix(&format!(" id:{id}")).unwrap();
+            format!("{rest} id:NEW{n}")
+        })
+        .collect()
+}
+
+#[test]
+fn write_matches_lua_implementation() {
+    let text = std::fs::read_to_string(golden_dir().join("markdown_parse.json")).unwrap();
+    let golden: Value = serde_json::from_str(&text).unwrap();
+    let today = NaiveDate::parse_from_str(golden["today"].as_str().unwrap(), "%Y-%m-%d").unwrap();
+    let cases = golden["cases"].as_array().unwrap();
+
+    let mut failures = Vec::new();
+    for case in cases {
+        let file = case["file"].as_str().unwrap();
+        let lines = read_file(&golden_dir().join("markdown").join(file)).unwrap().lines;
+        let names = section_names(&case["sections_config"], &case["last_sections"]);
+        let mut doc = Document::parse(&lines, &names, today);
+        let known: HashSet<String> = doc.tasks().filter_map(|(_, t)| t.task.id.clone()).collect();
+
+        let actual = mask_new_ids(&doc.serialize(), &known, today);
+        let expected: Vec<String> = case["written"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_str().unwrap().to_string())
+            .collect();
+        let expected = mask_new_ids(&expected, &known, today);
+        if actual != expected {
+            failures.push(format!("{file}:\n  expected {expected:?}\n  actual   {actual:?}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases differ:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
+
 #[test]
 fn heading_named_default_is_kept_as_a_section() {
     let lines: Vec<String> = ["# Todo", "- [ ] 前", "## default", "- [ ] 後"]
         .map(String::from)
         .to_vec();
-    let doc = Document::parse(
+    let mut doc = Document::parse(
         &lines,
         &SectionNames::default(),
         NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
@@ -96,6 +159,7 @@ fn heading_named_default_is_kept_as_a_section() {
     assert_eq!(doc.sections.len(), 1);
     assert_eq!(doc.sections[0].name, "default");
     assert_eq!(doc.sections[0].items.len(), 1);
+    assert!(doc.serialize().contains(&"## default".to_string()));
 }
 
 #[test]
