@@ -20,6 +20,7 @@ cargo fmt --all            # 列幅は 120 (rustfmt.toml)
 # 生成物の再生成 (Neovim と gtodo-md.nvim のチェックアウトが必要)
 nvim --clean --headless -l scripts/gen-golden-task.lua <path/to/gtodo-md.nvim>
 nvim --clean --headless -l scripts/gen-golden-markdown.lua <path/to/gtodo-md.nvim>
+nvim --clean --headless -l scripts/gen-golden-logic.lua <path/to/gtodo-md.nvim>
 nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src/vim_class.rs
 ```
 
@@ -38,6 +39,8 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `settings.rs` — `data_dir/gtodo.json` (セクション名など、データの形と自動処理の設定。Neovim 版と共有する)。
   - `state.rs` — `.state.json` の読み書き。知らないキーも保ったまま書き戻す。`last_sections` は Neovim 版の記録であり、CLI から書き換えてはならない。
   - `lock.rs` — `.gtodo.lock` (Neovim 版と共有する排他ロック)。
+  - `logic/` — タスクリストに対する操作 (並べ替え)。Lua 版 `logic/` の移植で、ファイルには触れない。
+  - `ops.rs` — `data_dir` のファイルを読み、`logic/` の操作をして書き戻す。ロックは呼び出し元が持つ。
   - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`)。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
   - `view.rs` — 読み取り専用のビュー (一覧・検索・Queue・件数)。CLI と TUI で共有する。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
@@ -49,7 +52,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
 
 ## 互換性の不変条件
 
-- タスク行の解析結果・文字列化、ファイル構造の解析・書き出しは Lua 版と一致させる。`testdata/golden/*.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` / `markdown/cases.json` に足して再生成する。
+- タスク行の解析結果・文字列化、ファイル構造の解析・書き出し、`logic/` の操作の結果は Lua 版と一致させる。`testdata/golden/*.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` / `markdown/cases.json` / `logic/cases.json` に足して再生成する。
 - Lua 版の不具合と判断して挙動を変えた箇所は、ゴールデンテストに含めず、Rust 側の個別のテストと `ROADMAP.md` の決定事項に記録する。
 - Vim の正規表現を移植するときは、`\s` は `[ \t]`、`\w` は `[0-9A-Za-z_]`、`[:space:]` は `[\t\n\x0B\x0C\r ]` に置き換える。Rust の `\s`/`\w`/`\b` は Unicode の範囲で判定するため、そのまま使うと全角スペースや日本語の直後で結果が変わる。`\<` は `task.rs` の `is_vim_word_start` を使う。
 - 意図して Lua 版と挙動を変えた箇所は、コードコメントに理由を書く (例: `date.rs` の夏時間の扱い)。
