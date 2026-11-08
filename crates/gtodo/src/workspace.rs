@@ -27,7 +27,7 @@ impl Workspace {
         let data_dir = DataDir::new(data_dir);
         // セクション名が分からないとタスクを別のセクションとして読み違えるため、壊れた gtodo.json では止める。
         let settings = settings::read(&data_dir.settings_file(), warn)?;
-        let names = with_last_sections(settings.sections, &data_dir.state_file(), warn);
+        let names = section_names(settings.sections, &data_dir.state_file(), warn);
         Ok(Workspace { data_dir, names, today })
     }
 
@@ -37,19 +37,38 @@ impl Workspace {
     }
 }
 
-/// Neovim 版が最後に起動したときに使っていたセクション名を別名として加える。
+/// 現在のセクション名に、Neovim 版が最後に起動したときに使っていた名前を別名として加える。
+/// `gtodo.json` でセクション名を設定していなければ、Neovim 版の名前を現在の名前にする
+/// ([`SectionNames::from_last`])。
 ///
-/// 読めなくても一覧は表示できるため止めないが、黙って無視すると `.state.json` が
+/// `.state.json` を読めなくても一覧は表示できるため止めないが、黙って無視すると
 /// 壊れていることに気づけないので警告する。
-fn with_last_sections(names: SectionNames, state_file: &Path, warn: &mut impl FnMut(String)) -> SectionNames {
-    match state::State::read(state_file).map(|s| s.last_sections()) {
-        Ok(last) => SectionKey::ALL
-            .into_iter()
-            .zip(last)
-            .fold(names, |names, (key, name)| names.with_last(key, name)),
+///
+/// Neovim 版の名前を現在の名前にできなければ既定の名前で読む。このとき
+/// Neovim 版の名前は別名にも加えない。使えない名前は他のセクションの名前と重なっており、
+/// 加えると 2 つのセクションが 1 つに合流して読まれるため。
+fn section_names(configured: Option<SectionNames>, state_file: &Path, warn: &mut impl FnMut(String)) -> SectionNames {
+    let last = match state::State::read(state_file) {
+        Ok(state) => state.last_sections(),
         Err(e) => {
             warn(format!("{e}; ignoring the section names Neovim used last"));
-            names
+            Default::default()
         }
-    }
+    };
+    let current = match configured {
+        Some(names) => names,
+        None => match SectionNames::from_last(&last) {
+            Ok(names) => names,
+            Err(e) => {
+                warn(format!(
+                    "the section names Neovim used last are invalid ({e}); reading with the default names"
+                ));
+                return SectionNames::default();
+            }
+        },
+    };
+    SectionKey::ALL
+        .into_iter()
+        .zip(last)
+        .fold(current, |names, (key, name)| names.with_last(key, name))
 }

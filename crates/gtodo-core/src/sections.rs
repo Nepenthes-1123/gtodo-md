@@ -115,6 +115,20 @@ impl SectionNames {
         Ok(names)
     }
 
+    /// `gtodo.json` でセクション名を設定していないときの現在の名前。Neovim 版が最後に起動したときの名前
+    /// (`.state.json` の `last_sections`) を使い、記録の無いキーはデフォルト名にする。
+    ///
+    /// デフォルト名を使うと、名前を変えている Neovim 版との間で、互いが書くたびに見出しが
+    /// 自分の名前へ書き戻されて往復するため。
+    pub fn from_last(last: &[Option<String>; 4]) -> Result<Self, SectionNameError> {
+        SectionNames::new(SectionKey::ALL.map(|k| {
+            last[k.index()]
+                .clone()
+                .filter(|n| !lua_compat::trim(n).is_empty())
+                .unwrap_or_else(|| k.default_name().to_string())
+        }))
+    }
+
     /// 前回の名前 (`.state.json` の `last_sections`) を設定する。空の名前は無視する。
     pub fn with_last(mut self, key: SectionKey, name: Option<String>) -> Self {
         self.last[key.index()] = name.filter(|n| !n.is_empty());
@@ -186,6 +200,18 @@ mod tests {
         assert_eq!(names("  今日\t").name(SectionKey::Today), "今日");
         let err = SectionNames::new([" ".into(), "Next".into(), "Waiting".into(), "Someday".into()]).unwrap_err();
         assert_eq!(err, SectionNameError::Empty(SectionKey::Today));
+    }
+
+    #[test]
+    fn names_neovim_used_last_become_current_names_and_the_rest_stay_default() {
+        let n = SectionNames::from_last(&[Some("今日".into()), Some(" ".into()), None, Some("いつか".into())]).unwrap();
+        assert_eq!(
+            SectionKey::ALL.map(|k| n.name(k)),
+            ["今日", "Next", "Waiting", "いつか"]
+        );
+
+        let err = SectionNames::from_last(&[Some("Next".into()), None, None, None]).unwrap_err();
+        assert!(matches!(err, SectionNameError::Duplicate { .. }), "{err:?}");
     }
 
     #[test]

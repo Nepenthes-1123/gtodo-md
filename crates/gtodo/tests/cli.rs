@@ -171,7 +171,12 @@ fn section_names_neovim_used_last_are_still_recognized() {
     let f = sample();
     f.write("todo.md", "# Todo\n\n## 本日\n\n- [ ] 旧名の見出し\n");
     f.write(".state.json", r#"{"last_sections":{"TODAY":"本日"}}"#);
-    assert_eq!(contents(&f.json(&["list", "today", "--json"])), ["旧名の見出し"]);
+    let rows = f.json(&["list", "today", "--json"]);
+    assert_eq!(contents(&rows), ["旧名の見出し"]);
+    assert_eq!(
+        rows[0]["section"], "本日",
+        "gtodo.json に無いので Neovim 版の名前が現在の名前"
+    );
 }
 
 #[test]
