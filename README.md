@@ -14,10 +14,11 @@ gtodo search +work @office    # +project / @context の AND 検索 (--open / --d
 gtodo queue                   # 期日ごとの一覧 (--wait で待ち先ごと)
 gtodo stats                   # ステータスライン向けの件数
 gtodo add 牛乳を買う +home     # inbox.md へ追加 (--to today|next|waiting|someday で todo.md のセクションへ)
+gtodo add 資料 --due fri -p work -c office --priority A
 gtodo sort                    # 期日が来たタスクを Today へ移し、todo.md を並べ替える
 ```
 
-`add` の本文に書いた `+project`・`@context`・`due:`・`wait:`・先頭の `(A)` は、タスク行と同じくタグとして読みます。
+`add` の本文に書いた `+project`・`@context`・`due:`・`wait:`・先頭の `(A)` は、タスク行と同じくタグとして読みます。`--due` などのオプションを付けた場合はそちらを優先します。
 追加したタスクの ID を表示します。inbox へ追加したタスクの期日がすでに来ていれば、Neovim 版と同じく Today へ移します (`auto_move_inbox_to_today` が `true` のとき)。
 
 `list`・`search`・`stats` は `--json` で JSON を出力します。

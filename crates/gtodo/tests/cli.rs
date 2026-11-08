@@ -577,6 +577,28 @@ fn add_to_a_section_keeps_a_future_due_date_there() {
 }
 
 #[test]
+fn options_override_tags_in_the_text_of_an_added_task() {
+    let f = sample();
+    let out = f.stdout(&[
+        "add",
+        "(A) 資料 +home due:today",
+        "--due",
+        "2099-01-01",
+        "-p",
+        "work",
+        "-c",
+        "@office",
+        "--priority",
+        "B",
+    ]);
+    let id = added_id(&out);
+    assert!(read(&f, "inbox.md").contains(&format!(
+        "- [ ] (B) 資料 +work @office due:2099-01-01 created:{} id:{id}",
+        today_str()
+    )));
+}
+
+#[test]
 fn a_task_added_to_the_inbox_that_is_already_due_moves_to_today() {
     let f = sample();
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
@@ -640,6 +662,8 @@ fn invalid_tasks_are_rejected_before_anything_is_written() {
         &["add", "x due:2026-02-30"][..],
         &["add", "x id:abcdef"],
         &["add", "+only-a-tag"],
+        &["add", "x", "--due", "someday"],
+        &["add", "x", "-p", "two words"],
     ] {
         let out = f.run(args);
         assert!(!out.status.success(), "{args:?}");
