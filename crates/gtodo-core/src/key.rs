@@ -1,5 +1,7 @@
 //! CLI・TUI でタスクを指定するためのキー。
 
+use crate::document::{Document, Item, TaskItem};
+use crate::store::FileKind;
 use crate::task::Task;
 
 /// タスクを指定するキー。ID があれば ID、無ければ行の内容から作った一時キー (`~` + 6桁16進)。
@@ -27,6 +29,80 @@ pub fn line_key(line: &str) -> String {
     format!("~{:06x}", (h ^ (h >> 32)) & 0xFF_FFFF)
 }
 
+/// [`find`] で見つけたタスクの位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Location {
+    pub file: FileKind,
+    /// [`Document::sections`] の添字。`None` は最初の `##` より前 ([`Document::preamble`])。
+    pub section: Option<usize>,
+    /// セクション (または preamble) の項目の添字。
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FindError {
+    #[error("no task in inbox.md or todo.md has the key {0:?}")]
+    NotFound(String),
+    #[error(
+        "no task without an ID matches {0:?}; Neovim may have added an ID when it saved the file, so run `gtodo list` again"
+    )]
+    LineChanged(String),
+    #[error("{key:?} matches more than one task:{candidates}")]
+    Ambiguous { key: String, candidates: String },
+}
+
+/// キーに一致するタスクを探す。ID は先頭の一部でもよい。一時キー (`~` 始まり) は ID の無いタスクの
+/// 行の内容と照らし合わせる。
+///
+/// ID はファイルの中でしか重複が直されないため、ファイルをまたいで同じ ID がありうる。
+/// 複数のタスクに一致したら、どれかを選ばずにエラーにする。ただし ID 全体が一致するタスクが
+/// あればそちらだけを候補にする。手で書いた短い ID が、他の ID の先頭の一部になっていても指定できるように。
+pub fn find(docs: &[(FileKind, &Document)], key: &str) -> Result<Location, FindError> {
+    let matches = |item: &TaskItem| {
+        let id = item.task.id.as_deref().filter(|id| !id.is_empty());
+        match key.strip_prefix('~') {
+            Some(_) => id.is_none() && line_key(&item.line) == key,
+            None => !key.is_empty() && id.is_some_and(|id| id.starts_with(key)),
+        }
+    };
+    let mut found = Vec::new();
+    for &(file, doc) in docs {
+        let groups = std::iter::once((None, &doc.preamble))
+            .chain(doc.sections.iter().enumerate().map(|(i, s)| (Some(i), &s.items)));
+        for (section, items) in groups {
+            for (index, item) in items.iter().enumerate() {
+                if let Item::Task(t) = item {
+                    if matches(t) {
+                        found.push((Location { file, section, index }, t.as_ref()));
+                    }
+                }
+            }
+        }
+    }
+    if found.iter().any(|(_, t)| t.task.id.as_deref() == Some(key)) {
+        found.retain(|(_, t)| t.task.id.as_deref() == Some(key));
+    }
+    match found.as_slice() {
+        [(location, _)] => Ok(*location),
+        [] if key.starts_with('~') => Err(FindError::LineChanged(key.to_string())),
+        [] => Err(FindError::NotFound(key.to_string())),
+        many => Err(FindError::Ambiguous {
+            key: key.to_string(),
+            candidates: many
+                .iter()
+                .map(|(l, t)| {
+                    format!(
+                        "\n  {} {}: {}",
+                        l.file.file_name(),
+                        task_key(&t.task, &t.line),
+                        t.task.content
+                    )
+                })
+                .collect(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,6 +127,90 @@ mod tests {
         // 期待値は独立した実装 (Python) で計算したもの。変わると既存の一時キーが無効になる。
         assert_eq!(line_key(""), "~d0bfc1");
         assert_eq!(line_key("- [ ] 牛乳を買う"), "~387609");
+    }
+
+    fn docs(inbox: &[&str], todo: &[&str]) -> (Document, Document) {
+        let parse = |lines: &[&str]| {
+            let lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+            Document::parse(
+                &lines,
+                &crate::sections::SectionNames::default(),
+                chrono::NaiveDate::MIN,
+            )
+        };
+        (parse(inbox), parse(todo))
+    }
+
+    fn find_in(inbox: &Document, todo: &Document, key: &str) -> Result<Location, FindError> {
+        find(&[(FileKind::Inbox, inbox), (FileKind::Todo, todo)], key)
+    }
+
+    #[test]
+    fn tasks_are_found_by_id_prefix_or_temporary_key() {
+        let (inbox, todo) = docs(
+            &["# Inbox", "- [ ] IDの無いタスク"],
+            &[
+                "# Todo",
+                "## Today",
+                "- [ ] 今日 id:a1b2c3",
+                "メモ",
+                "- [ ] 別 id:ffffff",
+            ],
+        );
+        let at = |file, section, index| Location { file, section, index };
+        assert_eq!(find_in(&inbox, &todo, "a1b2c3"), Ok(at(FileKind::Todo, Some(0), 0)));
+        assert_eq!(find_in(&inbox, &todo, "f"), Ok(at(FileKind::Todo, Some(0), 2)));
+        assert_eq!(
+            find_in(&inbox, &todo, &line_key("- [ ] IDの無いタスク")),
+            Ok(at(FileKind::Inbox, None, 0))
+        );
+    }
+
+    #[test]
+    fn keys_matching_no_task_or_several_tasks_are_errors() {
+        let (inbox, todo) = docs(
+            &["# Inbox", "- [ ] 受信 id:abc111", "- [ ] 同じ行", "- [ ] 同じ行"],
+            &["# Todo", "## Today", "- [ ] 今日 id:abc111", "- [ ] 次 id:abc222"],
+        );
+        assert!(
+            matches!(find_in(&inbox, &todo, "abc111"), Err(FindError::Ambiguous { .. })),
+            "across files"
+        );
+        assert!(matches!(
+            find_in(&inbox, &todo, "abc"),
+            Err(FindError::Ambiguous { .. })
+        ));
+        assert!(matches!(
+            find_in(&inbox, &todo, &line_key("- [ ] 同じ行")),
+            Err(FindError::Ambiguous { .. })
+        ));
+        assert_eq!(find_in(&inbox, &todo, "999"), Err(FindError::NotFound("999".into())));
+        assert_eq!(find_in(&inbox, &todo, ""), Err(FindError::NotFound(String::new())));
+        let changed = line_key("- [ ] 受信");
+        assert_eq!(
+            find_in(&inbox, &todo, &changed),
+            Err(FindError::LineChanged(changed.clone()))
+        );
+    }
+
+    #[test]
+    fn a_whole_id_wins_over_ids_that_merely_start_with_it() {
+        let (inbox, todo) = docs(&["# Inbox", "- [ ] 手書き id:abc"], &["# Todo", "- [ ] 発行 id:abcdef"]);
+        assert_eq!(
+            find_in(&inbox, &todo, "abc"),
+            Ok(Location {
+                file: FileKind::Inbox,
+                section: None,
+                index: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_temporary_key_never_matches_a_task_that_has_an_id() {
+        let line = "- [ ] 今日 id:a1b2c3";
+        let (inbox, todo) = docs(&["# Inbox"], &["# Todo", line]);
+        assert!(find_in(&inbox, &todo, &line_key(line)).is_err());
     }
 
     #[test]
