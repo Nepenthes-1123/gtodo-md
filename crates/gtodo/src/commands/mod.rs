@@ -1,6 +1,7 @@
 pub mod add;
 pub mod cancel;
 pub mod done;
+pub mod edit;
 pub mod list;
 pub mod move_task;
 pub mod queue;

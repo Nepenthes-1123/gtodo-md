@@ -41,5 +41,7 @@
   { "dir": "move_todo_to_waiting_set", "op": "move", "file": "todo.md", "line": "- [ ] 頼む due:2026-02-20 id:n00001", "to": "WAITING", "wait": "alice" },
   { "dir": "move_waiting_update", "op": "move", "file": "todo.md", "line": "- [ ] (A) 待ち先を変える wait:bob id:w00002", "to": "WAITING", "wait": "carol" },
   { "dir": "move_waiting_remove", "op": "move", "file": "todo.md", "line": "- [ ] (A) 待ち先を変える wait:bob id:w00002", "to": "WAITING", "wait": "" },
-  { "dir": "move_inbox_to_waiting", "op": "move", "file": "inbox.md", "line": "- [ ] 頼んだ id:i00001", "to": "WAITING", "wait": "bob" }
+  { "dir": "move_inbox_to_waiting", "op": "move", "file": "inbox.md", "line": "- [ ] 頼んだ id:i00001", "to": "WAITING", "wait": "bob" },
+  { "dir": "edit_inbox", "op": "edit", "file": "inbox.md", "line": "- [ ] 直す  IDなし ", "edit": {"content": "直した", "due": "", "project": "[Skip]", "context": "[Skip]"} },
+  { "dir": "edit_inbox_indented", "op": "edit", "file": "inbox.md", "line": "    - [ ] 子 id:i00002", "edit": {"content": "子を直した", "due": "", "project": "[Skip]", "context": "@15"} }
 ]

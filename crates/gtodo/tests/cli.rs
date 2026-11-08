@@ -771,6 +771,8 @@ fn the_reported_id_of_a_task_without_one_is_the_id_written() {
         (&["cancel"], "inbox.md", "- [ ] 受信", "cancelled.md"),
         (&["move", "next"], "todo.md", "- [ ] 今日", "todo.md"),
         (&["move", "next"], "inbox.md", "- [ ] 受信", "todo.md"),
+        (&["edit", "直した"], "todo.md", "- [ ] 今日", "todo.md"),
+        (&["edit", "直した"], "inbox.md", "- [ ] 受信", "inbox.md"),
     ] {
         let f = Fixture::new();
         f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
@@ -889,6 +891,44 @@ fn moves_that_cannot_be_done_as_asked_change_nothing() {
         (&["move", "aaaaaa", "waiting", "--wait", "bob smith"], "wait:"),
         (&["move", "bbbbbb", "next"], "completed"),
         (&["move", "dddddd", "next"], "done.md"),
+    ] {
+        let out = f.run(args);
+        assert!(!out.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+    assert_eq!(snapshot(&f.data_dir()), before);
+}
+
+#[test]
+fn edit_changes_only_what_is_given() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(
+        f.stdout(&["edit", "aaa", "新しい", "本文"]),
+        "edited aaaaaa: 新しい 本文\n"
+    );
+    assert!(read(&f, "todo.md").contains(&format!(
+        "- [ ] (A) 新しい 本文 +work @office created:{} id:aaaaaa\n",
+        today_str()
+    )));
+    f.stdout(&["edit", "aaaaaa", "@home"]);
+    assert!(read(&f, "todo.md").contains(&format!(
+        "- [ ] (A) 新しい 本文 +work @home created:{} id:aaaaaa\n",
+        today_str()
+    )));
+}
+
+#[test]
+fn edits_that_cannot_be_done_as_asked_change_nothing() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let before = snapshot(&f.data_dir());
+    for (args, message) in [
+        (&["edit", "aaaaaa"][..], "nothing to change"),
+        (&["edit", "aaaaaa", "x", "created:2026-01-01"], "created:"),
+        (&["edit", "aaaaaa", "due:someday"], "invalid due date"),
+        (&["edit", "dddddd", "x"], "done.md"),
     ] {
         let out = f.run(args);
         assert!(!out.status.success(), "{args:?}");

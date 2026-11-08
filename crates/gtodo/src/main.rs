@@ -68,6 +68,13 @@ enum Command {
         /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
         task: String,
     },
+    /// Change a task in inbox.md or todo.md (only what is given; the rest is kept)
+    Edit {
+        /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
+        task: String,
+        /// New description; +project, @context, due:, wait: and a leading (A) change those values
+        text: Vec<String>,
+    },
     /// Move a task in inbox.md or todo.md to a section of todo.md
     Move {
         /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
@@ -165,6 +172,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
         Command::Done { task } => commands::done::done(&ws, &task, &mut warn, out),
         Command::Undone { task } => commands::done::undone(&ws, &task, &mut warn, out),
         Command::Cancel { task } => commands::cancel::run(&ws, &task, &mut warn, out),
+        Command::Edit { task, text } => commands::edit::run(&ws, &task, &text.join(" "), &mut warn, out),
         Command::Move { task, to, wait } => commands::move_task::run(&ws, &task, to, wait, &mut warn, out),
         Command::List { target, json } => commands::list::run(&ws, target, json, out),
         Command::Search {

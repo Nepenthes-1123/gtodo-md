@@ -3,7 +3,7 @@
 GTD 志向の Markdown Todo 管理ツール [gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) の TUI/CLI 版です。
 Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled.md` / `projects/*.md`) を読み書きし、同じデータを同時に使えることを目指しています。
 
-開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`undone`・`cancel`・`move`・`sort` が使えます。
+開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`undone`・`cancel`・`move`・`edit`・`sort` が使えます。
 
 ## 使い方
 
@@ -20,6 +20,7 @@ gtodo undone a1b2             # 完了を取り消す (done.md へ移る前ま�
 gtodo cancel ~3fa91c          # cancelled.md へ移す
 gtodo move a1b2 next          # todo.md のセクションへ移す (today | next | waiting | someday)
 gtodo move a1b2 waiting --wait 田中さん
+gtodo edit a1b2 新しい本文 due:fri    # 本文と、書いたタグだけを変える
 gtodo sort                    # 期日が来たタスクを Today へ移し、todo.md を並べ替える
 ```
 
@@ -32,6 +33,8 @@ gtodo sort                    # 期日が来たタスクを Today へ移し、to
 同じ ID のタスクが複数あるとどれも指定できないので、Neovim 版で片方の `id:` を消してください (保存したときに新しい ID が付きます)。
 
 `move` は inbox.md か todo.md のタスクを todo.md のセクションへ移します。Waiting 以外へ移すと待ち先 (`wait:`) は消えます。Waiting へ移すとき、`--wait` を省略すると今の待ち先を残し、`--wait ""` で消します。すでに Waiting にあるタスクの待ち先を変えるときも `--wait` を使います。
+
+`edit` は、本文を渡すとタスクの本文を置き換えます。本文に書いたタグの項目だけを変え、書かなかった項目は残します。タグだけを渡した場合、本文は変えません (先頭の `(A)` はタスク行と同じく後ろに本文があるときだけ優先度として読みます)。
 
 読み取り系のコマンドはファイルを一切書き換えません。Neovim 版で編集中のファイルがあっても安全に使えます。
 
