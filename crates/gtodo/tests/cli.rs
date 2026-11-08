@@ -567,6 +567,16 @@ fn add_puts_a_task_in_the_inbox_with_its_creation_date() {
 }
 
 #[test]
+fn add_to_a_section_keeps_a_future_due_date_there() {
+    let f = sample();
+    let out = f.stdout(&["add", "資料 due:2099-01-01", "--to", "next"]);
+    let id = added_id(&out);
+    assert_eq!(out, format!("added {id} to Next\n"));
+    let rows = f.json(&["list", "next", "--json"]);
+    assert_eq!(contents(&rows), ["資料", "次1"], "sorted within the section");
+}
+
+#[test]
 fn a_task_added_to_the_inbox_that_is_already_due_moves_to_today() {
     let f = sample();
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));

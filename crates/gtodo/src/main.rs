@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use gtodo_core::config::{self, Platform, ProcessEnv};
 use gtodo_core::task::Status;
 
+use crate::commands::add::To;
 use crate::commands::list::Target;
 use crate::workspace::Workspace;
 
@@ -30,11 +31,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Add a task to inbox.md
+    /// Add a task (to inbox.md unless --to is given)
     Add {
         /// Task text; +project, @context, due:, wait: and a leading (A) are read as in task lines
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
+        /// Where to add the task
+        #[arg(long, value_enum, default_value_t = To::Inbox)]
+        to: To,
     },
     /// List tasks (inbox.md and todo.md by default)
     List {
@@ -104,7 +108,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
     let ws = Workspace::open(data_dir, today, &mut warn)?;
 
     match cli.command {
-        Command::Add { text } => commands::add::run(&ws, &text.join(" "), &mut warn, out),
+        Command::Add { text, to } => commands::add::run(&ws, &text.join(" "), to, &mut warn, out),
         Command::List { target, json } => commands::list::run(&ws, target, json, out),
         Command::Search {
             terms,

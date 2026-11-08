@@ -2,27 +2,58 @@ use std::fmt::Write;
 
 use anyhow::{Result, bail};
 use chrono::NaiveDate;
+use clap::ValueEnum;
 use gtodo_core::date;
 use gtodo_core::logic::due::DueOutcome;
-use gtodo_core::ops;
+use gtodo_core::ops::{self, Destination};
+use gtodo_core::sections::SectionKey;
 use gtodo_core::task::Task;
 
 use crate::workspace::Workspace;
 use crate::writing;
 
-pub fn run(ws: &Workspace, text: &str, warn: &mut impl FnMut(String), out: &mut String) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum To {
+    Inbox,
+    Today,
+    Next,
+    Waiting,
+    Someday,
+}
+
+impl To {
+    fn destination(self) -> Destination {
+        match self {
+            To::Inbox => Destination::Inbox,
+            To::Today => Destination::Section(SectionKey::Today),
+            To::Next => Destination::Section(SectionKey::Next),
+            To::Waiting => Destination::Section(SectionKey::Waiting),
+            To::Someday => Destination::Section(SectionKey::Someday),
+        }
+    }
+}
+
+pub fn run(ws: &Workspace, text: &str, to: To, warn: &mut impl FnMut(String), out: &mut String) -> Result<()> {
     // ロックを取る前に検証し、受け付けられない入力では何も書かない。
     let task = build(text, ws.today)?;
-    let (id, dues) = writing::with_lock(ws, true, warn, || {
-        let id = ops::add_task(&ws.data_dir, &ws.names, ws.today, task)?;
+    let destination = to.destination();
+    let (id, dues) = writing::with_lock(ws, destination == Destination::Inbox, warn, || {
+        let id = ops::add_task(&ws.data_dir, &ws.names, ws.today, task, destination)?;
         // 期日がすでに来ていれば、Neovim 版と同じくこの場で Today へ移し、次の日次の整理まで
         // inbox に残さない。ここでの失敗は追加の成否と分けて返す。
-        Ok((id, check_dues_and_sort(ws)))
+        let dues = match destination {
+            Destination::Inbox => Some(check_dues_and_sort(ws)),
+            Destination::Section(_) => None,
+        };
+        Ok((id, dues))
     })?;
 
-    writeln!(out, "added {id} to inbox.md")?;
+    match destination {
+        Destination::Inbox => writeln!(out, "added {id} to inbox.md")?,
+        Destination::Section(key) => writeln!(out, "added {id} to {}", ws.names.name(key))?,
+    }
     match dues {
-        Ok(dues) => {
+        Some(Ok(dues)) => {
             let mut notes = Vec::new();
             writing::report_dues(ws, &dues, warn, |msg| notes.push(msg));
             for note in notes {
@@ -30,7 +61,8 @@ pub fn run(ws: &Workspace, text: &str, warn: &mut impl FnMut(String), out: &mut 
             }
         }
         // 追加は済んでいるため、失敗として返すと実行し直されてタスクが二重になる。
-        Err(e) => warn(format!("the task was added, but checking due dates failed: {e:#}")),
+        Some(Err(e)) => warn(format!("the task was added, but checking due dates failed: {e:#}")),
+        None => {}
     }
     Ok(())
 }

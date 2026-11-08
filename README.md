@@ -13,7 +13,7 @@ gtodo list today              # inbox | todo | today | next | waiting | someday 
 gtodo search +work @office    # +project / @context の AND 検索 (--open / --done で絞り込み)
 gtodo queue                   # 期日ごとの一覧 (--wait で待ち先ごと)
 gtodo stats                   # ステータスライン向けの件数
-gtodo add 牛乳を買う +home     # inbox.md へ追加
+gtodo add 牛乳を買う +home     # inbox.md へ追加 (--to today|next|waiting|someday で todo.md のセクションへ)
 gtodo sort                    # 期日が来たタスクを Today へ移し、todo.md を並べ替える
 ```
 

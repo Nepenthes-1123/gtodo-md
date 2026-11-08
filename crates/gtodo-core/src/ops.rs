@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDate;
 
 use crate::atomic::{self, WriteError};
-use crate::document::{Document, Item, TaskItem};
+use crate::document::{Document, Item, Section, TaskItem};
 use crate::logic::{completion, due, history, sort};
 use crate::sections::{SectionKey, SectionNames};
 use crate::store::{self, DataDir, FileKind, ReadError, Stamp};
@@ -72,13 +72,39 @@ fn template(kind: FileKind, names: &SectionNames) -> Vec<String> {
     }
 }
 
-/// タスクを inbox.md の、最初の `##` 見出しより前の末尾へ追加し、付けた ID を返す
-/// (Lua 版 `init.lua` の `add_or_edit_task` の新規追加)。
-pub fn add_task(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, mut task: Task) -> Result<String, OpError> {
-    let mut file = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+/// タスクの追加先。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Destination {
+    /// inbox.md の、最初の `##` 見出しより前の末尾。
+    Inbox,
+    /// todo.md のセクションの末尾。
+    Section(SectionKey),
+}
+
+/// タスクを追加し、付けた ID を返す (Lua 版 `init.lua` の `add_or_edit_task` の新規追加)。
+/// todo.md へ加えたら並べ替える。inbox.md への追加後の期日のチェックは呼び出し元が行う。
+///
+/// セクションの見出しが無ければ末尾に作る。Lua 版は見出しの無いセクションへ加えたタスクを
+/// 書き出さずに失う。
+pub fn add_task(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    mut task: Task,
+    to: Destination,
+) -> Result<String, OpError> {
+    let kind = match to {
+        Destination::Inbox => FileKind::Inbox,
+        Destination::Section(_) => FileKind::Todo,
+    };
+    let mut file = Loaded::read(data_dir, kind, names, today)?;
     // 書き出すときにファイル内の重複として振り直されると、利用者に知らせた ID と食い違うため、
     // 使われていない ID を先に決める。inbox のタスクは期日が来ると todo.md へ移るので、両方を避ける。
-    let other = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let other = match kind {
+        FileKind::Inbox => FileKind::Todo,
+        _ => FileKind::Inbox,
+    };
+    let other = Loaded::read(data_dir, other, names, today)?;
     let used: HashSet<&str> = [&file.doc, &other.doc]
         .into_iter()
         .flat_map(|doc| doc.tasks().filter_map(|(_, t)| t.task.id.as_deref()))
@@ -90,11 +116,26 @@ pub fn add_task(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, mut 
         }
     };
     task.id = Some(id.clone());
-    file.doc.preamble.push(Item::Task(Box::new(TaskItem {
+    let item = Item::Task(Box::new(TaskItem {
         line: task.clone().serialize(),
         task,
         lnum: 0,
-    })));
+    }));
+
+    match to {
+        Destination::Inbox => file.doc.preamble.push(item),
+        Destination::Section(key) => {
+            let name = names.name(key);
+            match file.doc.sections.iter_mut().find(|s| s.name == name) {
+                Some(section) => section.items.push(item),
+                None => file.doc.sections.push(Section {
+                    name: name.to_string(),
+                    items: vec![item],
+                }),
+            }
+            sort::sort_sections(&mut file.doc);
+        }
+    }
     file.write()?;
     Ok(id)
 }
@@ -374,6 +415,7 @@ mod tests {
             &SectionNames::default(),
             today(),
             new_task("追加"),
+            Destination::Inbox,
         )
         .unwrap();
         assert_eq!(
@@ -382,6 +424,54 @@ mod tests {
                 "# Inbox\n\n- [ ] 既存 id:aaaaaa\n- [ ] 追加 created:2026-02-03 id:{id}\n\n\
                  ## メモ\n\n- [ ] 見出しの下 id:bbbbbb\n"
             )
+        );
+    }
+
+    #[test]
+    fn added_todo_tasks_are_sorted_into_their_section() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("todo.md"),
+            "# Todo\n\n## Today\n\n## Next\n\n- [ ] 期日なし id:aaaaaa\n",
+        )
+        .unwrap();
+        let task = Task {
+            due: Some("2026-03-01".into()),
+            ..new_task("期日あり")
+        };
+        let id = add_task(
+            &DataDir::new(dir.path()),
+            &SectionNames::default(),
+            today(),
+            task,
+            Destination::Section(SectionKey::Next),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("todo.md")).unwrap(),
+            format!(
+                "# Todo\n\n## Today\n\n## Next\n\n\
+                 - [ ] 期日あり due:2026-03-01 created:2026-02-03 id:{id}\n- [ ] 期日なし id:aaaaaa\n"
+            )
+        );
+    }
+
+    /// Lua 版は見出しの無いセクションへ加えたタスクを書き出さずに失う。
+    #[test]
+    fn a_missing_section_is_created_at_the_end_instead_of_losing_the_task() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("todo.md"), "# Todo\n\n## Today\n").unwrap();
+        let id = add_task(
+            &DataDir::new(dir.path()),
+            &SectionNames::default(),
+            today(),
+            new_task("待ち"),
+            Destination::Section(SectionKey::Waiting),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("todo.md")).unwrap(),
+            format!("# Todo\n\n## Today\n\n## Waiting\n\n- [ ] 待ち created:2026-02-03 id:{id}\n")
         );
     }
 
