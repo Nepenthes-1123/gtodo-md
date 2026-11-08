@@ -22,8 +22,8 @@ pub enum SettingsError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataSettings {
-    /// 現在のセクション名 (`.state.json` の前回の名前は含まない)。
-    pub sections: SectionNames,
+    /// 現在のセクション名 (`.state.json` の前回の名前は含まない)。`sections` が無ければ `None`。
+    pub sections: Option<SectionNames>,
     /// 期日が来た Inbox のタスクを Today へ移すか。
     pub auto_move_inbox_to_today: bool,
 }
@@ -31,7 +31,7 @@ pub struct DataSettings {
 impl Default for DataSettings {
     fn default() -> Self {
         DataSettings {
-            sections: SectionNames::default(),
+            sections: None,
             auto_move_inbox_to_today: true,
         }
     }
@@ -68,7 +68,7 @@ pub fn read(path: &Path, warn: &mut impl FnMut(String)) -> Result<DataSettings, 
                 let Value::Object(sections) = value else {
                     return Err(invalid("\"sections\" is not an object".into()));
                 };
-                settings.sections = section_names(sections, path, warn).map_err(invalid)?;
+                settings.sections = Some(section_names(sections, path, warn).map_err(invalid)?);
             }
             "auto_move_inbox_to_today" => {
                 settings.auto_move_inbox_to_today = value
@@ -120,6 +120,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = read(&dir.path().join("gtodo.json"), &mut |w| panic!("{w}")).unwrap();
         assert_eq!(settings, DataSettings::default());
+        assert_eq!(settings.sections, None);
         assert!(settings.auto_move_inbox_to_today);
     }
 
@@ -127,8 +128,9 @@ mod tests {
     fn section_names_override_defaults_per_key() {
         let (settings, warnings) = read_str(r#"{"sections":{"today":"今日"},"auto_move_inbox_to_today":false}"#);
         let settings = settings.unwrap();
-        assert_eq!(settings.sections.name(SectionKey::Today), "今日");
-        assert_eq!(settings.sections.name(SectionKey::Next), "Next");
+        let sections = settings.sections.unwrap();
+        assert_eq!(sections.name(SectionKey::Today), "今日");
+        assert_eq!(sections.name(SectionKey::Next), "Next");
         assert!(!settings.auto_move_inbox_to_today);
         assert!(warnings.is_empty());
     }
@@ -136,7 +138,7 @@ mod tests {
     #[test]
     fn unknown_keys_are_warned_and_ignored() {
         let (settings, warnings) = read_str(r#"{"future_option":1,"sections":{"tomorrow":"明日"}}"#);
-        assert_eq!(settings.unwrap(), DataSettings::default());
+        assert_eq!(settings.unwrap().sections, Some(SectionNames::default()));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(warnings[0].contains("\"future_option\""));
         assert!(warnings[1].contains("\"tomorrow\""));

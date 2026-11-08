@@ -3,7 +3,7 @@
 GTD 志向の Markdown Todo 管理ツール [gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) の TUI/CLI 版です。
 Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled.md` / `projects/*.md`) を読み書きし、同じデータを同時に使えることを目指しています。
 
-開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドだけが使えます。
+開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `sort` が使えます。
 
 ## 使い方
 
@@ -13,12 +13,21 @@ gtodo list today              # inbox | todo | today | next | waiting | someday 
 gtodo search +work @office    # +project / @context の AND 検索 (--open / --done で絞り込み)
 gtodo queue                   # 期日ごとの一覧 (--wait で待ち先ごと)
 gtodo stats                   # ステータスライン向けの件数
+gtodo sort                    # 期日が来たタスクを Today へ移し、todo.md を並べ替える
 ```
 
 `list`・`search`・`stats` は `--json` で JSON を出力します。
 各タスクの先頭に表示されるキーは、タスクの ID (`id:` タグ) です。ID の無いタスクには、行の内容から作った一時キー (`~` で始まる) を表示します。
 
 読み取り系のコマンドはファイルを一切書き換えません。Neovim 版で編集中のファイルがあっても安全に使えます。
+
+書き込むコマンド (`sort` など) は、Neovim 版と同じロック (`.gtodo.lock`) を持って実行します。Neovim 版が自動処理の最中なら少し待ち、2 秒待っても空かなければエラーになります。
+実行の前に、Neovim 版と同じく次のことを行います。
+
+- 無いファイル (`inbox.md` など) を Neovim 版と同じ雛形で作る
+- その日まだ行っていなければ、日次の整理 (完了したタスクを `done.md` へ移し、期日が来たタスクを Today へ移す) をする
+
+Neovim 版で開いているファイルを書き換えた場合、Neovim 側の未保存の編集は破棄されます (Neovim 版の仕様。undo で戻せます)。
 
 ## 設定
 
@@ -50,7 +59,7 @@ Neovim 版がまだ 4 の場所を使うため、存在する間はそちらを�
 ### データの設定 (`<データディレクトリ>/gtodo.json`)
 
 セクション名など、ファイルの中身に関わる設定です。データと一緒に置くので、データを別のマシンへ同期しても設定が付いていきます。
-ファイルが無ければ、すべて既定値を使います。
+ファイルが無ければ、すべて既定値を使います。ただしセクション名は、`sections` が無ければ Neovim 版が最後に起動したときの名前 (`.state.json` に記録されたもの) を使います。Neovim 版の `setup()` で名前を変えている場合に、見出しを既定の名前で書き換えないためです。記録された名前が他のセクションの名前と重なっているなどで使えない場合、書き込むコマンドはエラーになるので、`sections` を設定してください。
 
 ```json
 {

@@ -1,6 +1,7 @@
 mod commands;
 mod render;
 mod workspace;
+mod writing;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -58,6 +59,8 @@ enum Command {
         #[arg(long)]
         wait: bool,
     },
+    /// Move due tasks to Today and sort todo.md
+    Sort,
     /// Show task counts for status lines
     Stats {
         /// Print as JSON
@@ -110,6 +113,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
             commands::search::run(&ws, &terms, status, json, out)
         }
         Command::Queue { wait } => commands::queue::run(&ws, wait, out),
+        Command::Sort => commands::sort::run(&ws, &mut warn, out),
         Command::Stats { json } => commands::stats::run(&ws, json, out),
     }
 }
