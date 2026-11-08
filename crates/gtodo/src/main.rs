@@ -30,6 +30,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Add a task to inbox.md
+    Add {
+        /// Task text; +project, @context, due:, wait: and a leading (A) are read as in task lines
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
     /// List tasks (inbox.md and todo.md by default)
     List {
         #[arg(value_enum)]
@@ -98,6 +104,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
     let ws = Workspace::open(data_dir, today, &mut warn)?;
 
     match cli.command {
+        Command::Add { text } => commands::add::run(&ws, &text.join(" "), &mut warn, out),
         Command::List { target, json } => commands::list::run(&ws, target, json, out),
         Command::Search {
             terms,

@@ -547,3 +547,38 @@ fn a_rollover_that_cannot_be_recorded_is_warned_and_the_command_still_runs() {
     assert!(stderr.contains("will run again"), "{stderr}");
     assert!(read(&f, "done.md").contains("id:bbbbbb"), "the rollover itself ran");
 }
+
+/// `added <id> to ...` の行から ID を取り出す。
+fn added_id(stdout: &str) -> String {
+    stdout.split_whitespace().nth(1).unwrap().to_string()
+}
+
+#[test]
+fn add_puts_a_task_in_the_inbox_with_its_creation_date() {
+    let f = sample();
+    let out = f.stdout(&["add", "牛乳を買う", "+home"]);
+    let id = added_id(&out);
+    assert_eq!(out, format!("added {id} to inbox.md\n"));
+    assert!(
+        read(&f, "inbox.md").ends_with(&format!("- [ ] 牛乳を買う +home created:{} id:{id}\n", today_str())),
+        "{}",
+        read(&f, "inbox.md")
+    );
+}
+
+#[test]
+fn invalid_tasks_are_rejected_before_anything_is_written() {
+    let f = Fixture::new();
+    for args in [
+        &["add", "x due:2026-02-30"][..],
+        &["add", "x id:abcdef"],
+        &["add", "+only-a-tag"],
+    ] {
+        let out = f.run(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(
+            fs::read_dir(f.data_dir()).unwrap().next().is_none(),
+            "{args:?} must not even create the missing files"
+        );
+    }
+}

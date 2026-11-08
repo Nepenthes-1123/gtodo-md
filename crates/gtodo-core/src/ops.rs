@@ -3,16 +3,18 @@
 //! ロックは取らない。Neovim 版の自動処理と重ならないよう、呼び出し元が
 //! [`crate::lock::Lock`] を持ったまま呼ぶ。
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
 
 use crate::atomic::{self, WriteError};
-use crate::document::Document;
+use crate::document::{Document, Item, TaskItem};
 use crate::logic::{completion, due, history, sort};
 use crate::sections::{SectionKey, SectionNames};
 use crate::store::{self, DataDir, FileKind, ReadError, Stamp};
+use crate::task::{self, Task};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpError {
@@ -68,6 +70,33 @@ fn template(kind: FileKind, names: &SectionNames) -> Vec<String> {
             )
             .collect(),
     }
+}
+
+/// タスクを inbox.md の、最初の `##` 見出しより前の末尾へ追加し、付けた ID を返す
+/// (Lua 版 `init.lua` の `add_or_edit_task` の新規追加)。
+pub fn add_task(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, mut task: Task) -> Result<String, OpError> {
+    let mut file = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+    // 書き出すときにファイル内の重複として振り直されると、利用者に知らせた ID と食い違うため、
+    // 使われていない ID を先に決める。inbox のタスクは期日が来ると todo.md へ移るので、両方を避ける。
+    let other = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let used: HashSet<&str> = [&file.doc, &other.doc]
+        .into_iter()
+        .flat_map(|doc| doc.tasks().filter_map(|(_, t)| t.task.id.as_deref()))
+        .collect();
+    let id = loop {
+        let id = task::generate_id();
+        if !used.contains(id.as_str()) {
+            break id;
+        }
+    };
+    task.id = Some(id.clone());
+    file.doc.preamble.push(Item::Task(Box::new(TaskItem {
+        line: task.clone().serialize(),
+        task,
+        lnum: 0,
+    })));
+    file.write()?;
+    Ok(id)
 }
 
 /// todo.md の各セクションのタスクを並べ替える。
@@ -321,6 +350,38 @@ mod tests {
             fs::read_to_string(dir.path().join("done.md"))
                 .unwrap()
                 .contains("id:bbbbbb")
+        );
+    }
+
+    fn new_task(content: &str) -> Task {
+        Task {
+            content: content.into(),
+            created: Some("2026-02-03".into()),
+            ..Task::default()
+        }
+    }
+
+    #[test]
+    fn added_inbox_tasks_go_after_the_last_task_before_any_heading() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("inbox.md"),
+            "# Inbox\n\n- [ ] 既存 id:aaaaaa\n\n## メモ\n\n- [ ] 見出しの下 id:bbbbbb\n",
+        )
+        .unwrap();
+        let id = add_task(
+            &DataDir::new(dir.path()),
+            &SectionNames::default(),
+            today(),
+            new_task("追加"),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("inbox.md")).unwrap(),
+            format!(
+                "# Inbox\n\n- [ ] 既存 id:aaaaaa\n- [ ] 追加 created:2026-02-03 id:{id}\n\n\
+                 ## メモ\n\n- [ ] 見出しの下 id:bbbbbb\n"
+            )
         );
     }
 
