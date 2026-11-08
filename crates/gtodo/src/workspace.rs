@@ -42,7 +42,7 @@ impl Workspace {
 /// 読めなくても一覧は表示できるため止めないが、黙って無視すると `.state.json` が
 /// 壊れていることに気づけないので警告する。
 fn with_last_sections(names: SectionNames, state_file: &Path, warn: &mut impl FnMut(String)) -> SectionNames {
-    match state::read_last_sections(state_file) {
+    match state::State::read(state_file).map(|s| s.last_sections()) {
         Ok(last) => SectionKey::ALL
             .into_iter()
             .zip(last)

@@ -36,7 +36,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `atomic.rs` — ファイルのアトミックな置き換え (Lua 版 `atomic_replace` と同じ手順)。
   - `config.rs` — `config.json` と `data_dir` の場所の解決 (Neovim 版と共有する規則)。OS ごとの場所の規則は `Platform` で受け取り、どの OS 上でもテストする (パスの区切りや絶対パスの判定はホスト OS の規則になる)。
   - `settings.rs` — `data_dir/gtodo.json` (セクション名など、データの形と自動処理の設定。Neovim 版と共有する)。
-  - `state.rs` — `.state.json` の読み取り。`last_sections` は Neovim 版の記録であり、CLI から書き換えてはならない。
+  - `state.rs` — `.state.json` の読み書き。知らないキーも保ったまま書き戻す。`last_sections` は Neovim 版の記録であり、CLI から書き換えてはならない。
   - `lock.rs` — `.gtodo.lock` (Neovim 版と共有する排他ロック)。
   - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`)。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
   - `view.rs` — 読み取り専用のビュー (一覧・検索・Queue・件数)。CLI と TUI で共有する。
