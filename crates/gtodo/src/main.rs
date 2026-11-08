@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use gtodo_core::config::{self, Platform, ProcessEnv};
 use gtodo_core::task::Status;
 
+use crate::commands::add::{Fields, To};
 use crate::commands::list::Target;
 use crate::workspace::Workspace;
 
@@ -30,6 +31,27 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Add a task (to inbox.md unless --to is given)
+    Add {
+        /// Task text; +project, @context, due:, wait: and a leading (A) are read as in task lines
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+        /// Where to add the task
+        #[arg(long, value_enum, default_value_t = To::Inbox)]
+        to: To,
+        /// Due date (today, tomorrow, +3d, fri, 2026-07-02, ...)
+        #[arg(long)]
+        due: Option<String>,
+        /// Project (+project)
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Context (@context)
+        #[arg(short, long)]
+        context: Option<String>,
+        /// Priority (A-Z)
+        #[arg(long)]
+        priority: Option<char>,
+    },
     /// List tasks (inbox.md and todo.md by default)
     List {
         #[arg(value_enum)]
@@ -98,6 +120,22 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
     let ws = Workspace::open(data_dir, today, &mut warn)?;
 
     match cli.command {
+        Command::Add {
+            text,
+            to,
+            due,
+            project,
+            context,
+            priority,
+        } => {
+            let fields = Fields {
+                due,
+                project,
+                context,
+                priority,
+            };
+            commands::add::run(&ws, &text.join(" "), to, fields, &mut warn, out)
+        }
         Command::List { target, json } => commands::list::run(&ws, target, json, out),
         Command::Search {
             terms,

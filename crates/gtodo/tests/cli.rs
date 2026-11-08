@@ -547,3 +547,129 @@ fn a_rollover_that_cannot_be_recorded_is_warned_and_the_command_still_runs() {
     assert!(stderr.contains("will run again"), "{stderr}");
     assert!(read(&f, "done.md").contains("id:bbbbbb"), "the rollover itself ran");
 }
+
+/// `added <id> to ...` の行から ID を取り出す。
+fn added_id(stdout: &str) -> String {
+    stdout.split_whitespace().nth(1).unwrap().to_string()
+}
+
+#[test]
+fn add_puts_a_task_in_the_inbox_with_its_creation_date() {
+    let f = sample();
+    let out = f.stdout(&["add", "牛乳を買う", "+home"]);
+    let id = added_id(&out);
+    assert_eq!(out, format!("added {id} to inbox.md\n"));
+    assert!(
+        read(&f, "inbox.md").ends_with(&format!("- [ ] 牛乳を買う +home created:{} id:{id}\n", today_str())),
+        "{}",
+        read(&f, "inbox.md")
+    );
+}
+
+#[test]
+fn add_to_a_section_keeps_a_future_due_date_there() {
+    let f = sample();
+    let out = f.stdout(&["add", "資料 due:2099-01-01", "--to", "next"]);
+    let id = added_id(&out);
+    assert_eq!(out, format!("added {id} to Next\n"));
+    let rows = f.json(&["list", "next", "--json"]);
+    assert_eq!(contents(&rows), ["資料", "次1"], "sorted within the section");
+}
+
+#[test]
+fn options_override_tags_in_the_text_of_an_added_task() {
+    let f = sample();
+    let out = f.stdout(&[
+        "add",
+        "(A) 資料 +home due:today",
+        "--due",
+        "2099-01-01",
+        "-p",
+        "work",
+        "-c",
+        "@office",
+        "--priority",
+        "B",
+    ]);
+    let id = added_id(&out);
+    assert!(read(&f, "inbox.md").contains(&format!(
+        "- [ ] (B) 資料 +work @office due:2099-01-01 created:{} id:{id}",
+        today_str()
+    )));
+}
+
+#[test]
+fn a_task_added_to_the_inbox_that_is_already_due_moves_to_today() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let out = f.stdout(&["add", "今日まで due:today"]);
+    assert!(out.ends_with("moved 1 due task(s) to Today\n"), "{out}");
+    let id = added_id(&out);
+    assert!(!read(&f, "inbox.md").contains(&id));
+    assert_eq!(
+        contents(&f.json(&["list", "today", "--json"])),
+        ["今日まで", "今日1", "完了済み"],
+        "todo.md is sorted after the move"
+    );
+}
+
+/// 日付が変わった日にも、期日が来た inbox のタスクの警告は 1 回だけ出す。
+#[test]
+fn due_inbox_tasks_are_reported_once_when_adding_on_a_new_day() {
+    let f = Fixture::new();
+    f.write(".state.json", r#"{"last_opened":"2000-01-01"}"#);
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today":false}"#);
+    f.write(
+        "inbox.md",
+        &format!("# Inbox\n\n- [ ] 受信 due:{} id:aaaaaa\n", today_str()),
+    );
+    let out = f.run(&["add", "別のタスク"]);
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.matches("受信").count(), 1, "{stderr}");
+}
+
+/// 追加の後の期日のチェックに失敗しても、追加は済んでいるので成功として ID を知らせる
+/// (失敗として返すと、実行し直されてタスクが二重になる)。
+#[cfg(unix)]
+#[test]
+fn a_failure_after_the_task_was_added_is_only_a_warning() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    for name in ["inbox.md", "done.md", "cancelled.md"] {
+        f.write(name, "");
+    }
+    let ro = f.dir.path().join("ro");
+    fs::create_dir(&ro).unwrap();
+    fs::write(ro.join("todo.md"), "# Todo\n\n## Today\n").unwrap();
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o500)).unwrap();
+    symlink(ro.join("todo.md"), f.data_dir().join("todo.md")).unwrap();
+
+    let out = f.run(&["add", "今日まで due:today"]);
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let id = added_id(&String::from_utf8(out.stdout).unwrap());
+    assert!(read(&f, "inbox.md").contains(&id));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("checking due dates failed"));
+}
+
+#[test]
+fn invalid_tasks_are_rejected_before_anything_is_written() {
+    let f = Fixture::new();
+    for args in [
+        &["add", "x due:2026-02-30"][..],
+        &["add", "x id:abcdef"],
+        &["add", "+only-a-tag"],
+        &["add", "x", "--due", "someday"],
+        &["add", "x", "-p", "two words"],
+    ] {
+        let out = f.run(args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(
+            fs::read_dir(f.data_dir()).unwrap().next().is_none(),
+            "{args:?} must not even create the missing files"
+        );
+    }
+}
