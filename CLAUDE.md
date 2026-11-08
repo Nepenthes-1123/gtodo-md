@@ -54,7 +54,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
 
 ## 互換性の不変条件
 
-- タスク行の解析結果・文字列化、ファイル構造の解析・書き出し、`logic/` の操作とタスクの完了・未完了 (Lua 版 `editor.lua`) の結果は Lua 版と一致させる。`testdata/golden/*.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` / `markdown/cases.json` / `logic/cases.json` に足して再生成する。
+- タスク行の解析結果・文字列化、ファイル構造の解析・書き出し、`logic/` の操作とタスクの完了・未完了・キャンセル (Lua 版 `editor.lua`) の結果は Lua 版と一致させる。`testdata/golden/*.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` / `markdown/cases.json` / `logic/cases.json` に足して再生成する。
 - Lua 版の不具合と判断して挙動を変えた箇所は、ゴールデンテストに含めず、Rust 側の個別のテストと `ROADMAP.md` の決定事項に記録する。
 - Vim の正規表現を移植するときは、`\s` は `[ \t]`、`\w` は `[0-9A-Za-z_]`、`[:space:]` は `[\t\n\x0B\x0C\r ]` に置き換える。Rust の `\s`/`\w`/`\b` は Unicode の範囲で判定するため、そのまま使うと全角スペースや日本語の直後で結果が変わる。`\<` は `task.rs` の `is_vim_word_start` を使う。
 - 意図して Lua 版と挙動を変えた箇所は、コードコメントに理由を書く (例: `date.rs` の夏時間の扱い)。

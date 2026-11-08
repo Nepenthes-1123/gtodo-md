@@ -1,4 +1,4 @@
-//! タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了が
+//! タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了・キャンセルが
 //! Lua 版 (gtodo-md.nvim の `logic/` と `editor.lua`) と同じファイルを書くことを検証する。
 //! 期待値は `scripts/gen-golden-logic.lua` で Lua 版から生成する。
 
@@ -17,7 +17,7 @@ use serde_json::Value;
 mod common;
 use common::mask_new_ids;
 
-const FILES: [&str; 3] = ["inbox.md", "todo.md", "done.md"];
+const FILES: [&str; 4] = ["inbox.md", "todo.md", "done.md", "cancelled.md"];
 
 fn logic_dir() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/golden/logic"))
@@ -69,12 +69,13 @@ fn file_operations_match_lua_implementation() {
             }
             "move_completed" => ops::move_completed(&data_dir, &names, today).map(drop),
             // Lua 版はカーソル行のタスクを対象にする。同じ行を `gtodo list` が表示するキーで指定する。
-            op @ ("done" | "undone") => {
+            op @ ("done" | "undone" | "cancel") => {
                 let line = case["line"].as_str().unwrap();
                 let key = task_key(&Task::parse_at(line, today).unwrap(), line);
                 match op {
                     "done" => ops::complete(&data_dir, &names, today, &key),
-                    _ => ops::reopen(&data_dir, &names, today, &key),
+                    "undone" => ops::reopen(&data_dir, &names, today, &key),
+                    _ => ops::cancel(&data_dir, &names, today, &key),
                 }
                 .map(drop)
             }

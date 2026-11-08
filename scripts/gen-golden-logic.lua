@@ -1,10 +1,10 @@
--- タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了の
+-- タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了・キャンセルの
 -- ゴールデンデータを、Lua 版 (gtodo-md.nvim) の logic/ と editor.lua から生成する。
 --
 -- 使い方:
 --   nvim --clean --headless -l scripts/gen-golden-logic.lua <gtodo-md.nvim のパス>
 --
--- 入力:  testdata/golden/logic/cases.json と、ケースごとのディレクトリ (inbox.md / todo.md / done.md)
+-- 入力:  testdata/golden/logic/cases.json と、ケースごとのディレクトリ (inbox.md / todo.md / done.md / cancelled.md)
 -- 出力:  testdata/golden/logic.json (ケースごとに、書き込まれたファイルと行を書き込んだ順に)
 --
 -- `--clean` が必須な理由は gen-golden-task.lua と同じ。ファイルは書き換えない (書き込みは横取りする)。
@@ -92,7 +92,7 @@ for i, case in ipairs(cases) do
 		logic.check_dues(inbox, todo)
 	elseif case.op == "move_completed" then
 		logic.move_completed_tasks(inbox, todo, done)
-	elseif case.op == "done" or case.op == "undone" then
+	elseif case.op == "done" or case.op == "undone" or case.op == "cancel" then
 		-- editor.lua の操作はカーソル行のタスクを対象にするため、ファイルを開いて対象の行へ移る。
 		vim.cmd("silent! %bwipeout!")
 		vim.cmd.edit(vim.fn.fnameescape(dir .. "/" .. case.file))
@@ -104,7 +104,11 @@ for i, case in ipairs(cases) do
 		end
 		assert(row, "line not found: " .. case.line)
 		vim.api.nvim_win_set_cursor(0, { row, 0 })
-		editor.toggle_complete()
+		if case.op == "cancel" then
+			editor.cancel_current_task()
+		else
+			editor.toggle_complete()
+		end
 	else
 		error("unknown op: " .. tostring(case.op))
 	end

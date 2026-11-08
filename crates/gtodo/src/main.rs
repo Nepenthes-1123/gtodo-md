@@ -62,6 +62,11 @@ enum Command {
         /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
         task: String,
     },
+    /// Move a task to cancelled.md
+    Cancel {
+        /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
+        task: String,
+    },
     /// List tasks (inbox.md and todo.md by default)
     List {
         #[arg(value_enum)]
@@ -148,6 +153,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
         }
         Command::Done { task } => commands::done::done(&ws, &task, &mut warn, out),
         Command::Undone { task } => commands::done::undone(&ws, &task, &mut warn, out),
+        Command::Cancel { task } => commands::cancel::run(&ws, &task, &mut warn, out),
         Command::List { target, json } => commands::list::run(&ws, target, json, out),
         Command::Search {
             terms,

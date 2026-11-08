@@ -249,6 +249,50 @@ fn set_status(
     Ok(result)
 }
 
+/// キーで指定したタスクを cancelled.md の今月の見出しへ移す (Lua 版 `editor.lua` の
+/// `cancel_current_task`)。移したタスクを返す。
+pub fn cancel(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, key: &str) -> Result<Task, OpError> {
+    let mut inbox = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+    let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let at = locate(data_dir, names, today, &inbox.doc, &todo.doc, key)?;
+    let id = unused_id(&[&inbox.doc, &todo.doc]);
+    let file = match at.file {
+        FileKind::Inbox => &mut inbox,
+        _ => &mut todo,
+    };
+    let Item::Task(item) = file.items_mut(at.section).remove(at.index) else {
+        unreachable!("key::find only returns tasks");
+    };
+    let mut task = item.task;
+    task.cancelled = Some(today.format("%Y-%m-%d").to_string());
+    task.id.get_or_insert(id);
+    let result = task.clone();
+
+    let cancelled_path = data_dir.path(FileKind::Cancelled);
+    let append = || -> Result<(), OpError> {
+        let cancelled = store::read_file(&cancelled_path)?;
+        let mut lines = cancelled.lines;
+        // 完了タスクと違い、タスクの日付ではなくキャンセルした日の月へ入れる (Lua 版と同じ)。
+        let month = today.format("%Y-%m").to_string();
+        history::insert_tasks(&mut lines, "Cancelled", &month, &mut [task]);
+        atomic::write_lines(&cancelled_path, &lines, cancelled.crlf, cancelled.stamp.as_ref())?;
+        Ok(())
+    };
+    let remove = || -> Result<(), OpError> {
+        match at.file {
+            FileKind::Todo => file.write()?,
+            // set_status で 1 行だけを書き換えるのと同じ理由。
+            _ => {
+                file.lines.remove(item.lnum - 1);
+                file.write_lines()?;
+            }
+        }
+        Ok(())
+    };
+    append_then_remove(data_dir.root(), cancelled_path.clone(), append, remove)?;
+    Ok(result)
+}
+
 /// todo.md の各セクションのタスクを並べ替える。
 pub fn sort_todo(data_dir: &DataDir, names: &SectionNames, today: NaiveDate) -> Result<(), OpError> {
     let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
@@ -547,6 +591,47 @@ mod tests {
         fs::write(dir.path().join("inbox.md"), "# Inbox\r\n\r\n- [ ] 受信 id:aaaaaa\r\n").unwrap();
         complete(&DataDir::new(dir.path()), &SectionNames::default(), today(), "aaaaaa").unwrap();
         assert_crlf(&dir.path().join("inbox.md"));
+    }
+
+    #[test]
+    fn crlf_is_kept_in_cancelled_md() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("todo.md"), TODO).unwrap();
+        fs::write(dir.path().join("cancelled.md"), "# Cancelled\r\n").unwrap();
+        super::cancel(&DataDir::new(dir.path()), &SectionNames::default(), today(), "bbbbbb").unwrap();
+        assert_crlf(&dir.path().join("cancelled.md"));
+    }
+
+    fn cancel(d: &DataDir) -> Result<(), OpError> {
+        super::cancel(d, &SectionNames::default(), today(), "bbbbbb").map(drop)
+    }
+
+    #[test]
+    fn a_cancelled_task_stays_in_todo_when_cancelled_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("todo.md"), TODO).unwrap();
+        make_unwritable(dir.path(), "cancelled.md", "# Cancelled\n");
+
+        assert!(matches!(run(dir.path(), cancel), Err(OpError::Write(_))));
+        assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
+    }
+
+    #[test]
+    fn a_cancelled_task_is_left_in_both_files_when_todo_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        make_unwritable(dir.path(), "todo.md", TODO);
+
+        let err = run(dir.path(), cancel).unwrap_err();
+        assert!(
+            matches!(&err, OpError::PartiallyMoved { added, .. } if added.ends_with("cancelled.md")),
+            "{err}"
+        );
+        assert!(
+            fs::read_to_string(dir.path().join("cancelled.md"))
+                .unwrap()
+                .contains("id:bbbbbb")
+        );
+        assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
     }
 
     #[test]

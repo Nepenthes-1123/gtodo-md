@@ -744,12 +744,31 @@ fn a_key_matching_several_tasks_changes_nothing() {
     assert_eq!(snapshot(&f.data_dir()), before);
 }
 
+#[test]
+fn cancel_moves_the_task_under_this_month_in_cancelled_md() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(f.stdout(&["cancel", "cccccc"]), "cancelled cccccc: 待ち1\n");
+    assert!(!read(&f, "todo.md").contains("cccccc"));
+    let month = &today_str()[..7];
+    assert!(
+        read(&f, "cancelled.md").ends_with(&format!(
+            "## {month}\n\n- [ ] 待ち1 wait:bob cancelled:{} id:cccccc\n",
+            today_str()
+        )),
+        "{}",
+        read(&f, "cancelled.md")
+    );
+}
+
 /// ID の無いタスクを操作したときに表示する ID が、書き込まれた ID と一致すること。
 #[test]
 fn the_reported_id_of_a_task_without_one_is_the_id_written() {
     for (op, file, line, written_to) in [
         ("done", "todo.md", "- [ ] 今日", "todo.md"),
         ("done", "inbox.md", "- [ ] 受信", "inbox.md"),
+        ("cancel", "todo.md", "- [ ] 今日", "cancelled.md"),
+        ("cancel", "inbox.md", "- [ ] 受信", "cancelled.md"),
     ] {
         let f = Fixture::new();
         f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
