@@ -691,6 +691,21 @@ fn done_takes_an_id_prefix_and_refuses_to_repeat() {
     );
 }
 
+#[test]
+fn undone_reopens_a_completed_task_and_refuses_an_open_one() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.stdout(&["done", "aaaaaa"]);
+    assert_eq!(f.stdout(&["undone", "aaaaaa"]), "reopened aaaaaa: 今日1\n");
+    assert!(read(&f, "todo.md").contains("- [ ] (A) 今日1 +work @office id:aaaaaa"));
+    let again = f.run(&["undone", "aaaaaa"]);
+    assert!(!again.status.success());
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("not completed"),
+        "{again:?}"
+    );
+}
+
 /// ID の無いタスクは一時キーで指定でき、完了にしたときに付いた ID を知らせる。
 /// 行が書き換わった後の一時キーは、`list` し直すよう案内する。
 #[test]

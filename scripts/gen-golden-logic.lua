@@ -1,4 +1,4 @@
--- タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了の
+-- タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了の
 -- ゴールデンデータを、Lua 版 (gtodo-md.nvim) の logic/ と editor.lua から生成する。
 --
 -- 使い方:
@@ -92,7 +92,7 @@ for i, case in ipairs(cases) do
 		logic.check_dues(inbox, todo)
 	elseif case.op == "move_completed" then
 		logic.move_completed_tasks(inbox, todo, done)
-	elseif case.op == "done" then
+	elseif case.op == "done" or case.op == "undone" then
 		-- editor.lua の操作はカーソル行のタスクを対象にするため、ファイルを開いて対象の行へ移る。
 		vim.cmd("silent! %bwipeout!")
 		vim.cmd.edit(vim.fn.fnameescape(dir .. "/" .. case.file))

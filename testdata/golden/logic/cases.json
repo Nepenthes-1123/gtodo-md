@@ -10,10 +10,13 @@
   { "dir": "done_todo", "op": "done", "file": "todo.md", "line": "- [ ] 完了にする due:2026-03-01 id:n00003" },
   { "dir": "done_todo_no_id", "op": "done", "file": "todo.md", "line": "- [ ] IDの無いタスク" },
   { "dir": "done_inbox", "op": "done", "file": "inbox.md", "line": "- [ ] 受信1" },
+  { "dir": "undone_todo", "op": "undone", "file": "todo.md", "line": "- [x] 戻す completed_at:2026-02-01 id:t00002" },
+  { "dir": "undone_inbox", "op": "undone", "file": "inbox.md", "line": "- [x] 戻す completed_at:2026-02-01" },
   { "dir": "done_todo_preamble", "op": "done", "file": "todo.md", "line": "- [ ] 前1 id:p00001" },
   { "dir": "done_todo_duplicate_headings", "op": "done", "file": "todo.md", "line": "- [ ] B id:t00002" },
   { "dir": "done_todo_unmanaged_section", "op": "done", "file": "todo.md", "line": "- [ ] P1 id:x00001" },
   { "dir": "done_todo_relative_due", "op": "done", "file": "todo.md", "line": "- [ ] 対象" },
   { "dir": "done_todo_duplicate_ids", "op": "done", "file": "todo.md", "line": "- [ ] 対象 id:t00003" },
-  { "dir": "done_inbox_indented", "op": "done", "file": "inbox.md", "line": "    - [ ] 子 IDなし" }
+  { "dir": "done_inbox_indented", "op": "done", "file": "inbox.md", "line": "    - [ ] 子 IDなし" },
+  { "dir": "undone_inbox_uppercase", "op": "undone", "file": "inbox.md", "line": "- [X] 大文字 completed_at:2026-02-01 id:i00001" }
 ]

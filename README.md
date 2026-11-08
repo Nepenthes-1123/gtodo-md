@@ -3,7 +3,7 @@
 GTD 志向の Markdown Todo 管理ツール [gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) の TUI/CLI 版です。
 Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled.md` / `projects/*.md`) を読み書きし、同じデータを同時に使えることを目指しています。
 
-開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`sort` が使えます。
+開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`undone`・`sort` が使えます。
 
 ## 使い方
 
@@ -16,6 +16,7 @@ gtodo stats                   # ステータスライン向けの件数
 gtodo add 牛乳を買う +home     # inbox.md へ追加 (--to today|next|waiting|someday で todo.md のセクションへ)
 gtodo add 資料 --due fri -p work -c office --priority A
 gtodo done a1b2               # 完了にする (done.md へ移るのは翌日の整理のとき)
+gtodo undone a1b2             # 完了を取り消す (done.md へ移る前まで)
 gtodo sort                    # 期日が来たタスクを Today へ移し、todo.md を並べ替える
 ```
 

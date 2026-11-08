@@ -14,3 +14,11 @@ pub fn done(ws: &Workspace, key: &str, warn: &mut impl FnMut(String), out: &mut 
     writeln!(out, "completed {}: {}", task.id.unwrap_or_default(), task.content)?;
     Ok(())
 }
+
+pub fn undone(ws: &Workspace, key: &str, warn: &mut impl FnMut(String), out: &mut String) -> Result<()> {
+    let task = writing::with_lock(ws, false, warn, || {
+        Ok(ops::reopen(&ws.data_dir, &ws.names, ws.today, key)?)
+    })?;
+    writeln!(out, "reopened {}: {}", task.id.unwrap_or_default(), task.content)?;
+    Ok(())
+}

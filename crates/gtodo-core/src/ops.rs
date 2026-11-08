@@ -29,6 +29,8 @@ pub enum OpError {
     Archived { key: String, file: FileKind },
     #[error("{0} is already completed")]
     AlreadyCompleted(String),
+    #[error("{0} is not completed")]
+    NotCompleted(String),
     /// 2 ファイルにまたがる移動で、追記した後の削除に失敗した。削除できなかったタスクは両方のファイルにある。
     #[error(
         "the tasks were added to {} but some could not be removed from where they were, so they may appear in both files; remove the duplicates by hand: {source}",
@@ -157,6 +159,13 @@ pub fn complete(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, key:
     set_status(data_dir, names, today, key, Status::Done)
 }
 
+/// キーで指定した完了済みのタスクを未完了に戻す (Lua 版 `editor.lua` の完了トグル)。戻したタスクを返す。
+///
+/// done.md へ移った後のタスクは対象にしない (Lua 版も done.md からは戻さない)。
+pub fn reopen(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, key: &str) -> Result<Task, OpError> {
+    set_status(data_dir, names, today, key, Status::Open)
+}
+
 /// 操作の対象を inbox.md と todo.md から探す。見つからなければ done.md と cancelled.md も探し、
 /// そこにあれば、`gtodo list` し直すよう案内する代わりにその旨を伝える (日付が変わった後の
 /// 日次の整理で、完了にしたタスクが done.md へ移っていることがある)。
@@ -208,8 +217,10 @@ fn set_status(
     let Item::Task(item) = &mut items[at.index] else {
         unreachable!("key::find only returns tasks");
     };
-    if item.task.status == status {
-        return Err(OpError::AlreadyCompleted(key.to_string()));
+    match (item.task.status, status) {
+        (Status::Done, Status::Done) => return Err(OpError::AlreadyCompleted(key.to_string())),
+        (Status::Open, Status::Open) => return Err(OpError::NotCompleted(key.to_string())),
+        _ => {}
     }
     let task = &mut item.task;
     task.status = status;
