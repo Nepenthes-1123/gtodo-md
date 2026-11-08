@@ -19,6 +19,7 @@ gtodo done a1b2               # 完了にする (done.md へ移るのは翌日�
 gtodo undone a1b2             # 完了を取り消す (done.md へ移る前まで)
 gtodo cancel ~3fa91c          # cancelled.md へ移す
 gtodo move a1b2 next          # todo.md のセクションへ移す (today | next | waiting | someday)
+gtodo move a1b2 waiting --wait 田中さん
 gtodo sort                    # 期日が来たタスクを Today へ移し、todo.md を並べ替える
 ```
 
@@ -30,7 +31,7 @@ gtodo sort                    # 期日が来たタスクを Today へ移し、to
 `done` などでタスクを指定するときは、このキーを使います。ID は他のタスクと区別できれば先頭の一部だけでも構いません。一時キーは行が書き換わると使えなくなるので (Neovim 版は保存のたびに ID を付けます)、そのときは `list` し直してください。
 同じ ID のタスクが複数あるとどれも指定できないので、Neovim 版で片方の `id:` を消してください (保存したときに新しい ID が付きます)。
 
-`move` は inbox.md か todo.md のタスクを todo.md のセクションへ移します。Waiting 以外へ移すと待ち先 (`wait:`) は消えます。Waiting へ移すときは今の待ち先を残します。
+`move` は inbox.md か todo.md のタスクを todo.md のセクションへ移します。Waiting 以外へ移すと待ち先 (`wait:`) は消えます。Waiting へ移すとき、`--wait` を省略すると今の待ち先を残し、`--wait ""` で消します。すでに Waiting にあるタスクの待ち先を変えるときも `--wait` を使います。
 
 読み取り系のコマンドはファイルを一切書き換えません。Neovim 版で編集中のファイルがあっても安全に使えます。
 

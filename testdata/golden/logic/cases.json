@@ -37,5 +37,9 @@
   { "dir": "move_todo_duplicate_headings_same", "op": "move", "file": "todo.md", "line": "- [ ] 移す id:n00003", "to": "NEXT" },
   { "dir": "move_inbox", "op": "move", "file": "inbox.md", "line": "- [ ] 移す   IDなし   ", "to": "NEXT" },
   { "dir": "move_inbox_no_sections", "op": "move", "file": "inbox.md", "line": "- [ ] 受信 id:i00001", "to": "NEXT" },
-  { "dir": "move_inbox_indented", "op": "move", "file": "inbox.md", "line": "    - [ ] 子 id:i00002", "to": "NEXT" }
+  { "dir": "move_inbox_indented", "op": "move", "file": "inbox.md", "line": "    - [ ] 子 id:i00002", "to": "NEXT" },
+  { "dir": "move_todo_to_waiting_set", "op": "move", "file": "todo.md", "line": "- [ ] 頼む due:2026-02-20 id:n00001", "to": "WAITING", "wait": "alice" },
+  { "dir": "move_waiting_update", "op": "move", "file": "todo.md", "line": "- [ ] (A) 待ち先を変える wait:bob id:w00002", "to": "WAITING", "wait": "carol" },
+  { "dir": "move_waiting_remove", "op": "move", "file": "todo.md", "line": "- [ ] (A) 待ち先を変える wait:bob id:w00002", "to": "WAITING", "wait": "" },
+  { "dir": "move_inbox_to_waiting", "op": "move", "file": "inbox.md", "line": "- [ ] 頼んだ id:i00001", "to": "WAITING", "wait": "bob" }
 ]

@@ -81,7 +81,12 @@ fn file_operations_match_lua_implementation() {
                             .into_iter()
                             .find(|k| k.state_key() == case["to"])
                             .unwrap();
-                        ops::move_task(&data_dir, &names, today, &key, to).map(drop)
+                        let wait = match case["wait"].as_str() {
+                            None => ops::Wait::Keep,
+                            Some("") => ops::Wait::Remove,
+                            Some(w) => ops::Wait::Set(w.to_string()),
+                        };
+                        ops::move_task(&data_dir, &names, today, &key, to, wait).map(drop)
                     }
                     _ => ops::cancel(&data_dir, &names, today, &key).map(drop),
                 }

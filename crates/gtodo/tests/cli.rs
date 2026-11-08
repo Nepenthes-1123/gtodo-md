@@ -820,6 +820,47 @@ fn move_takes_a_task_out_of_the_inbox() {
 }
 
 #[test]
+fn the_wait_option_sets_or_removes_the_wait() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(
+        f.stdout(&["move", "aaaaaa", "waiting", "--wait", "alice"]),
+        "moved aaaaaa to Waiting (wait:alice): 今日1\n"
+    );
+    assert_eq!(
+        f.stdout(&["move", "aaaaaa", "waiting", "--wait", "carol"]),
+        "set wait:carol on aaaaaa: 今日1\n"
+    );
+    assert!(read(&f, "todo.md").contains("- [ ] (A) 今日1 +work @office wait:carol id:aaaaaa"));
+    assert_eq!(
+        f.stdout(&["move", "aaaaaa", "waiting", "--wait", ""]),
+        "removed wait: from aaaaaa: 今日1\n"
+    );
+    assert!(read(&f, "todo.md").contains("- [ ] (A) 今日1 +work @office id:aaaaaa"));
+
+    assert_eq!(
+        f.stdout(&["move", "111111", "waiting", "--wait", "bob"]),
+        "moved 111111 to Waiting (wait:bob): 受信2\n"
+    );
+    assert!(read(&f, "todo.md").contains("- [ ] 受信2 +work wait:bob id:111111"));
+}
+
+/// 待ち先だけを変えたときも、ID の無いタスクに付いた ID を知らせる。
+#[test]
+fn changing_the_wait_of_a_task_without_an_id_reports_the_id_written() {
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write("todo.md", "# Todo\n\n## Waiting\n\n- [ ] 待ち\n- [ ] 他\n");
+    let key = gtodo_core::key::line_key("- [ ] 待ち");
+    let out = f.stdout(&["move", &key, "waiting", "--wait", "bob"]);
+    let id = out
+        .strip_prefix("set wait:bob on ")
+        .and_then(|rest| rest.strip_suffix(": 待ち\n"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(read(&f, "todo.md").contains(&format!("- [ ] 待ち wait:bob id:{id}\n")));
+}
+
+#[test]
 fn moving_a_task_to_the_section_it_is_in_writes_nothing() {
     let f = sample();
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
@@ -827,6 +868,10 @@ fn moving_a_task_to_the_section_it_is_in_writes_nothing() {
     assert_eq!(f.stdout(&["move", "aaaaaa", "today"]), "aaaaaa is already in Today\n");
     assert_eq!(
         f.stdout(&["move", "cccccc", "waiting"]),
+        "cccccc is already in Waiting\n"
+    );
+    assert_eq!(
+        f.stdout(&["move", "cccccc", "waiting", "--wait", "bob"]),
         "cccccc is already in Waiting\n"
     );
     let key = gtodo_core::key::line_key("- [ ] 次1 @home");
@@ -840,7 +885,9 @@ fn moves_that_cannot_be_done_as_asked_change_nothing() {
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
     let before = snapshot(&f.data_dir());
     for (args, message) in [
-        (&["move", "bbbbbb", "next"][..], "completed"),
+        (&["move", "aaaaaa", "next", "--wait", "bob"][..], "--wait"),
+        (&["move", "aaaaaa", "waiting", "--wait", "bob smith"], "wait:"),
+        (&["move", "bbbbbb", "next"], "completed"),
         (&["move", "dddddd", "next"], "done.md"),
     ] {
         let out = f.run(args);

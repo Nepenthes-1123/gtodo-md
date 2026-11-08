@@ -107,9 +107,9 @@ for i, case in ipairs(cases) do
 		if case.op == "cancel" then
 			editor.cancel_current_task()
 		elseif case.op == "move" then
-			-- Waiting へ移すときの待ち先の入力欄は、初期値 (今の待ち先) のまま確定する。
+			-- Waiting へ移すときの待ち先の入力欄。`wait` の無いケースは初期値 (今の待ち先) のまま確定する。
 			vim.ui.input = function(opts, on_confirm)
-				on_confirm(opts.default)
+				on_confirm(case.wait == nil and opts.default or case.wait)
 			end
 			editor.move_current_task_to(config.sections[case.to])
 		else
@@ -129,6 +129,9 @@ for i, case in ipairs(cases) do
 	end
 	if case.to then
 		target = target .. string.format('"to":%s,', vim.json.encode(case.to))
+	end
+	if case.wait then
+		target = target .. string.format('"wait":%s,', vim.json.encode(case.wait))
 	end
 	local entry = string.format(
 		'{"dir":%s,"op":%s,%s"auto_move_inbox_to_today":%s,"sections_config":%s,"writes":[%s]}',

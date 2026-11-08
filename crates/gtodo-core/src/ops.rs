@@ -303,11 +303,23 @@ pub fn cancel(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, key: &
     Ok(result)
 }
 
+/// [`move_task`] で、移動先が Waiting のときの待ち先 (`wait:`) の扱い。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wait {
+    /// 今の待ち先を残す (Neovim 版で、待ち先の入力欄を初期値のまま確定したときと同じ)。
+    Keep,
+    Set(String),
+    /// 待ち先を消す (Neovim 版で、入力欄を空にして確定したときと同じ)。
+    Remove,
+}
+
 /// [`move_task`] の結果。どれも操作したタスクを持つ。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Moved {
     /// 別のセクションへ移した。
     Moved(Task),
+    /// Waiting にあるタスクの待ち先だけを変えた。
+    WaitChanged(Task),
     /// すでに移動先のセクションにあり、何も書かなかった。
     AlreadyThere(Task),
 }
@@ -315,7 +327,8 @@ pub enum Moved {
 /// キーで指定したタスクを todo.md のセクションへ移す (Lua 版 `editor.lua` の
 /// `move_current_task_to`)。
 ///
-/// 移動先が Waiting でなければ待ち先を消す。移した後は、移動元と移動先のセクションを並べ替える
+/// 移動先が Waiting でなければ待ち先を消す (`wait` は見ない)。すでに Waiting にあるタスクは、
+/// 待ち先を変えるときだけ書く。移した後は、移動元と移動先のセクションを並べ替える
 /// (inbox.md からの移動では移動先だけ)。
 ///
 /// 移動先の見出しが無ければ末尾に作る。Lua 版は inbox.md から移すとき、見出しの無いセクションへ
@@ -326,6 +339,7 @@ pub fn move_task(
     today: NaiveDate,
     key: &str,
     to: SectionKey,
+    wait: Wait,
 ) -> Result<Moved, OpError> {
     let mut inbox = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
     let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
@@ -339,15 +353,28 @@ pub fn move_task(
     };
 
     let items = file.items_mut(at.section);
-    let Item::Task(item) = &items[at.index] else {
+    let Item::Task(item) = &mut items[at.index] else {
         unreachable!("key::find only returns tasks");
     };
     // 完了したタスクは次の日次の整理で done.md へ移るため、セクションを変える意味が無い (Lua 版と同じ)。
     if item.task.status == Status::Done {
         return Err(OpError::MoveCompleted(key.to_string()));
     }
+    let new_wait = match (to, wait) {
+        (SectionKey::Waiting, Wait::Keep) => item.task.wait.clone(),
+        (SectionKey::Waiting, Wait::Set(w)) => Some(w),
+        _ => None,
+    };
     if same {
-        return Ok(Moved::AlreadyThere(item.task.clone()));
+        if to != SectionKey::Waiting || new_wait == item.task.wait {
+            return Ok(Moved::AlreadyThere(item.task.clone()));
+        }
+        // Lua 版は待ち先だけを変えるときは並べ替えない。
+        item.task.wait = new_wait;
+        item.task.id.get_or_insert(id);
+        let result = item.task.clone();
+        file.write()?;
+        return Ok(Moved::WaitChanged(result));
     }
 
     let Item::Task(item) = items.remove(at.index) else {
@@ -355,9 +382,7 @@ pub fn move_task(
     };
     let lnum = item.lnum;
     let mut task = item.task;
-    if to != SectionKey::Waiting {
-        task.wait = None;
-    }
+    task.wait = new_wait;
     // 書き出すときにファイル内の重複として振り直されると、利用者に知らせた ID と食い違うため、先に決める。
     task.id.get_or_insert(id);
     let result = task.clone();
@@ -741,7 +766,15 @@ mod tests {
     const MOVE_INBOX: &str = "# Inbox\n- [ ] 受信 id:aaaaaa\n";
 
     fn move_to_next(d: &DataDir) -> Result<(), OpError> {
-        move_task(d, &SectionNames::default(), today(), "aaaaaa", SectionKey::Next).map(drop)
+        move_task(
+            d,
+            &SectionNames::default(),
+            today(),
+            "aaaaaa",
+            SectionKey::Next,
+            Wait::Keep,
+        )
+        .map(drop)
     }
 
     #[test]
@@ -795,7 +828,7 @@ mod tests {
         fs::write(dir.path().join("todo.md"), todo).unwrap();
         let names = SectionNames::from_last(&[Some("今日".into()), None, None, None]).unwrap();
         let data_dir = DataDir::new(dir.path());
-        let move_to = |to| move_task(&data_dir, &names, today(), "aaaaaa", to).unwrap();
+        let move_to = |to| move_task(&data_dir, &names, today(), "aaaaaa", to, Wait::Keep).unwrap();
 
         assert!(matches!(move_to(SectionKey::Today), Moved::AlreadyThere(_)));
         assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), todo);
@@ -816,6 +849,7 @@ mod tests {
             today(),
             "bbbbbb",
             SectionKey::Next,
+            Wait::Keep,
         )
         .unwrap_err();
         assert!(matches!(err, OpError::MoveCompleted(_)), "{err}");

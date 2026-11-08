@@ -74,6 +74,9 @@ enum Command {
         task: String,
         #[arg(value_enum)]
         to: MoveTo,
+        /// Who you are waiting for (only with waiting; "" removes it, omitted keeps it)
+        #[arg(long, value_name = "WHO")]
+        wait: Option<String>,
     },
     /// List tasks (inbox.md and todo.md by default)
     List {
@@ -162,7 +165,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
         Command::Done { task } => commands::done::done(&ws, &task, &mut warn, out),
         Command::Undone { task } => commands::done::undone(&ws, &task, &mut warn, out),
         Command::Cancel { task } => commands::cancel::run(&ws, &task, &mut warn, out),
-        Command::Move { task, to } => commands::move_task::run(&ws, &task, to, &mut warn, out),
+        Command::Move { task, to, wait } => commands::move_task::run(&ws, &task, to, wait, &mut warn, out),
         Command::List { target, json } => commands::list::run(&ws, target, json, out),
         Command::Search {
             terms,
