@@ -1,3 +1,7 @@
 [
-  { "dir": "sort", "op": "sort" }
+  { "dir": "sort", "op": "sort" },
+  { "dir": "dues", "op": "check_dues" },
+  { "dir": "dues_no_auto", "op": "check_dues", "auto_move_inbox_to_today": false },
+  { "dir": "dues_none", "op": "check_dues" },
+  { "dir": "dues_custom_names", "op": "check_dues", "sections": { "TODAY": "今日", "NEXT": "次" } }
 ]

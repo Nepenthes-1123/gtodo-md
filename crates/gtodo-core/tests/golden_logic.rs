@@ -1,4 +1,4 @@
-//! タスクの並べ替えが Lua 版 (gtodo-md.nvim の `logic/`) と
+//! タスクの並べ替え・期日による昇格が Lua 版 (gtodo-md.nvim の `logic/`) と
 //! 同じファイルを書くことを検証する。期待値は `scripts/gen-golden-logic.lua` で Lua 版から生成する。
 
 use std::collections::HashSet;
@@ -61,6 +61,10 @@ fn file_operations_match_lua_implementation() {
         let names = section_names(&case["sections_config"]);
         let result = match case["op"].as_str().unwrap() {
             "sort" => ops::sort_todo(&data_dir, &names, today).map(drop),
+            "check_dues" => {
+                let auto_move = case["auto_move_inbox_to_today"].as_bool().unwrap();
+                ops::check_dues(&data_dir, &names, today, auto_move).map(drop)
+            }
             op => panic!("unknown op {op}"),
         };
         if let Err(e) = result {
@@ -69,6 +73,7 @@ fn file_operations_match_lua_implementation() {
         }
 
         // Lua 版は内容が変わらなくても書き込みを呼ぶため、書いた順ではなく最後の内容を比べる。
+        // 順序 (追記してから削除) は ops の個別のテストで確かめる。
         for file in FILES {
             let lua_last = case["writes"]
                 .as_array()

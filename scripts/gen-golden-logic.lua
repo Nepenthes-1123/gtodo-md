@@ -1,4 +1,4 @@
--- タスクの並べ替えのゴールデンデータを、Lua 版 (gtodo-md.nvim) の
+-- タスクの並べ替え・期日による昇格のゴールデンデータを、Lua 版 (gtodo-md.nvim) の
 -- logic/ から生成する。
 --
 -- 使い方:
@@ -84,9 +84,11 @@ for i, case in ipairs(cases) do
 	config.last_sections = {}
 
 	writes = {}
-	local todo = dir .. "/todo.md"
+	local inbox, todo = dir .. "/inbox.md", dir .. "/todo.md"
 	if case.op == "sort" then
 		logic.sort_todo_file(todo)
+	elseif case.op == "check_dues" then
+		logic.check_dues(inbox, todo)
 	else
 		error("unknown op: " .. tostring(case.op))
 	end
