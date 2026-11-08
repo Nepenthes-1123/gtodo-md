@@ -771,6 +771,8 @@ fn the_reported_id_of_a_task_without_one_is_the_id_written() {
         (&["cancel"], "inbox.md", "- [ ] 受信", "cancelled.md"),
         (&["move", "next"], "todo.md", "- [ ] 今日", "todo.md"),
         (&["move", "next"], "inbox.md", "- [ ] 受信", "todo.md"),
+        (&["edit", "直した"], "todo.md", "- [ ] 今日", "todo.md"),
+        (&["edit", "直した"], "inbox.md", "- [ ] 受信", "inbox.md"),
     ] {
         let f = Fixture::new();
         f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
@@ -896,4 +898,150 @@ fn moves_that_cannot_be_done_as_asked_change_nothing() {
         assert!(stderr.contains(message), "{args:?}: {stderr}");
     }
     assert_eq!(snapshot(&f.data_dir()), before);
+}
+
+#[test]
+fn edit_changes_only_what_is_given() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(
+        f.stdout(&["edit", "aaa", "新しい", "本文"]),
+        "edited aaaaaa: 新しい 本文\n"
+    );
+    assert!(read(&f, "todo.md").contains(&format!(
+        "- [ ] (A) 新しい 本文 +work @office created:{} id:aaaaaa\n",
+        today_str()
+    )));
+    f.stdout(&["edit", "aaaaaa", "@home"]);
+    assert!(read(&f, "todo.md").contains(&format!(
+        "- [ ] (A) 新しい 本文 +work @home created:{} id:aaaaaa\n",
+        today_str()
+    )));
+}
+
+#[test]
+fn edit_options_change_or_remove_values() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let next_week = (Local::now().date_naive() + Days::new(7))
+        .format("%Y-%m-%d")
+        .to_string();
+    f.stdout(&[
+        "edit",
+        "aaaaaa",
+        "wait:bob",
+        "--due",
+        "+1w",
+        "-p",
+        "",
+        "--priority",
+        "B",
+    ]);
+    assert!(read(&f, "todo.md").contains(&format!(
+        "- [ ] (B) 今日1 @office due:{next_week} created:{} wait:bob id:aaaaaa\n",
+        today_str()
+    )));
+}
+
+#[test]
+fn a_task_edited_to_be_due_moves_to_today() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write("todo.md", "# Todo\n\n## Today\n\n## Next\n\n- [ ] 次 id:aaaaaa\n");
+    assert_eq!(
+        f.stdout(&["edit", "aaaaaa", "due:today"]),
+        "edited aaaaaa: 次\nmoved 1 due task(s) to Today\n"
+    );
+    let todo = read(&f, "todo.md");
+    assert!(
+        todo.find("id:aaaaaa").unwrap() < todo.find("## Next").unwrap(),
+        "{todo}"
+    );
+}
+
+#[test]
+fn edits_that_cannot_be_done_as_asked_change_nothing() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let before = snapshot(&f.data_dir());
+    for (args, message) in [
+        (&["edit", "aaaaaa"][..], "nothing to change"),
+        (&["edit", "aaaaaa", "x", "created:2026-01-01"], "created:"),
+        (&["edit", "aaaaaa", "due:someday"], "invalid due date"),
+        (&["edit", "dddddd", "x"], "done.md"),
+        (&["edit", "aaaaaa", "--priority", "ab"], "--priority"),
+        (&["edit", "aaaaaa", "--due", "2026-02-30"], "invalid due date"),
+    ] {
+        let out = f.run(args);
+        assert!(!out.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+    assert_eq!(snapshot(&f.data_dir()), before);
+}
+
+#[test]
+fn a_failure_after_the_task_was_edited_is_only_a_warning() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    for name in ["done.md", "cancelled.md"] {
+        f.write(name, "");
+    }
+    f.write("inbox.md", "# Inbox\n\n- [ ] 受信 id:aaaaaa\n");
+    let ro = f.dir.path().join("ro");
+    fs::create_dir(&ro).unwrap();
+    fs::write(ro.join("todo.md"), "# Todo\n\n## Today\n").unwrap();
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o500)).unwrap();
+    symlink(ro.join("todo.md"), f.data_dir().join("todo.md")).unwrap();
+
+    let out = f.run(&["edit", "aaaaaa", "due:today"]);
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(read(&f, "inbox.md").contains(&format!("due:{}", today_str())));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("checking due dates failed"));
+}
+
+/// todo.md のタスクを編集すると、Neovim 版と同じく todo.md 全体を並べ替える。
+#[test]
+fn editing_a_todo_task_sorts_todo_md() {
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [ ] 今日 id:aaaaaa\n\n## Someday\n\n- [ ] (B) 後 id:bbbbbb\n- [ ] (A) 先 id:cccccc\n",
+    );
+    f.stdout(&["edit", "aaaaaa", "今日の分"]);
+    let todo = read(&f, "todo.md");
+    assert!(
+        todo.find("id:cccccc").unwrap() < todo.find("id:bbbbbb").unwrap(),
+        "{todo}"
+    );
+}
+
+/// inbox.md のタスクは、期日で動くものが無ければ todo.md に触れない。
+#[test]
+fn editing_an_inbox_task_leaves_todo_md_alone() {
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write("inbox.md", "# Inbox\n\n- [ ] 受信 id:aaaaaa\n");
+    let todo = "# Todo\n\n## Someday\n\n- [ ] (B) 後 id:bbbbbb\n- [ ] (A) 先 id:cccccc\n";
+    f.write("todo.md", todo);
+    f.stdout(&["edit", "aaaaaa", "直した"]);
+    assert_eq!(read(&f, "todo.md"), todo);
+}
+
+#[test]
+fn an_edited_inbox_task_that_is_due_stays_when_it_is_not_moved_automatically() {
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today":false}"#);
+    f.write("inbox.md", "# Inbox\n\n- [ ] 受信 id:aaaaaa\n");
+    f.write("todo.md", "# Todo\n\n## Today\n");
+    let out = f.run(&["edit", "aaaaaa", "due:today"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(read(&f, "inbox.md").contains("id:aaaaaa"));
+    assert_eq!(read(&f, "todo.md"), "# Todo\n\n## Today\n");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("due tasks in inbox.md"));
 }

@@ -33,6 +33,9 @@ pub enum OpError {
     NotCompleted(String),
     #[error("{0} is completed; completed tasks cannot be moved")]
     MoveCompleted(String),
+    /// 書き換えた行を読み直すと別のタスクになる (本文の先頭の `(C)` が、優先度を消すと優先度として読まれるなど)。
+    #[error("the edited task would be read back differently, so it was not written: {0}")]
+    Unwritable(String),
     /// 2 ファイルにまたがる移動で、追記した後の削除に失敗した。削除できなかったタスクは両方のファイルにある。
     #[error(
         "the tasks were added to {} but some could not be removed from where they were, so they may appear in both files; remove the duplicates by hand: {source}",
@@ -420,6 +423,84 @@ pub fn move_task(
         }
     }
     Ok(Moved::Moved(result))
+}
+
+/// [`edit_task`] で変える項目。`None` の項目は変えない。`Some(None)` はその項目を消す。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Changes {
+    pub content: Option<String>,
+    pub priority: Option<Option<char>>,
+    pub project: Option<Option<String>>,
+    pub context: Option<Option<String>>,
+    pub due: Option<Option<String>>,
+    pub wait: Option<Option<String>>,
+}
+
+impl Changes {
+    pub fn is_empty(&self) -> bool {
+        *self == Changes::default()
+    }
+
+    pub fn apply(&self, task: &mut Task) {
+        fn set<T: Clone>(field: &mut T, change: &Option<T>) {
+            if let Some(value) = change {
+                *field = value.clone();
+            }
+        }
+        set(&mut task.content, &self.content);
+        set(&mut task.priority, &self.priority);
+        set(&mut task.project, &self.project);
+        set(&mut task.context, &self.context);
+        set(&mut task.due, &self.due);
+        set(&mut task.wait, &self.wait);
+    }
+}
+
+/// [`edit_task`] の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edited {
+    pub task: Task,
+    /// タスクのあるファイル (inbox.md か todo.md)。
+    pub file: FileKind,
+}
+
+/// キーで指定したタスクを書き換える (Lua 版 `init.lua` の `add_or_edit_task` の編集)。
+/// 作成日の無いタスクには今日を付ける (Lua 版と同じ)。
+///
+/// 書き換えた後の期日のチェックと並べ替えは呼び出し元が行う。
+pub fn edit_task(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    key: &str,
+    changes: &Changes,
+) -> Result<Edited, OpError> {
+    let mut inbox = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+    let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let at = locate(data_dir, names, today, &inbox.doc, &todo.doc, key)?;
+    let id = unused_id(&[&inbox.doc, &todo.doc]);
+    let file = match at.file {
+        FileKind::Inbox => &mut inbox,
+        _ => &mut todo,
+    };
+
+    let Item::Task(item) = &file.items_mut(at.section)[at.index] else {
+        unreachable!("key::find only returns tasks");
+    };
+    let lnum = item.lnum;
+    let mut task = item.task.clone();
+    changes.apply(&mut task);
+    task.created.get_or_insert_with(|| today.format("%Y-%m-%d").to_string());
+    // serialize は ID の無いタスクに発行するが、clone に付くため返すタスクに残らない。
+    task.id.get_or_insert(id);
+    let line = task.clone().serialize();
+    if Task::parse_at(&line, today).as_ref() != Some(&task) {
+        return Err(OpError::Unwritable(line));
+    }
+    // Lua 版は todo.md でもその 1 行だけを書き換える。並べ替えは後の期日のチェックと合わせて行う。
+    file.lines[lnum - 1] = line;
+    file.write_lines()?;
+    Ok(Edited { task, file: at.file })
 }
 
 /// todo.md の各セクションのタスクを並べ替える。
@@ -974,6 +1055,52 @@ mod tests {
             fs::read_to_string(dir.path().join("todo.md")).unwrap(),
             format!("# Todo\n\n## Today\n\n## Waiting\n\n- [ ] 待ち created:2026-02-03 id:{id}\n")
         );
+    }
+
+    /// Lua 版はバッファのその 1 行だけを書き換えて保存するため、他の行は整形し直さない。
+    #[test]
+    fn editing_rewrites_only_the_line_of_the_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let todo = "# Todo\r\n## Next\r\n- [ ] (B) 後 id:aaaaaa\r\n- [ ] 直す id:bbbbbb\r\n\r\n\r\n";
+        fs::write(dir.path().join("todo.md"), todo).unwrap();
+        let changes = Changes {
+            content: Some("直した".into()),
+            ..Changes::default()
+        };
+        let edited = edit_task(
+            &DataDir::new(dir.path()),
+            &SectionNames::default(),
+            today(),
+            "bbbbbb",
+            &changes,
+        )
+        .unwrap();
+        assert_eq!(edited.file, FileKind::Todo);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("todo.md")).unwrap(),
+            "# Todo\r\n## Next\r\n- [ ] (B) 後 id:aaaaaa\r\n- [ ] 直した created:2026-02-03 id:bbbbbb\r\n\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn an_edit_that_would_be_read_back_differently_is_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = "# Inbox\n\n- [ ] (B) (C) 本文 created:2026-01-01 id:aaaaaa\n";
+        fs::write(dir.path().join("inbox.md"), inbox).unwrap();
+        let changes = Changes {
+            priority: Some(None),
+            ..Changes::default()
+        };
+        let err = edit_task(
+            &DataDir::new(dir.path()),
+            &SectionNames::default(),
+            today(),
+            "aaaaaa",
+            &changes,
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::Unwritable(_)), "{err}");
+        assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), inbox);
     }
 
     /// 期待値は Lua 版 `io.ensure_files` が書く内容 (`title .. "\n"`)。

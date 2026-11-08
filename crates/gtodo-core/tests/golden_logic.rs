@@ -1,6 +1,6 @@
 //! タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了・キャンセル・
-//! セクション間の移動が
-//! Lua 版 (gtodo-md.nvim の `logic/` と `editor.lua`) と同じファイルを書くことを検証する。
+//! セクション間の移動・編集が Lua 版 (gtodo-md.nvim の `logic/`・`editor.lua`・`init.lua` の
+//! `add_or_edit_task`) と同じファイルを書くことを検証する。
 //! 期待値は `scripts/gen-golden-logic.lua` で Lua 版から生成する。
 
 use std::collections::HashSet;
@@ -11,7 +11,7 @@ use chrono::NaiveDate;
 use gtodo_core::key::task_key;
 use gtodo_core::ops;
 use gtodo_core::sections::{SectionKey, SectionNames};
-use gtodo_core::store::{DataDir, read_file};
+use gtodo_core::store::{DataDir, FileKind, read_file};
 use gtodo_core::task::Task;
 use serde_json::Value;
 
@@ -37,6 +37,36 @@ fn section_names(config: &Value) -> SectionNames {
 
 fn read_lines(path: &Path) -> Option<Vec<String>> {
     path.exists().then(|| read_file(path).unwrap().lines)
+}
+
+/// Lua 版の編集の入力欄と選択肢への答えを、CLI の `gtodo edit` と同じ順で行う
+/// (書き換えてから、期日をチェックし、todo.md のタスクか期日で動いたものがあれば並べ替える)。
+fn edit(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    key: &str,
+    case: &Value,
+) -> Result<(), ops::OpError> {
+    let answer = |k: &str| case["edit"][k].as_str().unwrap();
+    let skip_or = |v: &str, prefix: char| (v != "[Skip]").then(|| v.trim_start_matches(prefix).to_string());
+    let changes = ops::Changes {
+        content: Some(answer("content").trim().to_string()),
+        due: Some(match answer("due") {
+            "" => None,
+            due => Some(gtodo_core::date::parse_due_date(due, today).unwrap()),
+        }),
+        project: Some(skip_or(answer("project"), '+')),
+        context: Some(skip_or(answer("context"), '@')),
+        ..ops::Changes::default()
+    };
+    let edited = ops::edit_task(data_dir, names, today, key, &changes)?;
+    let auto_move = case["auto_move_inbox_to_today"].as_bool().unwrap();
+    let dues = ops::check_dues(data_dir, names, today, auto_move)?;
+    if edited.file == FileKind::Todo || dues.todo_changed {
+        ops::sort_todo(data_dir, names, today)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -90,6 +120,11 @@ fn file_operations_match_lua_implementation() {
                     }
                     _ => ops::cancel(&data_dir, &names, today, &key).map(drop),
                 }
+            }
+            "edit" => {
+                let line = case["line"].as_str().unwrap();
+                let key = task_key(&Task::parse_at(line, today).unwrap(), line);
+                edit(&data_dir, &names, today, &key, case)
             }
             op => panic!("unknown op {op}"),
         };

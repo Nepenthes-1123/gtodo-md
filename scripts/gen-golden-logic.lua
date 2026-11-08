@@ -1,5 +1,6 @@
 -- タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了・未完了・キャンセル・
--- セクション間の移動のゴールデンデータを、Lua 版 (gtodo-md.nvim) の logic/ と editor.lua から生成する。
+-- セクション間の移動・編集のゴールデンデータを、Lua 版 (gtodo-md.nvim) の logic/・editor.lua・
+-- init.lua の add_or_edit_task (入力欄は ui/prompt.lua) から生成する。
 --
 -- 使い方:
 --   nvim --clean --headless -l scripts/gen-golden-logic.lua <gtodo-md.nvim のパス>
@@ -35,6 +36,15 @@ local io_mod = require("gtodo-md.io")
 local task_mod = require("gtodo-md.task")
 local logic = require("gtodo-md.logic")
 local editor = require("gtodo-md.editor")
+local gtodo = require("gtodo-md")
+
+-- 編集の後の期日チェックと並べ替えは自動処理のロックの中で行われる。ロックファイルや
+-- バッファの再読み込みで入力のディレクトリやバッファに触れないよう、どちらも素通りさせる。
+require("gtodo-md.lock").with_automation_lock = function(_, fn)
+	fn()
+	return true
+end
+require("gtodo-md.daily").reload_managed_bufs = function() end
 
 -- 新しく発行される ID はどの ID とも重ならない連番にする (検証側は入力に無い ID を出現順の番号に置き換えて比べる)。
 local next_id = 0
@@ -44,8 +54,19 @@ task_mod._generate_id = function()
 end
 
 local writes
+-- 書き込みは横取りし、同じケースの中で後から読むときは書いたはずの内容を返す
+-- (編集の後の期日チェックのように、書いたファイルを読み直す操作があるため)。
+local written
+local real_read_lines = io_mod.read_lines
 io_mod.write_lines = function(path, lines)
 	table.insert(writes, { file = vim.fs.basename(path), lines = vim.deepcopy(lines) })
+	written[path] = vim.deepcopy(lines)
+end
+io_mod.read_lines = function(path)
+	if written[path] then
+		return vim.deepcopy(written[path])
+	end
+	return real_read_lines(path)
 end
 vim.notify = function() end
 
@@ -85,6 +106,7 @@ for i, case in ipairs(cases) do
 	config.last_sections = {}
 
 	writes = {}
+	written = {}
 	local inbox, todo, done = dir .. "/inbox.md", dir .. "/todo.md", dir .. "/done.md"
 	if case.op == "sort" then
 		logic.sort_todo_file(todo)
@@ -92,7 +114,7 @@ for i, case in ipairs(cases) do
 		logic.check_dues(inbox, todo)
 	elseif case.op == "move_completed" then
 		logic.move_completed_tasks(inbox, todo, done)
-	elseif case.op == "done" or case.op == "undone" or case.op == "cancel" or case.op == "move" then
+	elseif case.op == "done" or case.op == "undone" or case.op == "cancel" or case.op == "move" or case.op == "edit" then
 		-- editor.lua の操作はカーソル行のタスクを対象にするため、ファイルを開いて対象の行へ移る。
 		vim.cmd("silent! %bwipeout!")
 		vim.cmd.edit(vim.fn.fnameescape(dir .. "/" .. case.file))
@@ -112,6 +134,18 @@ for i, case in ipairs(cases) do
 				on_confirm(case.wait == nil and opts.default or case.wait)
 			end
 			editor.move_current_task_to(config.sections[case.to])
+		elseif case.op == "edit" then
+			-- 編集の入力欄 (本文・期日) と選択肢 (プロジェクト・コンテキスト) に、この順で答える。
+			local inputs = { case.edit.content, case.edit.due }
+			local selects = { case.edit.project, case.edit.context }
+			vim.ui.input = function(_, on_confirm)
+				on_confirm(table.remove(inputs, 1))
+			end
+			vim.ui.select = function(_, _, on_choice)
+				on_choice(table.remove(selects, 1))
+			end
+			gtodo.add_or_edit_task()
+			assert(#inputs == 0 and #selects == 0, "the edit prompt did not ask every question")
 		else
 			editor.toggle_complete()
 		end
@@ -129,6 +163,9 @@ for i, case in ipairs(cases) do
 	end
 	if case.to then
 		target = target .. string.format('"to":%s,', vim.json.encode(case.to))
+	end
+	if case.edit then
+		target = target .. string.format('"edit":%s,', encode_map(case.edit))
 	end
 	if case.wait then
 		target = target .. string.format('"wait":%s,', vim.json.encode(case.wait))
