@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use chrono::NaiveDate;
 use gtodo_core::document::{Document, Item};
 use gtodo_core::sections::{SectionKey, SectionNames};
-use gtodo_core::store::read_lines;
+use gtodo_core::store::read_file;
 use serde_json::{Value, json};
 
 fn golden_dir() -> PathBuf {
@@ -61,7 +61,7 @@ fn parse_matches_lua_implementation() {
     let mut failures = Vec::new();
     for case in cases {
         let file = case["file"].as_str().unwrap();
-        let lines = read_lines(&golden_dir().join("markdown").join(file)).unwrap();
+        let lines = read_file(&golden_dir().join("markdown").join(file)).unwrap().lines;
         let names = section_names(&case["sections_config"], &case["last_sections"]);
         let actual = to_lua_shape(&Document::parse(&lines, &names, today));
         let expected = json!({
