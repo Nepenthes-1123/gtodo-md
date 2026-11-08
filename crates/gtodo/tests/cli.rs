@@ -673,3 +673,76 @@ fn invalid_tasks_are_rejected_before_anything_is_written() {
         );
     }
 }
+
+#[test]
+fn done_takes_an_id_prefix_and_refuses_to_repeat() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    assert_eq!(f.stdout(&["done", "aaa"]), "completed aaaaaa: 今日1\n");
+    assert!(read(&f, "todo.md").contains(&format!(
+        "- [x] (A) 今日1 +work @office completed_at:{} id:aaaaaa",
+        today_str()
+    )));
+    let again = f.run(&["done", "aaaaaa"]);
+    assert!(!again.status.success());
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("already completed"),
+        "{again:?}"
+    );
+}
+
+/// ID の無いタスクは一時キーで指定でき、完了にしたときに付いた ID を知らせる。
+/// 行が書き換わった後の一時キーは、`list` し直すよう案内する。
+#[test]
+fn a_task_without_an_id_is_found_by_its_temporary_key_only_until_its_line_changes() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let rows = f.json(&["list", "inbox", "--json"]);
+    let key = rows[0]["key"].as_str().unwrap().to_string();
+    assert!(key.starts_with('~'));
+
+    let out = f.stdout(&["done", &key]);
+    let id = out.strip_prefix("completed ").unwrap().split(':').next().unwrap();
+    assert_eq!(id.len(), 6, "{out}");
+    assert_eq!(out, format!("completed {id}: 受信1\n"));
+    assert!(read(&f, "inbox.md").contains(&format!("id:{id}")));
+
+    let stale = f.run(&["done", &key]);
+    assert!(!stale.status.success());
+    assert!(
+        String::from_utf8_lossy(&stale.stderr).contains("gtodo list"),
+        "{stale:?}"
+    );
+}
+
+#[test]
+fn a_key_matching_several_tasks_changes_nothing() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write("inbox.md", "# Inbox\n\n- [ ] 受信 id:abc111\n");
+    f.write("todo.md", "# Todo\n\n## Today\n\n- [ ] 今日 id:abc222\n");
+    let before = snapshot(&f.data_dir());
+    let out = f.run(&["done", "abc"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("abc111") && stderr.contains("abc222"), "{stderr}");
+    assert_eq!(snapshot(&f.data_dir()), before);
+}
+
+/// ID の無いタスクを操作したときに表示する ID が、書き込まれた ID と一致すること。
+#[test]
+fn the_reported_id_of_a_task_without_one_is_the_id_written() {
+    for (op, file, line, written_to) in [
+        ("done", "todo.md", "- [ ] 今日", "todo.md"),
+        ("done", "inbox.md", "- [ ] 受信", "inbox.md"),
+    ] {
+        let f = Fixture::new();
+        f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+        f.write("inbox.md", "# Inbox\n\n- [ ] 受信\n");
+        f.write("todo.md", "# Todo\n\n## Today\n\n- [ ] 今日\n- [ ] 他\n");
+        let out = f.stdout(&[op, &gtodo_core::key::line_key(line)]);
+        let id = out.split_whitespace().nth(1).unwrap().trim_end_matches(':');
+        assert_eq!(id.len(), 6, "{op} {file}: {out}");
+        assert!(read(&f, written_to).contains(&format!("id:{id}")), "{op} {file}");
+    }
+}

@@ -11,10 +11,11 @@ use chrono::NaiveDate;
 
 use crate::atomic::{self, WriteError};
 use crate::document::{Document, Item, Section, TaskItem};
+use crate::key::{self, FindError};
 use crate::logic::{completion, due, history, sort};
 use crate::sections::{SectionKey, SectionNames};
 use crate::store::{self, DataDir, FileKind, ReadError, Stamp};
-use crate::task::{self, Task};
+use crate::task::{self, Status, Task};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpError {
@@ -22,6 +23,12 @@ pub enum OpError {
     Read(#[from] ReadError),
     #[error(transparent)]
     Write(#[from] WriteError),
+    #[error(transparent)]
+    Find(#[from] FindError),
+    #[error("{key:?} is in {}; tasks moved there cannot be changed", file.file_name())]
+    Archived { key: String, file: FileKind },
+    #[error("{0} is already completed")]
+    AlreadyCompleted(String),
     /// 2 ファイルにまたがる移動で、追記した後の削除に失敗した。削除できなかったタスクは両方のファイルにある。
     #[error(
         "the tasks were added to {} but some could not be removed from where they were, so they may appear in both files; remove the duplicates by hand: {source}",
@@ -145,6 +152,92 @@ fn unused_id(docs: &[&Document]) -> String {
     }
 }
 
+/// キーで指定したタスクを完了にする (Lua 版 `editor.lua` の完了トグル)。完了にしたタスクを返す。
+pub fn complete(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, key: &str) -> Result<Task, OpError> {
+    set_status(data_dir, names, today, key, Status::Done)
+}
+
+/// 操作の対象を inbox.md と todo.md から探す。見つからなければ done.md と cancelled.md も探し、
+/// そこにあれば、`gtodo list` し直すよう案内する代わりにその旨を伝える (日付が変わった後の
+/// 日次の整理で、完了にしたタスクが done.md へ移っていることがある)。
+fn locate(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    inbox: &Document,
+    todo: &Document,
+    key: &str,
+) -> Result<key::Location, OpError> {
+    match key::find(&[(FileKind::Inbox, inbox), (FileKind::Todo, todo)], key) {
+        Err(e @ (FindError::NotFound(_) | FindError::LineChanged(_))) => {
+            for kind in [FileKind::Done, FileKind::Cancelled] {
+                let archive = Loaded::read(data_dir, kind, names, today)?;
+                if !matches!(
+                    key::find(&[(kind, &archive.doc)], key),
+                    Err(FindError::NotFound(_) | FindError::LineChanged(_))
+                ) {
+                    return Err(OpError::Archived {
+                        key: key.to_string(),
+                        file: kind,
+                    });
+                }
+            }
+            Err(e.into())
+        }
+        other => Ok(other?),
+    }
+}
+
+fn set_status(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    key: &str,
+    status: Status,
+) -> Result<Task, OpError> {
+    let mut inbox = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+    let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let at = locate(data_dir, names, today, &inbox.doc, &todo.doc, key)?;
+    let id = unused_id(&[&inbox.doc, &todo.doc]);
+    let file = match at.file {
+        FileKind::Inbox => &mut inbox,
+        _ => &mut todo,
+    };
+
+    let items = file.items_mut(at.section);
+    let Item::Task(item) = &mut items[at.index] else {
+        unreachable!("key::find only returns tasks");
+    };
+    if item.task.status == status {
+        return Err(OpError::AlreadyCompleted(key.to_string()));
+    }
+    let task = &mut item.task;
+    task.status = status;
+    task.completed_at = match status {
+        Status::Done => Some(today.format("%Y-%m-%d").to_string()),
+        Status::Open => None,
+    };
+    // 書き出すときにファイル内の重複として振り直されると、利用者に知らせた ID と食い違うため、先に決める。
+    task.id.get_or_insert(id);
+    let result = task.clone();
+    let (lnum, line) = (item.lnum, task.clone().serialize());
+
+    match at.file {
+        // Lua 版と同じく、todo.md では書き戻す前にそのセクションだけを並べ替える。
+        FileKind::Todo => {
+            sort::sort_items(items);
+            file.write()?;
+        }
+        // Lua 版はバッファの 1 行だけを書き換えて保存する。ファイル全体を整形し直すと、
+        // 開いている Neovim のバッファの他の行まで書き換わる。
+        _ => {
+            file.lines[lnum - 1] = line;
+            file.write_lines()?;
+        }
+    }
+    Ok(result)
+}
+
 /// todo.md の各セクションのタスクを並べ替える。
 pub fn sort_todo(data_dir: &DataDir, names: &SectionNames, today: NaiveDate) -> Result<(), OpError> {
     let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
@@ -209,6 +302,8 @@ pub fn move_completed(data_dir: &DataDir, names: &SectionNames, today: NaiveDate
 /// 読み込んだファイルと、書き戻すために必要な読んだ時点の状態。
 struct Loaded {
     path: PathBuf,
+    /// 読んだときの行。1 行だけを書き換えるときに使う。
+    lines: Vec<String>,
     doc: Document,
     stamp: Option<Stamp>,
     crlf: bool,
@@ -220,16 +315,36 @@ impl Loaded {
         let file = store::read_file(&path)?;
         Ok(Loaded {
             doc: Document::parse(&file.lines, names, today),
+            lines: file.lines,
             path,
             stamp: file.stamp,
             crlf: file.crlf,
         })
     }
 
+    /// 文書を整形し直して書く。
     fn write(&mut self) -> Result<(), WriteError> {
         let lines = self.doc.serialize();
         self.stamp = Some(atomic::write_lines(&self.path, &lines, self.crlf, self.stamp.as_ref())?);
         Ok(())
+    }
+
+    /// [`Loaded::lines`] をそのまま書く。
+    fn write_lines(&mut self) -> Result<(), WriteError> {
+        self.stamp = Some(atomic::write_lines(
+            &self.path,
+            &self.lines,
+            self.crlf,
+            self.stamp.as_ref(),
+        )?);
+        Ok(())
+    }
+
+    fn items_mut(&mut self, section: Option<usize>) -> &mut Vec<Item> {
+        match section {
+            Some(i) => &mut self.doc.sections[i].items,
+            None => &mut self.doc.preamble,
+        }
     }
 }
 
@@ -368,6 +483,59 @@ mod tests {
                 .contains("id:bbbbbb")
         );
         assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
+    }
+
+    #[test]
+    fn tasks_already_moved_to_done_or_cancelled_are_reported_as_such() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("done.md"),
+            "# Done\n\n## 2026-02\n\n- [x] 済み id:dddddd\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("cancelled.md"),
+            "# Cancelled\n\n## 2026-02\n\n- [ ] 取りやめ id:cccccc\n",
+        )
+        .unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let complete = |key| complete(&data_dir, &SectionNames::default(), today(), key);
+        for (key, file) in [("dddddd", FileKind::Done), ("cccccc", FileKind::Cancelled)] {
+            let err = complete(key).unwrap_err();
+            assert!(matches!(&err, OpError::Archived { file: f, .. } if *f == file), "{err}");
+        }
+        let err = complete("eeeeee").unwrap_err();
+        assert!(matches!(err, OpError::Find(FindError::NotFound(_))), "{err}");
+    }
+
+    /// Lua 版は見出しが別名 (現在の名前でない) のセクションのタスクを見つけられず、何も書かない。
+    #[test]
+    fn tasks_under_an_alias_heading_can_be_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("todo.md"),
+            "# Todo\n\n## Today\n\n- [ ] 今日 id:aaaaaa\n",
+        )
+        .unwrap();
+        let names = SectionNames::from_last(&[Some("今日".into()), None, None, None]).unwrap();
+        complete(&DataDir::new(dir.path()), &names, today(), "aaaaaa").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("todo.md")).unwrap(),
+            "# Todo\n\n## 今日\n\n- [x] 今日 completed_at:2026-02-03 id:aaaaaa\n"
+        );
+    }
+
+    fn assert_crlf(path: &Path) {
+        let text = fs::read_to_string(path).unwrap();
+        assert_eq!(text.matches('\n').count(), text.matches("\r\n").count(), "{text:?}");
+    }
+
+    #[test]
+    fn crlf_is_kept_when_one_inbox_line_is_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("inbox.md"), "# Inbox\r\n\r\n- [ ] 受信 id:aaaaaa\r\n").unwrap();
+        complete(&DataDir::new(dir.path()), &SectionNames::default(), today(), "aaaaaa").unwrap();
+        assert_crlf(&dir.path().join("inbox.md"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod add;
+pub mod done;
 pub mod list;
 pub mod queue;
 pub mod search;

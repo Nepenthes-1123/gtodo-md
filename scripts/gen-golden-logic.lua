@@ -1,5 +1,5 @@
--- タスクの並べ替え・期日による昇格・完了タスクの移動のゴールデンデータを、Lua 版 (gtodo-md.nvim) の
--- logic/ から生成する。
+-- タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了の
+-- ゴールデンデータを、Lua 版 (gtodo-md.nvim) の logic/ と editor.lua から生成する。
 --
 -- 使い方:
 --   nvim --clean --headless -l scripts/gen-golden-logic.lua <gtodo-md.nvim のパス>
@@ -34,6 +34,7 @@ local config = require("gtodo-md.config")
 local io_mod = require("gtodo-md.io")
 local task_mod = require("gtodo-md.task")
 local logic = require("gtodo-md.logic")
+local editor = require("gtodo-md.editor")
 
 -- 新しく発行される ID はどの ID とも重ならない連番にする (検証側は入力に無い ID を出現順の番号に置き換えて比べる)。
 local next_id = 0
@@ -91,6 +92,19 @@ for i, case in ipairs(cases) do
 		logic.check_dues(inbox, todo)
 	elseif case.op == "move_completed" then
 		logic.move_completed_tasks(inbox, todo, done)
+	elseif case.op == "done" then
+		-- editor.lua の操作はカーソル行のタスクを対象にするため、ファイルを開いて対象の行へ移る。
+		vim.cmd("silent! %bwipeout!")
+		vim.cmd.edit(vim.fn.fnameescape(dir .. "/" .. case.file))
+		local row
+		for i, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
+			if l == case.line then
+				row = i
+			end
+		end
+		assert(row, "line not found: " .. case.line)
+		vim.api.nvim_win_set_cursor(0, { row, 0 })
+		editor.toggle_complete()
 	else
 		error("unknown op: " .. tostring(case.op))
 	end
@@ -99,10 +113,15 @@ for i, case in ipairs(cases) do
 	for _, w in ipairs(writes) do
 		table.insert(encoded, string.format('{"file":%s,"lines":%s}', vim.json.encode(w.file), encode_string_list(w.lines)))
 	end
+	local target = ""
+	if case.file then
+		target = string.format('"file":%s,"line":%s,', vim.json.encode(case.file), vim.json.encode(case.line))
+	end
 	local entry = string.format(
-		'{"dir":%s,"op":%s,"auto_move_inbox_to_today":%s,"sections_config":%s,"writes":[%s]}',
+		'{"dir":%s,"op":%s,%s"auto_move_inbox_to_today":%s,"sections_config":%s,"writes":[%s]}',
 		vim.json.encode(case.dir),
 		vim.json.encode(case.op),
+		target,
 		tostring(auto_move),
 		encode_map(case.sections),
 		table.concat(encoded, ",")

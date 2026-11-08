@@ -42,7 +42,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `logic/` — タスクリストに対する操作 (並べ替え・期日による昇格・完了タスクの取り出し・履歴への追記)。Lua 版 `logic/` の移植で、ファイルには触れない。
   - `daily.rs` — 日次ロールオーバー (完了タスクの移動・期日による昇格・並べ替え。1 日 1 回を `.state.json` の `last_opened` で判定する)。ロックは呼び出し元が持つ。
   - `ops.rs` — `data_dir` のファイルを読み、`logic/` の操作をして書き戻す。2 ファイルにまたがる移動の書き込み順 (追記してから削除) もここで固定する。ロックは呼び出し元が持つ。
-  - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`)。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
+  - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`) と、キーからのタスクの検索。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
   - `view.rs` — 読み取り専用のビュー (一覧・検索・Queue・件数)。CLI と TUI で共有する。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
   - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。
@@ -54,7 +54,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
 
 ## 互換性の不変条件
 
-- タスク行の解析結果・文字列化、ファイル構造の解析・書き出し、`logic/` の操作の結果は Lua 版と一致させる。`testdata/golden/*.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` / `markdown/cases.json` / `logic/cases.json` に足して再生成する。
+- タスク行の解析結果・文字列化、ファイル構造の解析・書き出し、`logic/` の操作とタスクの完了 (Lua 版 `editor.lua`) の結果は Lua 版と一致させる。`testdata/golden/*.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` / `markdown/cases.json` / `logic/cases.json` に足して再生成する。
 - Lua 版の不具合と判断して挙動を変えた箇所は、ゴールデンテストに含めず、Rust 側の個別のテストと `ROADMAP.md` の決定事項に記録する。
 - Vim の正規表現を移植するときは、`\s` は `[ \t]`、`\w` は `[0-9A-Za-z_]`、`[:space:]` は `[\t\n\x0B\x0C\r ]` に置き換える。Rust の `\s`/`\w`/`\b` は Unicode の範囲で判定するため、そのまま使うと全角スペースや日本語の直後で結果が変わる。`\<` は `task.rs` の `is_vim_word_start` を使う。
 - 意図して Lua 版と挙動を変えた箇所は、コードコメントに理由を書く (例: `date.rs` の夏時間の扱い)。

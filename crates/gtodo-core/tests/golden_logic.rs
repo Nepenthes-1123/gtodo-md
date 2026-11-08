@@ -1,11 +1,13 @@
-//! タスクの並べ替え・期日による昇格・完了タスクの移動が Lua 版 (gtodo-md.nvim の `logic/`) と
-//! 同じファイルを書くことを検証する。期待値は `scripts/gen-golden-logic.lua` で Lua 版から生成する。
+//! タスクの並べ替え・期日による昇格・完了タスクの移動と、タスクの完了が
+//! Lua 版 (gtodo-md.nvim の `logic/` と `editor.lua`) と同じファイルを書くことを検証する。
+//! 期待値は `scripts/gen-golden-logic.lua` で Lua 版から生成する。
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
+use gtodo_core::key::task_key;
 use gtodo_core::ops;
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::{DataDir, read_file};
@@ -66,6 +68,12 @@ fn file_operations_match_lua_implementation() {
                 ops::check_dues(&data_dir, &names, today, auto_move).map(drop)
             }
             "move_completed" => ops::move_completed(&data_dir, &names, today).map(drop),
+            // Lua 版はカーソル行のタスクを対象にする。同じ行を `gtodo list` が表示するキーで指定する。
+            "done" => {
+                let line = case["line"].as_str().unwrap();
+                let key = task_key(&Task::parse_at(line, today).unwrap(), line);
+                ops::complete(&data_dir, &names, today, &key).map(drop)
+            }
             op => panic!("unknown op {op}"),
         };
         if let Err(e) = result {
