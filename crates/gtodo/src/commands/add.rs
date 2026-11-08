@@ -3,12 +3,12 @@ use std::fmt::Write;
 use anyhow::{Result, bail};
 use chrono::NaiveDate;
 use clap::ValueEnum;
-use gtodo_core::date;
 use gtodo_core::logic::due::DueOutcome;
 use gtodo_core::ops::{self, Destination};
 use gtodo_core::sections::SectionKey;
 use gtodo_core::task::Task;
 
+use crate::commands::task_input;
 use crate::workspace::Workspace;
 use crate::writing;
 
@@ -93,40 +93,12 @@ fn check_dues_and_sort(ws: &Workspace) -> Result<DueOutcome> {
 
 /// 本文をタスク行と同じ文法で読み、指定された項目で上書きする。
 fn build(text: &str, fields: Fields, today: NaiveDate) -> Result<Task> {
-    if text.contains(['\n', '\r']) {
-        bail!("the task text must be a single line");
-    }
-    let Some(mut task) = Task::parse_at(&format!("- [ ] {text}"), today) else {
-        bail!("the task text must not be empty");
-    };
-    // ID や完了・キャンセルの記録は書き込むコマンドが付けるもので、利用者が指定すると
-    // 他のタスクと ID が重なったり、完了していないのに完了の記録を持ったりする。
-    for (tag, value) in [
-        ("id", &task.id),
-        ("completed_at", &task.completed_at),
-        ("done", &task.done),
-        ("cancelled", &task.cancelled),
-        ("from", &task.from),
-    ] {
-        if value.is_some() {
-            bail!("{tag}: cannot be set when adding a task");
-        }
-    }
-
+    let mut task = task_input::parse_text(text, today, "adding")?;
     if let Some(due) = fields.due {
-        task.due = Some(date::parse_due_date(&due, today).ok_or_else(|| invalid_due(&due))?);
+        task.due = Some(task_input::parse_due(&due, today)?);
     }
     if let Some(due) = &task.due {
-        // 読めなかった期日は書かれたまま残り、日付の形の表記は範囲を確かめずに桁だけ揃えられる
-        // (`2026-02-30` も通る) ため、正規化した形が実在する日付かで見分ける。
-        if date::parse_due_date(due, today).as_ref() != Some(due) || !is_date(due) {
-            return Err(invalid_due(due));
-        }
-    }
-    if let Some(created) = &task.created {
-        if !is_date(created) {
-            bail!("invalid created date {created:?} (use YYYY-MM-DD)");
-        }
+        task_input::check_due(due, today)?;
     }
     if let Some(project) = fields.project {
         task.project = Some(project.strip_prefix('+').unwrap_or(&project).to_string());
@@ -141,26 +113,8 @@ fn build(text: &str, fields: Fields, today: NaiveDate) -> Result<Task> {
         bail!("the task text must not be empty");
     }
     task.created.get_or_insert_with(|| today.format("%Y-%m-%d").to_string());
-
-    // 書いた行を読み直して同じタスクにならない値 (空白を含むプロジェクト名や小文字の優先度など) は、
-    // 次に読んだときに本文へ混ざって壊れるため受け付けない。文法は task.rs だけが知っている。
-    let mut written = Task {
-        id: Some("000000".into()),
-        ..task.clone()
-    };
-    let reread = Task::parse_at(&written.serialize(), today);
-    if reread.as_ref().map(|t| Task { id: None, ..t.clone() }) != Some(task.clone()) {
-        bail!("the project, context, priority or wait: value cannot be written in a task line");
-    }
+    task_input::check_round_trip(&task, today)?;
     Ok(task)
-}
-
-fn is_date(s: &str) -> bool {
-    NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
-}
-
-fn invalid_due(due: &str) -> anyhow::Error {
-    anyhow::anyhow!("invalid due date {due:?} (e.g. today, tomorrow, +3d, fri, 2026-07-02)")
 }
 
 #[cfg(test)]
@@ -209,6 +163,17 @@ mod tests {
         assert_eq!(task.project.as_deref(), Some("work"));
         assert_eq!(task.context.as_deref(), Some("office"));
         assert_eq!(task.due.as_deref(), Some("2026-02-10"));
+
+        let fields = Fields {
+            due: Some("today".into()),
+            ..Fields::default()
+        };
+        let task = build("x due:someday", fields, today()).unwrap();
+        assert_eq!(
+            task.due.as_deref(),
+            Some("2026-02-03"),
+            "an unreadable due in the text is replaced"
+        );
     }
 
     #[test]
