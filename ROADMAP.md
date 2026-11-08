@@ -19,7 +19,7 @@
 core (`gtodo-core`)
 
 - [x] ファイル構造の解析 (`parse_markdown` 相当。セクション別名を含む。Lua 版から生成するゴールデンテスト)
-- [ ] ファイル構造の書き出し (`write_todo_file` 相当。ID 重複の再発行・連続空行の圧縮)
+- [x] ファイル構造の書き出し (`write_todo_file` 相当。ID 重複の再発行・連続空行の圧縮。Lua 版から生成するゴールデンテスト)
 - [x] 共有設定の読み込み: `config.json` (`data_dir` の場所)・`<data_dir>/gtodo.json` (セクション名・`auto_move_inbox_to_today`)。`GTODO_DATA_DIR`・`--data-dir`
 - [x] `.state.json` の `last_sections` (Neovim 版が最後に起動したときに使っていたセクション名) の読み取り
 - [x] 書き込み: アトミック置換 (同じディレクトリの一時ファイル + fsync + rename)・内容が同じなら書かない・改行コードの保持

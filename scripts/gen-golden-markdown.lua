@@ -1,10 +1,11 @@
--- ファイル構造の解析 (io.parse_markdown) のゴールデンデータを、Lua 版 (gtodo-md.nvim) から生成する。
+-- ファイル構造の解析 (io.parse_markdown) と書き出し (io.write_todo_file) のゴールデンデータを、
+-- Lua 版 (gtodo-md.nvim) から生成する。
 --
 -- 使い方:
 --   nvim --clean --headless -l scripts/gen-golden-markdown.lua <gtodo-md.nvim のパス>
 --
 -- 入力:  testdata/golden/markdown/cases.json と、そこから参照する *.md
--- 出力:  testdata/golden/markdown_parse.json
+-- 出力:  testdata/golden/markdown_parse.json (解析結果と、それを書き出した行)
 --
 -- `--clean` が必須な理由は gen-golden-task.lua と同じ。
 
@@ -28,6 +29,21 @@ end
 
 local config = require("gtodo-md.config")
 local io_mod = require("gtodo-md.io")
+local task_mod = require("gtodo-md.task")
+
+-- 新しく発行される ID はランダムなので、どの ID とも重ならない連番にする
+-- (検証側は、入力に無い ID をすべて同じ印に置き換えて比べる)。
+local next_id = 0
+task_mod._generate_id = function()
+	next_id = next_id + 1
+	return string.format("new%03d", next_id)
+end
+
+-- write_todo_file がディスクへ渡す行を受け取る。
+local written
+io_mod.write_lines = function(_, lines)
+	written = lines
+end
 
 local root = vim.fs.dirname(vim.fs.dirname(vim.fs.normalize(vim.fn.fnamemodify(arg[0], ":p"))))
 local case_dir = root .. "/testdata/golden/markdown"
@@ -89,6 +105,11 @@ for i, case in ipairs(cases) do
 		encode_items(data.sections["default"] or {}),
 		table.concat(sections, ",")
 	)
+	-- write_todo_file は data のタスクに ID を書き込むため、解析結果を文字列にした後で呼ぶ。
+	written = nil
+	io_mod.write_todo_file(case_dir .. "/" .. case.file, data)
+	assert(written, "write_todo_file no longer calls io.write_lines: " .. case.file)
+	entry = entry:sub(1, -2) .. ',"written":' .. encode_string_list(written) .. "}"
 	table.insert(out, "    " .. entry .. (i < #cases and "," or ""))
 end
 table.insert(out, "  ]")
