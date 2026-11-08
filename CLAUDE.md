@@ -46,6 +46,7 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
   - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。
 - `crates/gtodo` — CLI (`gtodo` コマンド)。`workspace.rs` が `data_dir` とその設定を読む。
+  書き込むコマンドは必ず `writing.rs` の `with_lock` の中で書く (ロック・無いファイルの作成を済ませるため)。
   **読むだけのコマンドはファイルを一切書き換えない** (書くと Neovim 側の未保存の編集が破棄されるため)。
   `tests/cli.rs` の `read_only_commands_never_create_or_modify_files` で固定している。
   結合テストは利用者の設定を読まないよう、`GTODO_CONFIG` に空の `config.json` を指定して実行する。

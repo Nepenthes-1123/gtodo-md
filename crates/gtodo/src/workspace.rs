@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use chrono::NaiveDate;
 use gtodo_core::document::Document;
-use gtodo_core::sections::{SectionKey, SectionNames};
+use gtodo_core::sections::{SectionKey, SectionNameError, SectionNames};
 use gtodo_core::store::{self, DataDir, FileKind};
 use gtodo_core::{settings, state};
 
@@ -13,6 +13,9 @@ pub struct Workspace {
     pub data_dir: DataDir,
     pub names: SectionNames,
     pub today: NaiveDate,
+    pub auto_move_inbox_to_today: bool,
+    /// Neovim 版が最後に起動したときの名前を現在の名前にできず、既定の名前で読んだ理由。
+    pub unusable_last_names: Option<SectionNameError>,
 }
 
 impl Workspace {
@@ -27,8 +30,14 @@ impl Workspace {
         let data_dir = DataDir::new(data_dir);
         // セクション名が分からないとタスクを別のセクションとして読み違えるため、壊れた gtodo.json では止める。
         let settings = settings::read(&data_dir.settings_file(), warn)?;
-        let names = section_names(settings.sections, &data_dir.state_file(), warn);
-        Ok(Workspace { data_dir, names, today })
+        let (names, unusable_last_names) = section_names(settings.sections, &data_dir.state_file(), warn);
+        Ok(Workspace {
+            data_dir,
+            names,
+            today,
+            auto_move_inbox_to_today: settings.auto_move_inbox_to_today,
+            unusable_last_names,
+        })
     }
 
     pub fn load(&self, kind: FileKind) -> Result<Document> {
@@ -44,10 +53,14 @@ impl Workspace {
 /// `.state.json` を読めなくても一覧は表示できるため止めないが、黙って無視すると
 /// 壊れていることに気づけないので警告する。
 ///
-/// Neovim 版の名前を現在の名前にできなければ既定の名前で読む。このとき
+/// Neovim 版の名前を現在の名前にできなければ既定の名前で読み、その理由も返す。このとき
 /// Neovim 版の名前は別名にも加えない。使えない名前は他のセクションの名前と重なっており、
 /// 加えると 2 つのセクションが 1 つに合流して読まれるため。
-fn section_names(configured: Option<SectionNames>, state_file: &Path, warn: &mut impl FnMut(String)) -> SectionNames {
+fn section_names(
+    configured: Option<SectionNames>,
+    state_file: &Path,
+    warn: &mut impl FnMut(String),
+) -> (SectionNames, Option<SectionNameError>) {
     let last = match state::State::read(state_file) {
         Ok(state) => state.last_sections(),
         Err(e) => {
@@ -63,12 +76,13 @@ fn section_names(configured: Option<SectionNames>, state_file: &Path, warn: &mut
                 warn(format!(
                     "the section names Neovim used last are invalid ({e}); reading with the default names"
                 ));
-                return SectionNames::default();
+                return (SectionNames::default(), Some(e));
             }
         },
     };
-    SectionKey::ALL
+    let names = SectionKey::ALL
         .into_iter()
         .zip(last)
-        .fold(current, |names, (key, name)| names.with_last(key, name))
+        .fold(current, |names, (key, name)| names.with_last(key, name));
+    (names, None)
 }

@@ -328,6 +328,8 @@ const READ_ONLY_COMMANDS: &[&[&str]] = &[
 #[test]
 fn read_only_commands_never_create_or_modify_files() {
     let f = sample();
+    // 無いファイルを作る経路にも乗らないことを確かめるため、1 つ欠けた状態にする。
+    fs::remove_file(f.data_dir().join("cancelled.md")).unwrap();
     let before = snapshot(&f.data_dir());
     for args in READ_ONLY_COMMANDS {
         f.stdout(args);
@@ -349,4 +351,140 @@ fn read_only_commands_never_modify_existing_state_and_settings() {
         f.stdout(args);
     }
     assert_eq!(snapshot(&f.data_dir()), before);
+}
+
+fn today_str() -> String {
+    Local::now().date_naive().format("%Y-%m-%d").to_string()
+}
+
+fn read(f: &Fixture, name: &str) -> String {
+    fs::read_to_string(f.data_dir().join(name)).unwrap()
+}
+
+#[test]
+fn sort_moves_due_tasks_to_today_and_sorts_todo() {
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write(
+        "todo.md",
+        &format!(
+            "# Todo\n\n## Today\n\n- [ ] 期日なし id:aaaaaa\n- [ ] (A) 優先 id:bbbbbb\n\n\
+             ## Next\n\n- [ ] 期日が来た due:{} id:cccccc\n",
+            today_str()
+        ),
+    );
+    let out = f.stdout(&["sort"]);
+    assert_eq!(out, "moved 1 due task(s) to Today\n");
+    let todo = read(&f, "todo.md");
+    let order: Vec<_> = ["cccccc", "bbbbbb", "aaaaaa"]
+        .iter()
+        .map(|id| todo.find(id).unwrap())
+        .collect();
+    assert!(order.is_sorted(), "{todo}");
+}
+
+#[test]
+fn due_inbox_tasks_are_reported_when_they_are_not_moved_automatically() {
+    let f = Fixture::new();
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today":false}"#);
+    f.write(
+        "inbox.md",
+        &format!("# Inbox\n\n- [ ] 受信 due:{} id:aaaaaa\n", today_str()),
+    );
+    let out = f.run(&["sort"]);
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.matches("受信").count(), 1, "{stderr}");
+    assert!(read(&f, "inbox.md").contains("id:aaaaaa"));
+}
+
+#[test]
+fn write_commands_create_missing_files_with_the_section_names_neovim_used_last() {
+    let f = Fixture::new();
+    f.write(".state.json", r#"{"last_sections":{"TODAY":"本日"}}"#);
+    f.stdout(&["sort"]);
+    assert_eq!(read(&f, "inbox.md"), "# Inbox\n\n");
+    assert_eq!(
+        read(&f, "todo.md"),
+        "# Todo\n\n## 本日\n\n## Next\n\n## Waiting\n\n## Someday\n"
+    );
+    assert_eq!(read(&f, "done.md"), "# Done\n\n");
+    assert_eq!(read(&f, "cancelled.md"), "# Cancelled\n\n");
+}
+
+/// gtodo.json が無いとき、Neovim 版が使っている名前の見出しを既定の名前へ書き換えないこと
+/// (書き換えると Neovim 版が書き戻し、往復が続く)。
+#[test]
+fn headings_keep_the_section_names_neovim_used_last_without_gtodo_json() {
+    let f = Fixture::new();
+    f.write(".state.json", r#"{"last_sections":{"TODAY":"本日"}}"#);
+    f.write("todo.md", "# Todo\n\n## Today\n\n- [ ] 既定名の見出し id:aaaaaa\n");
+    f.stdout(&["sort"]);
+    assert!(
+        read(&f, "todo.md").starts_with("# Todo\n\n## 本日\n"),
+        "{}",
+        read(&f, "todo.md")
+    );
+}
+
+#[test]
+fn write_commands_give_up_when_another_process_holds_the_lock() {
+    let f = sample();
+    fs::remove_file(f.data_dir().join("cancelled.md")).unwrap();
+    f.write(".gtodo.lock", "12345 0");
+    let before = snapshot(&f.data_dir());
+    let out = f.run(&["sort"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains(".gtodo.lock"), "{out:?}");
+    assert_eq!(snapshot(&f.data_dir()), before);
+}
+
+#[test]
+fn write_commands_release_the_lock() {
+    let f = sample();
+    f.stdout(&["sort"]);
+    assert!(!f.data_dir().join(".gtodo.lock").exists());
+}
+
+/// 記録された名前が他のセクションの名前と重なっていると、既定の名前で書けば Neovim 版の
+/// セクションどうしが合流してしまうため、読むことはできても書くことはできない。
+#[test]
+fn unusable_section_names_neovim_used_last_stop_write_commands() {
+    let f = Fixture::new();
+    f.write(".state.json", r#"{"last_sections":{"TODAY":"Now","NEXT":"Today"}}"#);
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Now\n\n- [ ] 今やる id:aaaaaa\n\n## Today\n\n- [ ] 次にやる id:bbbbbb\n",
+    );
+    let out = f.run(&["list"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid"), "{out:?}");
+
+    let before = snapshot(&f.data_dir());
+    let out = f.run(&["sort"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("gtodo.json"), "{out:?}");
+    assert_eq!(snapshot(&f.data_dir()), before);
+}
+
+#[test]
+fn write_commands_clean_up_stale_temporary_files() {
+    let f = sample();
+    fs::create_dir(f.data_dir().join("projects")).unwrap();
+    let day_ago = SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60);
+    for path in [
+        f.data_dir().join(".todo.md.1.1.tmp"),
+        f.data_dir().join("projects/.p.md.1.1.tmp"),
+    ] {
+        fs::write(&path, "").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(day_ago)
+            .unwrap();
+    }
+    f.stdout(&["sort"]);
+    assert!(!f.data_dir().join(".todo.md.1.1.tmp").exists());
+    assert!(!f.data_dir().join("projects/.p.md.1.1.tmp").exists());
 }

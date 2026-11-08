@@ -11,7 +11,7 @@ use chrono::NaiveDate;
 use crate::atomic::{self, WriteError};
 use crate::document::Document;
 use crate::logic::{completion, due, history, sort};
-use crate::sections::SectionNames;
+use crate::sections::{SectionKey, SectionNames};
 use crate::store::{self, DataDir, FileKind, ReadError, Stamp};
 
 #[derive(Debug, thiserror::Error)]
@@ -26,6 +26,48 @@ pub enum OpError {
         added.display()
     )]
     PartiallyMoved { added: PathBuf, source: WriteError },
+}
+
+/// 無いファイルを Lua 版 `io.ensure_files` と同じ雛形で作る。
+///
+/// 雛形が無いまま他の操作をすると、見出しの無いファイルができる。Neovim 版はファイルがあれば
+/// 雛形を作らないため、`# Todo` やセクションの見出しが欠けたまま残る。
+pub fn ensure_files(data_dir: &DataDir, names: &SectionNames) -> Result<(), WriteError> {
+    for kind in [FileKind::Inbox, FileKind::Todo, FileKind::Done, FileKind::Cancelled] {
+        let path = data_dir.path(kind);
+        let exists = Stamp::of(&path)
+            .map_err(|source| WriteError::Io {
+                op: "check",
+                path: path.clone(),
+                source,
+            })?
+            .is_some();
+        if !exists {
+            match atomic::write_lines(&path, &template(kind, names), false, None) {
+                // 確かめた後に Neovim 版が作った。Neovim 版は雛形をロックを取らずに作る。
+                Ok(_) | Err(WriteError::Changed { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn template(kind: FileKind, names: &SectionNames) -> Vec<String> {
+    let title = |t: &str| vec![t.to_string(), String::new()];
+    match kind {
+        FileKind::Inbox => title("# Inbox"),
+        FileKind::Done => title("# Done"),
+        FileKind::Cancelled => title("# Cancelled"),
+        // Lua 版はこのファイルだけ末尾に空行を付けない。
+        FileKind::Todo => std::iter::once("# Todo".to_string())
+            .chain(
+                SectionKey::ALL
+                    .into_iter()
+                    .flat_map(|k| [String::new(), format!("## {}", names.name(k))]),
+            )
+            .collect(),
+    }
 }
 
 /// todo.md の各セクションのタスクを並べ替える。
@@ -280,6 +322,24 @@ mod tests {
                 .unwrap()
                 .contains("id:bbbbbb")
         );
+    }
+
+    /// 期待値は Lua 版 `io.ensure_files` が書く内容 (`title .. "\n"`)。
+    #[test]
+    fn missing_files_are_created_from_the_same_templates_as_lua() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("done.md"), "既存").unwrap();
+        let names = SectionNames::from_last(&[Some("今日".into()), None, None, None]).unwrap();
+        ensure_files(&DataDir::new(dir.path()), &names).unwrap();
+
+        let read = |name: &str| fs::read_to_string(dir.path().join(name)).unwrap();
+        assert_eq!(read("inbox.md"), "# Inbox\n\n");
+        assert_eq!(
+            read("todo.md"),
+            "# Todo\n\n## 今日\n\n## Next\n\n## Waiting\n\n## Someday\n"
+        );
+        assert_eq!(read("done.md"), "既存");
+        assert_eq!(read("cancelled.md"), "# Cancelled\n\n");
     }
 
     #[test]
