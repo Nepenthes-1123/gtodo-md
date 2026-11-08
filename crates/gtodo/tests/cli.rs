@@ -567,6 +567,63 @@ fn add_puts_a_task_in_the_inbox_with_its_creation_date() {
 }
 
 #[test]
+fn a_task_added_to_the_inbox_that_is_already_due_moves_to_today() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    let out = f.stdout(&["add", "今日まで due:today"]);
+    assert!(out.ends_with("moved 1 due task(s) to Today\n"), "{out}");
+    let id = added_id(&out);
+    assert!(!read(&f, "inbox.md").contains(&id));
+    assert_eq!(
+        contents(&f.json(&["list", "today", "--json"])),
+        ["今日まで", "今日1", "完了済み"],
+        "todo.md is sorted after the move"
+    );
+}
+
+/// 日付が変わった日にも、期日が来た inbox のタスクの警告は 1 回だけ出す。
+#[test]
+fn due_inbox_tasks_are_reported_once_when_adding_on_a_new_day() {
+    let f = Fixture::new();
+    f.write(".state.json", r#"{"last_opened":"2000-01-01"}"#);
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today":false}"#);
+    f.write(
+        "inbox.md",
+        &format!("# Inbox\n\n- [ ] 受信 due:{} id:aaaaaa\n", today_str()),
+    );
+    let out = f.run(&["add", "別のタスク"]);
+    assert!(out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.matches("受信").count(), 1, "{stderr}");
+}
+
+/// 追加の後の期日のチェックに失敗しても、追加は済んでいるので成功として ID を知らせる
+/// (失敗として返すと、実行し直されてタスクが二重になる)。
+#[cfg(unix)]
+#[test]
+fn a_failure_after_the_task_was_added_is_only_a_warning() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let f = Fixture::new();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    for name in ["inbox.md", "done.md", "cancelled.md"] {
+        f.write(name, "");
+    }
+    let ro = f.dir.path().join("ro");
+    fs::create_dir(&ro).unwrap();
+    fs::write(ro.join("todo.md"), "# Todo\n\n## Today\n").unwrap();
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o500)).unwrap();
+    symlink(ro.join("todo.md"), f.data_dir().join("todo.md")).unwrap();
+
+    let out = f.run(&["add", "今日まで due:today"]);
+    fs::set_permissions(&ro, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let id = added_id(&String::from_utf8(out.stdout).unwrap());
+    assert!(read(&f, "inbox.md").contains(&id));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("checking due dates failed"));
+}
+
+#[test]
 fn invalid_tasks_are_rejected_before_anything_is_written() {
     let f = Fixture::new();
     for args in [

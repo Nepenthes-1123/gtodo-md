@@ -3,6 +3,7 @@ use std::fmt::Write;
 use anyhow::{Result, bail};
 use chrono::NaiveDate;
 use gtodo_core::date;
+use gtodo_core::logic::due::DueOutcome;
 use gtodo_core::ops;
 use gtodo_core::task::Task;
 
@@ -12,11 +13,34 @@ use crate::writing;
 pub fn run(ws: &Workspace, text: &str, warn: &mut impl FnMut(String), out: &mut String) -> Result<()> {
     // ロックを取る前に検証し、受け付けられない入力では何も書かない。
     let task = build(text, ws.today)?;
-    let id = writing::with_lock(ws, false, warn, || {
-        Ok(ops::add_task(&ws.data_dir, &ws.names, ws.today, task)?)
+    let (id, dues) = writing::with_lock(ws, true, warn, || {
+        let id = ops::add_task(&ws.data_dir, &ws.names, ws.today, task)?;
+        // 期日がすでに来ていれば、Neovim 版と同じくこの場で Today へ移し、次の日次の整理まで
+        // inbox に残さない。ここでの失敗は追加の成否と分けて返す。
+        Ok((id, check_dues_and_sort(ws)))
     })?;
+
     writeln!(out, "added {id} to inbox.md")?;
+    match dues {
+        Ok(dues) => {
+            let mut notes = Vec::new();
+            writing::report_dues(ws, &dues, warn, |msg| notes.push(msg));
+            for note in notes {
+                writeln!(out, "{note}")?;
+            }
+        }
+        // 追加は済んでいるため、失敗として返すと実行し直されてタスクが二重になる。
+        Err(e) => warn(format!("the task was added, but checking due dates failed: {e:#}")),
+    }
     Ok(())
+}
+
+fn check_dues_and_sort(ws: &Workspace) -> Result<DueOutcome> {
+    let dues = ops::check_dues(&ws.data_dir, &ws.names, ws.today, ws.auto_move_inbox_to_today)?;
+    if dues.todo_changed {
+        ops::sort_todo(&ws.data_dir, &ws.names, ws.today)?;
+    }
+    Ok(dues)
 }
 
 /// 本文をタスク行と同じ文法で読む。

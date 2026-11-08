@@ -18,7 +18,7 @@ gtodo sort                    # 期日が来たタスクを Today へ移し、to
 ```
 
 `add` の本文に書いた `+project`・`@context`・`due:`・`wait:`・先頭の `(A)` は、タスク行と同じくタグとして読みます。
-追加したタスクの ID を表示します。
+追加したタスクの ID を表示します。inbox へ追加したタスクの期日がすでに来ていれば、Neovim 版と同じく Today へ移します (`auto_move_inbox_to_today` が `true` のとき)。
 
 `list`・`search`・`stats` は `--json` で JSON を出力します。
 各タスクの先頭に表示されるキーは、タスクの ID (`id:` タグ) です。ID の無いタスクには、行の内容から作った一時キー (`~` で始まる) を表示します。
