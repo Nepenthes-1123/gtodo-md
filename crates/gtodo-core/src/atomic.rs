@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::store::Stamp;
 
@@ -121,7 +121,7 @@ fn replace(target: &Path, data: &[u8]) -> Result<Stamp, (&'static str, io::Error
             .map_err(|e| ("rename", e))
     });
     if result.is_err() {
-        // 一時ファイルの削除に失敗しても、元のエラーを返すことが優先。
+        // 元のエラーを返すことが優先。一時ファイルの削除に失敗しても、残骸は sweep_stale_tmp が後で消す。
         let _ = fs::remove_file(&tmp);
     }
     result
@@ -217,10 +217,44 @@ fn is_retryable(e: &io::Error) -> bool {
         || (cfg!(windows) && e.raw_os_error().is_some_and(|c| WINDOWS_SHARING_ERRORS.contains(&c)))
 }
 
+/// 残骸とみなすまでの猶予。書き込み中の一時ファイルの寿命は通常ミリ秒単位なので、
+/// 短くすると、止まっている他のプロセスの書き込み途中のファイルを消してしまう。
+const TMP_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// クラッシュなどで残った一時ファイル (`.<名前>.tmp`) を消す。
+///
+/// 判定は更新時刻だけで行い、名前に含まれるプロセス ID は見ない
+/// (プロセス ID は再利用されるため、持ち主の識別に使えない)。
+/// ディレクトリが無ければ何もしない。個々のエントリを読めなくても、残りの掃除は続ける (Lua 版と同じ)。
+pub fn sweep_stale_tmp(dir: &Path, now: SystemTime) -> io::Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with('.') && name.ends_with(".tmp") && name.len() > ".tmp".len() + 1) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > TMP_TTL);
+        if meta.is_file() && stale {
+            // 他のプロセスが同時に消した場合などは失敗してよい。次の機会にまた掃除される。
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
-
     use super::*;
     use crate::store::read_file;
 
@@ -443,5 +477,44 @@ mod tests {
         assert!(matches!(result, Err(WriteError::Io { .. })));
         assert_eq!(fs::read_to_string(&path).unwrap(), "a\n");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn sweeping_leaves_directories_alone_and_ignores_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".dir.tmp")).unwrap();
+        let later = SystemTime::now() + Duration::from_secs(48 * 60 * 60);
+        sweep_stale_tmp(dir.path(), later).unwrap();
+        assert!(dir.path().join(".dir.tmp").is_dir());
+        sweep_stale_tmp(&dir.path().join("missing"), later).unwrap();
+    }
+
+    #[test]
+    fn only_stale_temporary_files_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        for (name, age_hours) in [
+            (".todo.md.1.1.tmp", 25),
+            (".todo.md.1.2.tmp", 1),
+            ("todo.md", 48),
+            (".tmp", 48),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, "").unwrap();
+            let mtime = now - Duration::from_secs(age_hours * 60 * 60);
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        }
+        sweep_stale_tmp(dir.path(), now).unwrap();
+        let mut names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, [".tmp", ".todo.md.1.2.tmp", "todo.md"]);
     }
 }

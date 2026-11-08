@@ -23,6 +23,7 @@ core (`gtodo-core`)
 - [x] 共有設定の読み込み: `config.json` (`data_dir` の場所)・`<data_dir>/gtodo.json` (セクション名・`auto_move_inbox_to_today`)。`GTODO_DATA_DIR`・`--data-dir`
 - [x] `.state.json` の `last_sections` (Neovim 版が最後に起動したときに使っていたセクション名) の読み取り
 - [x] 書き込み: アトミック置換 (同じディレクトリの一時ファイル + fsync + rename)・内容が同じなら書かない・改行コードの保持
+- [x] 書き込みの途中で残った一時ファイルの掃除 (呼び出すのは書き込み系のコマンドを入れるとき)
 - [x] 並行更新の検出 (読む前に取った stat と、書く直前の stat の比較)
 - [ ] `.gtodo.lock` (Lua 版と同じ手順)
 - [ ] `.state.json` (未知のキーを保持した読み書き)
