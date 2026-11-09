@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows ではファイルの置き換えやパスの判定が変わり、クロスコンパイルでは確かめられないため、実機で走らせる。
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # ロック待ちや置き換えの再試行が止まらなくなったときに、既定の 6 時間まで待たせない。
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # バージョンを手で揃える場所 (mise.toml と docker/dev.Dockerfile) をこれ以上増やさないよう、mise.toml から読む。
+      - name: Install Rust
+        shell: bash
+        run: |
+          # Windows では mise.toml が CRLF で checkout されるため、行末に頼らない。
+          version=$(sed -n 's/^rust = "\([^"]*\)".*/\1/p' mise.toml)
+          test -n "$version"
+          rustup toolchain install "$version" --profile minimal --component clippy,rustfmt
+          rustup default "$version"
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
