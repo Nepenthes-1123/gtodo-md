@@ -190,6 +190,20 @@ mod tests {
         assert!(Lock::try_acquire(dir.path()).unwrap().is_some());
     }
 
+    /// Windows の旧来の削除方式では、他のプロセス (解放前に中身を確かめる別の gtodo、ウイルス対策、同期クライアントなど)
+    /// が開いている間に消したファイルは、閉じられるまで名前が残り、作り直しが拒まれる。ロックはこれに対処しておらず、
+    /// NTFS の今の Windows では名前がすぐ空くことを前提にしているため、その前提を CI の Windows で確かめる。
+    #[test]
+    fn a_lock_released_while_another_process_has_it_open_can_be_taken_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = Lock::try_acquire(dir.path()).unwrap().unwrap();
+        let reader = File::open(dir.path().join(LOCK_FILE)).unwrap();
+        lock.release().unwrap();
+        let again = Lock::try_acquire(dir.path());
+        drop(reader);
+        assert!(matches!(again, Ok(Some(_))), "{again:?}");
+    }
+
     #[test]
     fn dropping_without_release_still_frees_the_lock() {
         let dir = tempfile::tempdir().unwrap();
