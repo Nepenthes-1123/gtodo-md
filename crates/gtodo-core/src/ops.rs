@@ -11,6 +11,7 @@ use chrono::NaiveDate;
 
 use crate::atomic::{self, WriteError};
 use crate::document::{Document, Item, Section, TaskItem};
+use crate::guard::Landmarks;
 use crate::key::{self, FindError};
 use crate::logic::{completion, due, history, sort};
 use crate::sections::{SectionKey, SectionNames};
@@ -285,12 +286,11 @@ pub fn cancel(data_dir: &DataDir, names: &SectionNames, today: NaiveDate, key: &
     let cancelled_path = data_dir.path(FileKind::Cancelled);
     let append = || -> Result<(), OpError> {
         let cancelled = store::read_file(&cancelled_path)?;
-        let mut lines = cancelled.lines;
+        let mut lines = cancelled.lines.clone();
         // 完了タスクと違い、タスクの日付ではなくキャンセルした日の月へ入れる (Lua 版と同じ)。
         let month = today.format("%Y-%m").to_string();
         history::insert_tasks(&mut lines, "Cancelled", &month, &mut [task]);
-        atomic::write_lines(&cancelled_path, &lines, cancelled.crlf, cancelled.stamp.as_ref())?;
-        Ok(())
+        write_history(&cancelled_path, FileKind::Cancelled, &cancelled, &lines, names)
     };
     let remove = || -> Result<(), OpError> {
         match at.file {
@@ -545,12 +545,11 @@ pub fn move_completed(data_dir: &DataDir, names: &SectionNames, today: NaiveDate
     let done_path = data_dir.path(FileKind::Done);
     let append = || -> Result<(), OpError> {
         let done = store::read_file(&done_path)?;
-        let mut lines = done.lines;
+        let mut lines = done.lines.clone();
         for (month, tasks) in &mut completed.months {
             history::insert_tasks(&mut lines, "Done", month, tasks);
         }
-        atomic::write_lines(&done_path, &lines, done.crlf, done.stamp.as_ref())?;
-        Ok(())
+        write_history(&done_path, FileKind::Done, &done, &lines, names)
     };
     let remove = || -> Result<(), OpError> {
         if completed.inbox_changed {
@@ -565,6 +564,20 @@ pub fn move_completed(data_dir: &DataDir, names: &SectionNames, today: NaiveDate
     Ok(count)
 }
 
+/// done.md・cancelled.md へ追記した `lines` を書く。
+fn write_history(
+    path: &Path,
+    kind: FileKind,
+    read: &store::ReadFile,
+    lines: &[String],
+    names: &SectionNames,
+) -> Result<(), OpError> {
+    let before = Landmarks::of(kind, &read.lines, names);
+    before.check(path, &Landmarks::of(kind, lines, names), names)?;
+    atomic::write_lines(path, lines, read.crlf, read.stamp.as_ref())?;
+    Ok(())
+}
+
 /// 読み込んだファイルと、書き戻すために必要な読んだ時点の状態。
 struct Loaded {
     path: PathBuf,
@@ -573,6 +586,10 @@ struct Loaded {
     doc: Document,
     stamp: Option<Stamp>,
     crlf: bool,
+    kind: FileKind,
+    names: SectionNames,
+    /// 読んだときにあった見出し。[`Loaded::lines`] は書き換えるため、読んだ時点で集めておく。
+    landmarks: Landmarks,
 }
 
 impl Loaded {
@@ -581,28 +598,34 @@ impl Loaded {
         let file = store::read_file(&path)?;
         Ok(Loaded {
             doc: Document::parse(&file.lines, names, today),
+            landmarks: Landmarks::of(kind, &file.lines, names),
             lines: file.lines,
             path,
             stamp: file.stamp,
             crlf: file.crlf,
+            kind,
+            names: names.clone(),
         })
     }
 
     /// 文書を整形し直して書く。
     fn write(&mut self) -> Result<(), WriteError> {
         let lines = self.doc.serialize();
-        self.stamp = Some(atomic::write_lines(&self.path, &lines, self.crlf, self.stamp.as_ref())?);
-        Ok(())
+        self.write_checked(&lines)
     }
 
     /// [`Loaded::lines`] をそのまま書く。
     fn write_lines(&mut self) -> Result<(), WriteError> {
-        self.stamp = Some(atomic::write_lines(
-            &self.path,
-            &self.lines,
-            self.crlf,
-            self.stamp.as_ref(),
-        )?);
+        let lines = std::mem::take(&mut self.lines);
+        let result = self.write_checked(&lines);
+        self.lines = lines;
+        result
+    }
+
+    fn write_checked(&mut self, lines: &[String]) -> Result<(), WriteError> {
+        let after = Landmarks::of(self.kind, lines, &self.names);
+        self.landmarks.check(&self.path, &after, &self.names)?;
+        self.stamp = Some(atomic::write_lines(&self.path, lines, self.crlf, self.stamp.as_ref())?);
         Ok(())
     }
 
@@ -1111,6 +1134,73 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, OpError::Unwritable(_)), "{err}");
         assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), inbox);
+    }
+
+    fn assert_would_remove<T: std::fmt::Debug>(result: Result<T, impl Into<OpError>>, missing: &str) {
+        match result.map_err(Into::into) {
+            Err(OpError::Write(WriteError::WouldRemove { missing: m, .. })) => assert_eq!(m, missing),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// gtodo の不具合で見出しを落とした内容になっても、ファイルには書かない。
+    #[test]
+    fn writes_that_would_remove_a_heading_that_was_read_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let names = SectionNames::default();
+        let todo = "# Todo\n\n## Today\n\n## Next\n\n- [ ] 次 id:aaaaaa\n";
+        let inbox = "# Inbox\n\n- [ ] 受信 id:bbbbbb\n";
+        fs::write(dir.path().join("todo.md"), todo).unwrap();
+        fs::write(dir.path().join("inbox.md"), inbox).unwrap();
+
+        let mut file = Loaded::read(&data_dir, FileKind::Todo, &names, today()).unwrap();
+        file.doc.sections.retain(|s| s.name != "Next");
+        assert_would_remove(file.write(), "## Next");
+        assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), todo);
+
+        let mut file = Loaded::read(&data_dir, FileKind::Inbox, &names, today()).unwrap();
+        file.lines.remove(0);
+        assert_would_remove(file.write_lines(), "# Inbox");
+        assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), inbox);
+
+        let done = "# Done\n\n## 2026-01\n\n- [x] 済み id:cccccc\n";
+        fs::write(dir.path().join("done.md"), done).unwrap();
+        let path = data_dir.path(FileKind::Done);
+        let read = store::read_file(&path).unwrap();
+        let lines = vec!["# Done".to_string()];
+        assert_would_remove(
+            write_history(&path, FileKind::Done, &read, &lines, &names),
+            "## 2026-01",
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), done);
+    }
+
+    /// 見出しを落とす書き込みが追記の側で止まれば何も変わらず、削除の側で止まれば、追記は済んで
+    /// 重複が残ったことを知らせる。
+    #[test]
+    fn a_refused_write_in_a_two_file_move_is_reported_like_other_write_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let refused = || WriteError::WouldRemove {
+            path: dir.path().join("x.md"),
+            missing: "## Next".into(),
+        };
+        let added = dir.path().join("todo.md");
+        let remove = || -> Result<(), WriteError> { panic!("nothing is removed when nothing was added") };
+        let err = append_then_remove(dir.path(), added.clone(), || Err(refused()), remove).unwrap_err();
+        assert!(matches!(err, OpError::Write(WriteError::WouldRemove { .. })), "{err}");
+
+        let err = append_then_remove(dir.path(), added, || Ok::<_, WriteError>(()), || Err(refused())).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OpError::PartiallyMoved {
+                    source: WriteError::WouldRemove { .. },
+                    ..
+                }
+            ),
+            "{err}"
+        );
     }
 
     /// 期待値は Lua 版 `io.ensure_files` が書く内容 (`title .. "\n"`)。

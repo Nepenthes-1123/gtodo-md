@@ -21,6 +21,11 @@ use crate::store::Stamp;
 pub enum WriteError {
     #[error("{} was changed by another process after it was read; nothing was written", path.display())]
     Changed { path: PathBuf },
+    #[error(
+        "refusing to write {}: it would remove headings that were there when the file was read: {missing} (this is a bug in gtodo)",
+        path.display()
+    )]
+    WouldRemove { path: PathBuf, missing: String },
     #[error("failed to {op} {}: {source}", path.display())]
     Io {
         op: &'static str,
