@@ -4,7 +4,6 @@
 //! [`crate::lock::Lock`] を持ったまま呼ぶ。
 
 use std::collections::HashSet;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -664,7 +663,7 @@ where
 /// 失敗しても続ける (同時にクラッシュしない限り害が無いため。Lua 版と同じ)。
 fn sync_dir(dir: &Path) {
     #[cfg(unix)]
-    if let Ok(d) = File::open(dir) {
+    if let Ok(d) = std::fs::File::open(dir) {
         let _ = d.sync_all();
     }
     #[cfg(not(unix))]
