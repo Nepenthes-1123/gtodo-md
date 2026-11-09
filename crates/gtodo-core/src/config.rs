@@ -259,6 +259,12 @@ mod tests {
         }
     }
 
+    /// `config.json` の `data_dir` には、一時ディレクトリの下のパスを書く。
+    /// `/from/config` のような値は Windows ではドライブ名が無いため絶対パスにならず、エラーになる。
+    fn config_with_data_dir(dir: &Path) -> String {
+        serde_json::json!({ "data_dir": dir.to_str().unwrap() }).to_string()
+    }
+
     fn resolve(e: &FakeEnv, platform: Platform) -> Result<PathBuf, ConfigError> {
         resolve_data_dir(None, e, platform, &mut |w| panic!("unexpected warning: {w}"))
     }
@@ -266,14 +272,15 @@ mod tests {
     #[test]
     fn data_dir_precedence_is_flag_then_env_then_config_then_default() {
         let home = Home::new();
-        home.write(".config/gtodo-md/config.json", r#"{"data_dir":"/from/config"}"#);
+        let from_config = home.path("from-config");
+        home.write(".config/gtodo-md/config.json", &config_with_data_dir(&from_config));
         let base = env(&[("HOME", home.str())]);
         let with_env = env(&[("HOME", home.str()), ("GTODO_DATA_DIR", "/from/env")]);
 
         let flag = resolve_data_dir(Some("/from/flag".into()), &with_env, Platform::Unix, &mut |_| {}).unwrap();
         assert_eq!(flag, Path::new("/from/flag"));
         assert_eq!(resolve(&with_env, Platform::Unix).unwrap(), Path::new("/from/env"));
-        assert_eq!(resolve(&base, Platform::Unix).unwrap(), Path::new("/from/config"));
+        assert_eq!(resolve(&base, Platform::Unix).unwrap(), from_config);
 
         fs::remove_file(home.path(".config/gtodo-md/config.json")).unwrap();
         assert_eq!(
@@ -346,9 +353,13 @@ mod tests {
     #[test]
     fn windows_without_appdata_variables_uses_the_profile_directory() {
         let home = Home::new();
-        home.write("AppData/Roaming/gtodo-md/config.json", r#"{"data_dir":"/from/config"}"#);
+        let from_config = home.path("from-config");
+        home.write(
+            "AppData/Roaming/gtodo-md/config.json",
+            &config_with_data_dir(&from_config),
+        );
         let e = env(&[("USERPROFILE", home.str())]);
-        assert_eq!(resolve(&e, Platform::Windows).unwrap(), Path::new("/from/config"));
+        assert_eq!(resolve(&e, Platform::Windows).unwrap(), from_config);
         fs::remove_file(home.path("AppData/Roaming/gtodo-md/config.json")).unwrap();
         assert_eq!(
             resolve(&e, Platform::Windows).unwrap(),
@@ -389,11 +400,13 @@ mod tests {
     #[test]
     fn unknown_keys_are_warned_and_malformed_values_are_errors() {
         let home = Home::new();
-        let cfg = home.write("c.json", r#"{"data_dri":"/typo","data_dir":"/ok"}"#);
+        let ok = home.path("ok");
+        let config = serde_json::json!({ "data_dri": "/typo", "data_dir": ok.to_str().unwrap() });
+        let cfg = home.write("c.json", &config.to_string());
         let e = env(&[("HOME", home.str()), ("GTODO_CONFIG", cfg.to_str().unwrap())]);
         let mut warnings = Vec::new();
         let dir = resolve_data_dir(None, &e, Platform::Unix, &mut |w| warnings.push(w)).unwrap();
-        assert_eq!(dir, Path::new("/ok"));
+        assert_eq!(dir, ok);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("\"data_dri\""), "{warnings:?}");
 
