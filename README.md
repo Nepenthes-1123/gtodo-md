@@ -101,6 +101,14 @@ scripts/cargo-docker test
 scripts/cargo-docker clippy --all-targets -- -D warnings
 ```
 
+Windows 向けのビルドも同じイメージで確かめられます (MinGW でリンクする `x86_64-pc-windows-gnu` ターゲット)。
+Windows でだけ起きるコンパイルエラーや警告 (`#[cfg(unix)]` の付け忘れ、Windows では未使用になる import など) はこれで見つかりますが、テストは Windows 上でないと実行できません。
+
+```sh
+scripts/cargo-docker clippy --target x86_64-pc-windows-gnu --all-targets -- -D warnings
+scripts/cargo-docker build --target x86_64-pc-windows-gnu   # target/docker/build/x86_64-pc-windows-gnu/debug/gtodo.exe
+```
+
 リンカを使わない作業 (フォーマット・エディタの補完) には、[mise](https://mise.jdx.dev/) で入れたホスト側の Rust を使います。
 Rust のバージョンは `mise.toml` と `docker/dev.Dockerfile` で揃えています。
 

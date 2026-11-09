@@ -995,6 +995,7 @@ fn edits_that_cannot_be_done_as_asked_change_nothing() {
     assert_eq!(snapshot(&f.data_dir()), before);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_failure_after_the_task_was_edited_is_only_a_warning() {
     use std::os::unix::fs::{PermissionsExt, symlink};

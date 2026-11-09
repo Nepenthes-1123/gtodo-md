@@ -15,6 +15,7 @@ Neovim 版と同じ `data_dir` を**同時に**共有できることを前提と
 ```sh
 scripts/cargo-docker test
 scripts/cargo-docker clippy --all-targets -- -D warnings
+scripts/cargo-docker clippy --target x86_64-pc-windows-gnu --all-targets -- -D warnings   # Windows 向け
 cargo fmt --all            # 列幅は 120 (rustfmt.toml)
 
 # 生成物の再生成 (Neovim と gtodo-md.nvim のチェックアウトが必要)
@@ -25,6 +26,9 @@ nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src
 ```
 
 生成スクリプトは必ず `--clean` で実行すること。Vim の `\<` と `charclass()` はカレントバッファの `'iskeyword'` に依存するため、ユーザー設定が混ざると既定と異なる結果が記録される。
+
+OS で分かれるコード (`#[cfg(unix)]` や `std::os::unix` を使うテストなど) を変えたら、Windows 向けの clippy も通す。
+ホスト向けのビルドでは、Windows でだけ未使用になる import や `cfg` の付け忘れに気付けない。
 
 ## 構成
 
