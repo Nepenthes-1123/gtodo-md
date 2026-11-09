@@ -678,7 +678,7 @@ fn invalid_tasks_are_rejected_before_anything_is_written() {
 fn done_takes_an_id_prefix_and_refuses_to_repeat() {
     let f = sample();
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
-    assert_eq!(f.stdout(&["done", "aaa"]), "completed aaaaaa: 今日1\n");
+    assert_eq!(f.stdout(&["done", "aaaa"]), "completed aaaaaa: 今日1\n");
     assert!(read(&f, "todo.md").contains(&format!(
         "- [x] (A) 今日1 +work @office completed_at:{} id:aaaaaa",
         today_str()
@@ -730,17 +730,32 @@ fn a_task_without_an_id_is_found_by_its_temporary_key_only_until_its_line_change
     );
 }
 
+/// ID の先頭の一部は 4 文字以上が要る。ID 全体と一致するなら、手で書いた短い ID でも指定できる。
+#[test]
+fn short_keys_are_refused_unless_they_are_a_whole_id() {
+    let f = sample();
+    f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
+    f.write("inbox.md", "# Inbox\n\n- [ ] 手書き id:zz\n");
+    let before = snapshot(&f.data_dir());
+    let out = f.run(&["done", "aaa"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("too short"), "{out:?}");
+    assert_eq!(snapshot(&f.data_dir()), before);
+
+    assert_eq!(f.stdout(&["done", "zz"]), "completed zz: 手書き\n");
+}
+
 #[test]
 fn a_key_matching_several_tasks_changes_nothing() {
     let f = sample();
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
     f.write("inbox.md", "# Inbox\n\n- [ ] 受信 id:abc111\n");
-    f.write("todo.md", "# Todo\n\n## Today\n\n- [ ] 今日 id:abc222\n");
+    f.write("todo.md", "# Todo\n\n## Today\n\n- [ ] 今日 id:abc122\n");
     let before = snapshot(&f.data_dir());
-    let out = f.run(&["done", "abc"]);
+    let out = f.run(&["done", "abc1"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("abc111") && stderr.contains("abc222"), "{stderr}");
+    assert!(stderr.contains("abc111") && stderr.contains("abc122"), "{stderr}");
     assert_eq!(snapshot(&f.data_dir()), before);
 }
 
@@ -791,7 +806,7 @@ fn the_reported_id_of_a_task_without_one_is_the_id_written() {
 fn move_puts_a_task_in_another_section_and_drops_its_wait_outside_waiting() {
     let f = sample();
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
-    assert_eq!(f.stdout(&["move", "ccc", "next"]), "moved cccccc to Next: 待ち1\n");
+    assert_eq!(f.stdout(&["move", "cccc", "next"]), "moved cccccc to Next: 待ち1\n");
     let todo = read(&f, "todo.md");
     let next = &todo[todo.find("## Next").unwrap()..todo.find("## Waiting").unwrap()];
     assert!(next.contains("- [ ] 待ち1 id:cccccc\n"), "{todo}");
@@ -905,7 +920,7 @@ fn edit_changes_only_what_is_given() {
     let f = sample();
     f.write(".state.json", &format!(r#"{{"last_opened":"{}"}}"#, today_str()));
     assert_eq!(
-        f.stdout(&["edit", "aaa", "新しい", "本文"]),
+        f.stdout(&["edit", "aaaa", "新しい", "本文"]),
         "edited aaaaaa: 新しい 本文\n"
     );
     assert!(read(&f, "todo.md").contains(&format!(

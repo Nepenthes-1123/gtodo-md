@@ -56,22 +56,22 @@ enum Command {
     },
     /// Mark a task as completed (it moves to done.md on the next day)
     Done {
-        /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
+        /// Key shown by `gtodo list`: an ID (or its first 4+ characters) or a ~ temporary key
         task: String,
     },
     /// Mark a completed task as not completed (before it moves to done.md)
     Undone {
-        /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
+        /// Key shown by `gtodo list`: an ID (or its first 4+ characters) or a ~ temporary key
         task: String,
     },
     /// Move a task to cancelled.md
     Cancel {
-        /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
+        /// Key shown by `gtodo list`: an ID (or its first 4+ characters) or a ~ temporary key
         task: String,
     },
     /// Change a task in inbox.md or todo.md (only what is given; the rest is kept)
     Edit {
-        /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
+        /// Key shown by `gtodo list`: an ID (or its first 4+ characters) or a ~ temporary key
         task: String,
         /// New description; +project, @context, due:, wait: and a leading (A) change those values
         text: Vec<String>,
@@ -90,7 +90,7 @@ enum Command {
     },
     /// Move a task in inbox.md or todo.md to a section of todo.md
     Move {
-        /// Key shown by `gtodo list`: an ID (or its first characters) or a ~ temporary key
+        /// Key shown by `gtodo list`: an ID (or its first 4+ characters) or a ~ temporary key
         task: String,
         #[arg(value_enum)]
         to: MoveTo,

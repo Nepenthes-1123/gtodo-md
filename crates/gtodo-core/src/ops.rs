@@ -191,12 +191,13 @@ fn locate(
     key: &str,
 ) -> Result<key::Location, OpError> {
     match key::find(&[(FileKind::Inbox, inbox), (FileKind::Todo, todo)], key) {
-        Err(e @ (FindError::NotFound(_) | FindError::LineChanged(_))) => {
+        // 短すぎるキーも、手で書いた短い ID と完全に一致するタスクが移った後かもしれない。
+        Err(e @ (FindError::NotFound(_) | FindError::LineChanged(_) | FindError::TooShort(_))) => {
             for kind in [FileKind::Done, FileKind::Cancelled] {
                 let archive = Loaded::read(data_dir, kind, names, today)?;
                 if !matches!(
                     key::find(&[(kind, &archive.doc)], key),
-                    Err(FindError::NotFound(_) | FindError::LineChanged(_))
+                    Err(FindError::NotFound(_) | FindError::LineChanged(_) | FindError::TooShort(_))
                 ) {
                     return Err(OpError::Archived {
                         key: key.to_string(),
@@ -760,17 +761,26 @@ mod tests {
         .unwrap();
         fs::write(
             dir.path().join("cancelled.md"),
-            "# Cancelled\n\n## 2026-02\n\n- [ ] 取りやめ id:cccccc\n",
+            "# Cancelled\n\n## 2026-02\n\n- [ ] 取りやめ id:cccccc\n- [ ] 手書き id:zz\n",
         )
         .unwrap();
         let data_dir = DataDir::new(dir.path());
         let complete = |key| complete(&data_dir, &SectionNames::default(), today(), key);
-        for (key, file) in [("dddddd", FileKind::Done), ("cccccc", FileKind::Cancelled)] {
+        for (key, file) in [
+            ("dddddd", FileKind::Done),
+            ("cccccc", FileKind::Cancelled),
+            ("zz", FileKind::Cancelled),
+        ] {
             let err = complete(key).unwrap_err();
             assert!(matches!(&err, OpError::Archived { file: f, .. } if *f == file), "{err}");
         }
         let err = complete("eeeeee").unwrap_err();
         assert!(matches!(err, OpError::Find(FindError::NotFound(_))), "{err}");
+        let err = complete("ccc").unwrap_err();
+        assert!(
+            matches!(err, OpError::Find(FindError::TooShort(_))),
+            "a short prefix of an archived ID is not taken as that task: {err}"
+        );
     }
 
     /// Lua 版は見出しが別名 (現在の名前でない) のセクションのタスクを見つけられず、何も書かない。

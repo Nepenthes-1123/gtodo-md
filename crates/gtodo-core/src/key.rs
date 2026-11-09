@@ -49,20 +49,27 @@ pub enum FindError {
     LineChanged(String),
     #[error("{key:?} matches more than one task:{candidates}")]
     Ambiguous { key: String, candidates: String },
+    #[error("{0:?} is too short; give at least {MIN_PREFIX_LEN} characters of the ID, or the whole ID")]
+    TooShort(String),
 }
 
-/// キーに一致するタスクを探す。ID は先頭の一部でもよい。一時キー (`~` 始まり) は ID の無いタスクの
-/// 行の内容と照らし合わせる。
+/// ID の先頭の一部で指定するときの最小の文字数。打ち間違いがたまたま別のタスク 1 つに一致すると、
+/// そのタスクを完了・キャンセルしてしまうため。
+pub const MIN_PREFIX_LEN: usize = 4;
+
+/// キーに一致するタスクを探す。ID は先頭の [`MIN_PREFIX_LEN`] 文字以上でもよい。一時キー (`~` 始まり) は
+/// ID の無いタスクの行の内容と照らし合わせる。
 ///
 /// ID はファイルの中でしか重複が直されないため、ファイルをまたいで同じ ID がありうる。
 /// 複数のタスクに一致したら、どれかを選ばずにエラーにする。ただし ID 全体が一致するタスクが
 /// あればそちらだけを候補にする。手で書いた短い ID が、他の ID の先頭の一部になっていても指定できるように。
 pub fn find(docs: &[(FileKind, &Document)], key: &str) -> Result<Location, FindError> {
+    let long_enough = key.chars().count() >= MIN_PREFIX_LEN;
     let matches = |item: &TaskItem| {
         let id = item.task.id.as_deref().filter(|id| !id.is_empty());
         match key.strip_prefix('~') {
             Some(_) => id.is_none() && line_key(&item.line) == key,
-            None => !key.is_empty() && id.is_some_and(|id| id.starts_with(key)),
+            None => id.is_some_and(|id| id == key || (long_enough && id.starts_with(key))),
         }
     };
     let mut found = Vec::new();
@@ -85,6 +92,7 @@ pub fn find(docs: &[(FileKind, &Document)], key: &str) -> Result<Location, FindE
     match found.as_slice() {
         [(location, _)] => Ok(*location),
         [] if key.starts_with('~') => Err(FindError::LineChanged(key.to_string())),
+        [] if !long_enough => Err(FindError::TooShort(key.to_string())),
         [] => Err(FindError::NotFound(key.to_string())),
         many => Err(FindError::Ambiguous {
             key: key.to_string(),
@@ -159,7 +167,7 @@ mod tests {
         );
         let at = |file, section, index| Location { file, section, index };
         assert_eq!(find_in(&inbox, &todo, "a1b2c3"), Ok(at(FileKind::Todo, Some(0), 0)));
-        assert_eq!(find_in(&inbox, &todo, "f"), Ok(at(FileKind::Todo, Some(0), 2)));
+        assert_eq!(find_in(&inbox, &todo, "ffff"), Ok(at(FileKind::Todo, Some(0), 2)));
         assert_eq!(
             find_in(&inbox, &todo, &line_key("- [ ] IDの無いタスク")),
             Ok(at(FileKind::Inbox, None, 0))
@@ -170,22 +178,21 @@ mod tests {
     fn keys_matching_no_task_or_several_tasks_are_errors() {
         let (inbox, todo) = docs(
             &["# Inbox", "- [ ] 受信 id:abc111", "- [ ] 同じ行", "- [ ] 同じ行"],
-            &["# Todo", "## Today", "- [ ] 今日 id:abc111", "- [ ] 次 id:abc222"],
+            &["# Todo", "## Today", "- [ ] 今日 id:abc111", "- [ ] 次 id:abc122"],
         );
         assert!(
             matches!(find_in(&inbox, &todo, "abc111"), Err(FindError::Ambiguous { .. })),
             "across files"
         );
         assert!(matches!(
-            find_in(&inbox, &todo, "abc"),
+            find_in(&inbox, &todo, "abc1"),
             Err(FindError::Ambiguous { .. })
         ));
         assert!(matches!(
             find_in(&inbox, &todo, &line_key("- [ ] 同じ行")),
             Err(FindError::Ambiguous { .. })
         ));
-        assert_eq!(find_in(&inbox, &todo, "999"), Err(FindError::NotFound("999".into())));
-        assert_eq!(find_in(&inbox, &todo, ""), Err(FindError::NotFound(String::new())));
+        assert_eq!(find_in(&inbox, &todo, "9999"), Err(FindError::NotFound("9999".into())));
         let changed = line_key("- [ ] 受信");
         assert_eq!(
             find_in(&inbox, &todo, &changed),
@@ -194,10 +201,42 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_id_wins_over_ids_that_merely_start_with_it() {
-        let (inbox, todo) = docs(&["# Inbox", "- [ ] 手書き id:abc"], &["# Todo", "- [ ] 発行 id:abcdef"]);
+    fn prefixes_shorter_than_the_minimum_match_nothing() {
+        let (inbox, todo) = docs(
+            &["# Inbox", "- [ ] 手書き id:zz", "- [ ] IDなし"],
+            &["# Todo", "- [ ] 唯一 id:a1b2c3", "- [ ] 日本語 id:日本語の仕事"],
+        );
+        for key in ["", "a", "a1b", "z", "日本語"] {
+            assert_eq!(
+                find_in(&inbox, &todo, key),
+                Err(FindError::TooShort(key.into())),
+                "{key:?}"
+            );
+        }
+        assert!(find_in(&inbox, &todo, "a1b2").is_ok());
+        assert!(
+            find_in(&inbox, &todo, "日本語の").is_ok(),
+            "the minimum counts characters, not bytes"
+        );
+        assert!(
+            find_in(&inbox, &todo, "zz").is_ok(),
+            "a whole hand-written ID is never too short"
+        );
         assert_eq!(
-            find_in(&inbox, &todo, "abc"),
+            find_in(&inbox, &todo, "~ab"),
+            Err(FindError::LineChanged("~ab".into())),
+            "temporary keys are not prefixes"
+        );
+    }
+
+    #[test]
+    fn a_whole_id_wins_over_ids_that_merely_start_with_it() {
+        let (inbox, todo) = docs(
+            &["# Inbox", "- [ ] 手書き id:abcd"],
+            &["# Todo", "- [ ] 発行 id:abcdef"],
+        );
+        assert_eq!(
+            find_in(&inbox, &todo, "abcd"),
             Ok(Location {
                 file: FileKind::Inbox,
                 section: None,
