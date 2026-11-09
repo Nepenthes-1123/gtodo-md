@@ -119,6 +119,8 @@ cargo fmt --all -- --check
 
 ホストに C リンカ (Ubuntu では `build-essential`) があれば、通常どおり `cargo test` も使えます。
 
+GitHub Actions (`.github/workflows/ci.yml`) は、`main` への push と pull request のたびに Linux と Windows でテストと clippy を、Linux で fmt を実行します。
+
 ## ライセンス
 
 MIT License
