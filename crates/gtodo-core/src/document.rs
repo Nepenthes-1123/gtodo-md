@@ -213,7 +213,7 @@ fn collapse_blank_runs(lines: Vec<String>) -> Vec<String> {
 }
 
 /// `## 名前` の名前部分。`##` の直後に1つ以上の空白が必要 (`###` は見出しではなく本文)。
-fn section_heading(line: &str) -> Option<&str> {
+pub(crate) fn section_heading(line: &str) -> Option<&str> {
     let rest = line.strip_prefix("##")?;
     if !rest.starts_with(lua_compat::is_space) {
         return None;

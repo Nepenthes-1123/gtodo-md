@@ -10,6 +10,7 @@ pub mod config;
 pub mod daily;
 pub mod date;
 pub mod document;
+pub mod guard;
 pub mod key;
 pub mod lock;
 pub mod logic;
