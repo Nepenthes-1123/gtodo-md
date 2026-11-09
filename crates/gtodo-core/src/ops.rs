@@ -670,9 +670,10 @@ fn sync_dir(dir: &Path) {
     let _ = dir;
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     use super::*;
@@ -682,6 +683,7 @@ mod tests {
     }
 
     /// `name` を、書き込めないディレクトリにある実体へのリンクにする (読めるが、書くと失敗する)。
+    #[cfg(unix)]
     fn make_unwritable(dir: &Path, name: &str, content: &str) {
         let ro = dir.join(format!("ro-{name}"));
         fs::create_dir(&ro).unwrap();
@@ -690,6 +692,7 @@ mod tests {
         symlink(ro.join(name), dir.join(name)).unwrap();
     }
 
+    #[cfg(unix)]
     fn restore_permissions(dir: &Path) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -702,6 +705,7 @@ mod tests {
     const INBOX: &str = "# Inbox\n- [ ] 受信 due:2026-02-01 id:aaaaaa\n";
     const TODO: &str = "# Todo\n\n## Today\n\n- [x] 完了 completed_at:2026-02-01 id:bbbbbb\n";
 
+    #[cfg(unix)]
     fn run(dir: &Path, op: fn(&DataDir) -> Result<(), OpError>) -> Result<(), OpError> {
         let result = op(&DataDir::new(dir));
         restore_permissions(dir);
@@ -716,6 +720,7 @@ mod tests {
         super::move_completed(d, &SectionNames::default(), today()).map(drop)
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_due_task_stays_in_the_inbox_when_todo_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -726,6 +731,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), INBOX);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_due_task_is_left_in_both_files_when_the_inbox_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -745,6 +751,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), INBOX);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_completed_task_stays_in_todo_when_done_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -755,6 +762,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_completed_task_is_left_in_both_files_when_todo_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -844,10 +852,12 @@ mod tests {
         assert_crlf(&dir.path().join("cancelled.md"));
     }
 
+    #[cfg(unix)]
     fn cancel(d: &DataDir) -> Result<(), OpError> {
         super::cancel(d, &SectionNames::default(), today(), "bbbbbb").map(drop)
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_cancelled_task_stays_in_todo_when_cancelled_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -858,6 +868,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.path().join("todo.md")).unwrap(), TODO);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_cancelled_task_is_left_in_both_files_when_todo_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -890,6 +901,7 @@ mod tests {
         .map(drop)
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_moved_inbox_task_stays_in_the_inbox_when_todo_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -900,6 +912,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), MOVE_INBOX);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_moved_inbox_task_is_left_in_both_files_when_the_inbox_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
