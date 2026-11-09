@@ -450,6 +450,59 @@ mod tests {
         assert!(!is_retryable(&io::ErrorKind::NotFound.into()));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn sharing_and_lock_violations_are_retried_on_windows() {
+        assert!(is_retryable(&io::Error::from_raw_os_error(32)));
+        assert!(is_retryable(&io::Error::from_raw_os_error(33)));
+    }
+
+    /// 他のプロセスが共有を許さずに開いている状態を作る (Windows では、閉じるまで置き換えが拒まれる)。
+    #[cfg(windows)]
+    fn open_without_sharing(path: &Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt;
+        OpenOptions::new().read(true).share_mode(0).open(path).unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_held_open_without_sharing_is_replaced_once_it_is_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("todo.md");
+        fs::write(&path, "a\n").unwrap();
+        let base = Stamp::of(&path).unwrap();
+        let held = open_without_sharing(&path);
+        // 再試行の待ち時間の合計 (RENAME_BACKOFF) より十分短い間だけ開いておく。
+        let closer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            drop(held);
+        });
+        // 大きさを変え、内容の比較のために開いている間のファイルを読みに行かないようにする。
+        let result = write_bytes(&path, b"changed\n", base.as_ref());
+        closer.join().unwrap();
+        result.unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "changed\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_held_open_without_sharing_through_every_retry_is_left_as_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("todo.md");
+        fs::write(&path, "a\n").unwrap();
+        let base = Stamp::of(&path).unwrap();
+        let held = open_without_sharing(&path);
+        let result = write_bytes(&path, b"changed\n", base.as_ref());
+        drop(held);
+        assert!(matches!(result, Err(WriteError::Io { op: "rename", .. })), "{result:?}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a\n");
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "the temporary file is removed"
+        );
+    }
+
     #[test]
     fn a_failed_replacement_removes_the_temporary_file() {
         let dir = tempfile::tempdir().unwrap();
