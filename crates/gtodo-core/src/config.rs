@@ -322,13 +322,21 @@ mod tests {
         let home = Home::new();
         let e = env(&[("HOME", home.str())]);
         let new = home.mkdir(".local/share/gtodo-md");
-        let legacy = home.mkdir(".local/share/nvim/gtodo-md");
+        home.mkdir(".local/share/nvim/gtodo-md");
         let mut warnings = Vec::new();
         let dir = resolve_data_dir(None, &e, Platform::Unix, &mut |w| warnings.push(w)).unwrap();
         assert_eq!(dir, new);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains(new.to_str().unwrap()), "{warnings:?}");
-        assert!(warnings[0].contains(legacy.to_str().unwrap()), "{warnings:?}");
+        // 警告に出るのは解決したパス。`home.mkdir` のパスは区切りに `/` を含むため、
+        // Windows では文字列としては一致しない。部品ごとに組み立てたパスで比べる。
+        let under_home = |parts: &[&str]| parts.iter().fold(home.0.path().to_path_buf(), |p, s| p.join(s));
+        for expected in [
+            under_home(&[".local", "share", "gtodo-md"]),
+            under_home(&[".local", "share", "nvim", "gtodo-md"]),
+        ] {
+            let expected = expected.display().to_string();
+            assert!(warnings[0].contains(&expected), "{expected} in {warnings:?}");
+        }
     }
 
     #[test]
