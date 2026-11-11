@@ -4,8 +4,9 @@
 //! 1. 呼び出し元の明示的な指定 (`--data-dir`)
 //! 2. 環境変数 `GTODO_DATA_DIR`
 //! 3. `config.json` の `data_dir` (絶対パスか `~` 始まりに限る)
-//! 4. Neovim 版の既定 (`stdpath("data")/gtodo-md`) が存在すればそこ
-//! 5. それ以外は `$XDG_DATA_HOME/gtodo-md`
+//! 4. `$XDG_DATA_HOME/gtodo-md` が存在すればそこ
+//! 5. Neovim 版の旧い既定 (`stdpath("data")/gtodo-md`) が存在すればそこ
+//! 6. それ以外は `$XDG_DATA_HOME/gtodo-md`
 //!
 //! `config.json` は環境変数 `GTODO_CONFIG` があればそのパス、無ければ `$XDG_CONFIG_HOME/gtodo-md/config.json`。
 //! XDG の環境変数が無いときの既定は、Unix (macOS を含む) が `~/.config`・`~/.local/share`、
@@ -81,7 +82,7 @@ pub fn resolve_data_dir(
             return Ok(dir);
         }
     }
-    default_data_dir(env, platform)
+    default_data_dir(env, platform, warn)
 }
 
 /// `config.json` のパスと、明示的に指定されたものか。
@@ -147,16 +148,30 @@ fn read_config_data_dir(
     Ok(Some(expanded))
 }
 
-fn default_data_dir(env: &impl Env, platform: Platform) -> Result<PathBuf, ConfigError> {
-    // 現行の Neovim 版は旧い既定を使い続けるため、それが存在する間は優先して同じデータを見る。
-    // 新しい場所を優先すると、何かの拍子にそこが作られたとき、CLI だけが別の (空かもしれない)
-    // ディレクトリへ黙って切り替わる。Neovim 版が新しい既定へ移ったら優先順位を入れ替える。
-    if let Some(legacy) = neovim_legacy_data_dir(env, platform).filter(|dir| dir.is_dir()) {
+/// 新しい既定があればそれを、無くて Neovim 版の旧い既定があればそれを使う。どちらも無ければ新しい既定。
+///
+/// Neovim 版も同じ順で決める。旧い既定にデータがある利用者は、移さずに使い続けられる。
+/// 新しい既定が作られるのは、どちらも無いとき (Neovim 版の `setup()` が作る) だけ。
+/// 両方あると旧い既定のデータが使われなくなり、タスクが消えたように見えるため警告する。
+fn default_data_dir(env: &impl Env, platform: Platform, warn: &mut impl FnMut(String)) -> Result<PathBuf, ConfigError> {
+    let new = data_home(env, platform).map(|d| d.join(APP_DIR));
+    let legacy = neovim_legacy_data_dir(env, platform).filter(|dir| dir.is_dir());
+    if let Some(new) = new.as_ref().filter(|dir| dir.is_dir()) {
+        if let Some(legacy) = legacy.filter(|dir| dir != new) {
+            warn(format!(
+                "both {} and the old default {} exist; using {}. \
+                 Move your tasks there and remove the old directory, or set data_dir",
+                new.display(),
+                legacy.display(),
+                new.display()
+            ));
+        }
+        return Ok(new.clone());
+    }
+    if let Some(legacy) = legacy {
         return Ok(legacy);
     }
-    data_home(env, platform)
-        .map(|d| d.join(APP_DIR))
-        .ok_or(ConfigError::NoDefaultDataDir)
+    new.ok_or(ConfigError::NoDefaultDataDir)
 }
 
 fn data_home(env: &impl Env, platform: Platform) -> Option<PathBuf> {
@@ -290,15 +305,30 @@ mod tests {
     }
 
     #[test]
-    fn neovim_default_is_preferred_while_it_exists_even_if_the_new_one_also_exists() {
+    fn neovim_old_default_is_used_only_while_the_new_one_does_not_exist() {
+        let home = Home::new();
+        let e = env(&[("HOME", home.str())]);
+        let legacy = home.mkdir(".local/share/nvim/gtodo-md");
+        assert_eq!(resolve(&e, Platform::Unix).unwrap(), legacy);
+        assert!(!home.path(".local/share/gtodo-md").exists());
+
+        let new = home.mkdir(".local/share/gtodo-md");
+        fs::remove_dir(&legacy).unwrap();
+        assert_eq!(resolve(&e, Platform::Unix).unwrap(), new);
+    }
+
+    #[test]
+    fn new_default_wins_and_warns_when_both_exist() {
         let home = Home::new();
         let e = env(&[("HOME", home.str())]);
         let new = home.mkdir(".local/share/gtodo-md");
         let legacy = home.mkdir(".local/share/nvim/gtodo-md");
-        assert_eq!(resolve(&e, Platform::Unix).unwrap(), legacy);
-
-        fs::remove_dir(&legacy).unwrap();
-        assert_eq!(resolve(&e, Platform::Unix).unwrap(), new);
+        let mut warnings = Vec::new();
+        let dir = resolve_data_dir(None, &e, Platform::Unix, &mut |w| warnings.push(w)).unwrap();
+        assert_eq!(dir, new);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains(new.to_str().unwrap()), "{warnings:?}");
+        assert!(warnings[0].contains(legacy.to_str().unwrap()), "{warnings:?}");
     }
 
     #[test]
