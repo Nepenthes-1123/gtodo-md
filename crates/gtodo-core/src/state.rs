@@ -35,7 +35,7 @@ pub struct State {
 
 impl State {
     /// ファイルが無い・空の場合は空の状態。壊れている場合はエラーを返す
-    /// (Lua 版は黙って空として扱うが、それでは壊れていることに誰も気づけず、書き戻すと中身が消える)。
+    /// (黙って空として扱うと、壊れていることに誰も気づけず、書き戻すと中身が消える。Lua 版も書き戻さない)。
     pub fn read(path: &Path) -> Result<State, StateError> {
         let io_err = |source| StateError::Io {
             path: path.to_path_buf(),

@@ -49,8 +49,9 @@ impl Document {
     /// `today` はタスク行の相対的な期日の解決に使う。
     pub fn parse(lines: &[String], names: &SectionNames, today: NaiveDate) -> Document {
         let mut doc = Document::default();
-        // Lua 版は preamble を "default" という名前のセクションとして持つため、`## default` という
-        // 見出しがあると衝突して見出しが消える。ここでは preamble を別に持ち、衝突させない。
+        // preamble を見出しのセクションと同じ名前の空間に入れると、`## default` のような見出しと
+        // 衝突して見出しが消える。ここでは preamble を別に持ち、衝突させない (Lua 版も見出しからは
+        // 作られない内部キーで持つ。以前は "default" で、衝突していた)。
         let mut current: Option<usize> = None;
         let mut header_done = false;
 
