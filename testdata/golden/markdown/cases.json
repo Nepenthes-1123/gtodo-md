@@ -16,5 +16,11 @@
   { "file": "heading_fullwidth_space.md" },
   { "file": "todo_write.md" },
   { "file": "todo_write_headings.md" },
-  { "file": "header_trailing_space.md" }
+  { "file": "header_trailing_space.md" },
+  { "file": "default_heading.md" },
+  {
+    "file": "alias_order.md",
+    "sections": { "TODAY": "あとで" },
+    "last_sections": { "NEXT": "あとで" }
+  }
 ]
