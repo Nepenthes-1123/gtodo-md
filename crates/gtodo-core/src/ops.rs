@@ -98,8 +98,8 @@ pub enum Destination {
 /// タスクを追加し、付けた ID を返す (Lua 版 `init.lua` の `add_or_edit_task` の新規追加)。
 /// todo.md へ加えたら並べ替える。inbox.md への追加後の期日のチェックは呼び出し元が行う。
 ///
-/// セクションの見出しが無ければ末尾に作る。Lua 版は見出しの無いセクションへ加えたタスクを
-/// 書き出さずに失う。
+/// セクションの見出しが無ければ末尾に作る。作らずに加えると、書き出すときにそのセクションが
+/// 書かれずタスクが消える (Lua 版も末尾に作る。以前は失っていた)。
 pub fn add_task(
     data_dir: &DataDir,
     names: &SectionNames,
@@ -334,8 +334,8 @@ pub enum Moved {
 /// 待ち先を変えるときだけ書く。移した後は、移動元と移動先のセクションを並べ替える
 /// (inbox.md からの移動では移動先だけ)。
 ///
-/// 移動先の見出しが無ければ末尾に作る。Lua 版は inbox.md から移すとき、見出しの無いセクションへ
-/// 加えたタスクを書き出さずに失う。
+/// 移動先の見出しが無ければ末尾に作る。作らずに加えると、inbox.md から移すときにタスクが
+/// どちらのファイルからも消える (Lua 版も末尾に作る。以前は失っていた)。
 pub fn move_task(
     data_dir: &DataDir,
     names: &SectionNames,
@@ -813,7 +813,7 @@ mod tests {
         );
     }
 
-    /// Lua 版は見出しが別名 (現在の名前でない) のセクションのタスクを見つけられず、何も書かない。
+    /// 見出しが別名 (現在の名前でない) のセクションのタスクも操作できる (Lua 版は以前、見つけられずに何も書かなかった)。
     #[test]
     fn tasks_under_an_alias_heading_can_be_completed() {
         let dir = tempfile::tempdir().unwrap();
@@ -932,7 +932,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), MOVE_INBOX);
     }
 
-    /// Lua 版は todo.md に書き出さないまま inbox.md から消すため、タスクが無くなる。
+    /// todo.md に書き出してから inbox.md から消す (Lua 版は以前、書き出さないまま消してタスクを失っていた)。
     #[test]
     fn a_task_moved_from_the_inbox_to_a_missing_section_is_kept_under_a_new_heading() {
         let dir = tempfile::tempdir().unwrap();
@@ -946,7 +946,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.path().join("inbox.md")).unwrap(), "# Inbox\n");
     }
 
-    /// Lua 版は見出しが別名 (現在の名前でない) のセクションのタスクを見つけられず、何も書かない。
+    /// 見出しが別名 (現在の名前でない) のセクションのタスクも操作できる (Lua 版は以前、見つけられずに何も書かなかった)。
     #[test]
     fn tasks_under_an_alias_heading_can_be_moved() {
         let dir = tempfile::tempdir().unwrap();
@@ -1083,7 +1083,7 @@ mod tests {
         );
     }
 
-    /// Lua 版は見出しの無いセクションへ加えたタスクを書き出さずに失う。
+    /// 見出しの無いセクションへ加えたタスクも書き出す (Lua 版は以前、書き出さずに失っていた)。
     #[test]
     fn a_missing_section_is_created_at_the_end_instead_of_losing_the_task() {
         let dir = tempfile::tempdir().unwrap();

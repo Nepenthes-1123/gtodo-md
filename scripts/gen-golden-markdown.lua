@@ -94,15 +94,17 @@ for i, case in ipairs(cases) do
 		table.insert(sections, string.format('{"name":%s,"items":%s}', vim.json.encode(name), encode_items(data.sections[name])))
 	end
 
-	-- Lua 版は最初の `##` より前のタスク・テキストを内部キー "default" のセクションに入れる。
+	-- Lua 版は最初の `##` より前のタスク・テキストを内部キー io.PREAMBLE のセクションに入れる。
 	-- Rust 版はこれを preamble として別に持つ。
+	-- io.PREAMBLE が無い Lua 版は "default" を使っていた (`## default` という見出しと衝突していた)。
+	local preamble_key = io_mod.PREAMBLE or "default"
 	local entry = string.format(
 		'{"file":%s,"sections_config":%s,"last_sections":%s,"header":%s,"preamble":%s,"sections":[%s]}',
 		vim.json.encode(case.file),
 		encode_map(case.sections),
 		encode_map(case.last_sections),
 		encode_string_list(data.header),
-		encode_items(data.sections["default"] or {}),
+		encode_items(data.sections[preamble_key] or {}),
 		table.concat(sections, ",")
 	)
 	-- write_todo_file は data のタスクに ID を書き込むため、解析結果を文字列にした後で呼ぶ。

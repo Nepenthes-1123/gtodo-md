@@ -108,8 +108,8 @@ impl Lock {
     /// Neovim 版の自動処理が黙って止まるため、失敗は呼び出し元へ返す。
     ///
     /// ロックが既に他のプロセスのものになっていれば消さずに [`LockError::TakenOver`] を、
-    /// 既に消されていれば [`LockError::Removed`] を返す (60 秒を超えて持ち、残骸とみなされた場合)。Lua 版は確かめずに消すが、
-    /// Lua 版はロックを数ミリ秒しか持たないのに対し、CLI はコマンドの間ずっと持つため。
+    /// 既に消されていれば [`LockError::Removed`] を返す (60 秒を超えて持ち、残骸とみなされた場合)。
+    /// 確かめずに消すと、取り直した相手のロックを消して排他を崩す (Lua 版も確かめる)。
     /// 確かめてから消すまでの間に取り直されることは防げない。
     pub fn release(mut self) -> Result<(), LockError> {
         self.released = true;
@@ -146,7 +146,7 @@ impl Drop for Lock {
 
 /// ロックファイルの中身。先頭のプロセス ID は Lua 版と同じく、保持しているプロセスを調べる手がかり。
 /// プロセス ID だけでは、Docker や WSL と Windows のように PID の空間が別のプロセスと一致しうるため、
-/// 取得した時刻を添えて自分のロックかを見分ける。Lua 版は中身を読まない。
+/// 取得した時刻を添えて自分のロックかを見分ける。Lua 版も同じ形で書き、解放するときに見分ける。
 fn owner_token() -> String {
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)

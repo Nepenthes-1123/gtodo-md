@@ -23,7 +23,7 @@ use crate::workspace::Workspace;
 #[derive(Debug, Parser)]
 #[command(name = "gtodo", version, arg_required_else_help = true)]
 struct Cli {
-    /// Data directory [default: GTODO_DATA_DIR, data_dir in config.json, or $XDG_DATA_HOME/gtodo-md]
+    /// Data directory [default: GTODO_DATA_DIR, data_dir in config.json, $XDG_DATA_HOME/gtodo-md, or Neovim's old default stdpath("data")/gtodo-md if only that exists]
     #[arg(long, global = true, value_name = "DIR")]
     data_dir: Option<PathBuf>,
 

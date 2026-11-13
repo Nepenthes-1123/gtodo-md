@@ -49,7 +49,7 @@ Neovim 版で開いているファイルを書き換えた場合、Neovim 側の
 ## 設定
 
 設定は Neovim 版と共有するファイルに書きます。どちらのツールで使っても同じ結果になるよう、2 つのファイルに分けています。
-ただし、Neovim 版はまだこれらのファイルを読みません ([ROADMAP.md](ROADMAP.md) の「gtodo-md.nvim 側の対応」)。それまでは Neovim 版の `setup()` にも同じ値を書いてください。
+Neovim 版 (gtodo-md.nvim) も同じファイルを読みます。`gtodo.json` に書いた項目は Neovim 版の `setup()` より優先され、`data_dir` は `setup()` に書いた場所が優先されます (`GTODO_DATA_DIR`・`config.json` と食い違えば Neovim 版が警告します。共有設定が無いときの既定の場所とは比べません)。
 キーマップや見た目など、ツールごとの設定はここには含めません。
 
 ### データディレクトリの場所 (`config.json`)
@@ -66,10 +66,11 @@ Neovim 版で開いているファイルを書き換えた場合、Neovim 側の
 1. `--data-dir`
 2. 環境変数 `GTODO_DATA_DIR`
 3. `config.json` の `data_dir`
-4. Neovim 版の既定 `stdpath("data")/gtodo-md` (通常は `~/.local/share/nvim/gtodo-md`) が存在すればそこ
-5. それ以外は `~/.local/share/gtodo-md` (Windows は `%LOCALAPPDATA%\gtodo-md`)
+4. `~/.local/share/gtodo-md` (Windows は `%LOCALAPPDATA%\gtodo-md`) が存在すればそこ
+5. Neovim 版の以前の既定 `stdpath("data")/gtodo-md` (通常は `~/.local/share/nvim/gtodo-md`) が存在すればそこ。`NVIM_APPNAME` を設定していればその名前のものを先に、次に既定の名前 (`nvim`) のものを探します
+6. それ以外は `~/.local/share/gtodo-md` (Windows は `%LOCALAPPDATA%\gtodo-md`)
 
-Neovim 版がまだ 4 の場所を使うため、存在する間はそちらを優先します。
+Neovim 版も同じ順で決めます。以前の既定にデータがある場合は、移さずにそのまま使えます。4 と 5 の両方があると 4 を使い、5 が使われないことを警告します (4 が 5 へのシンボリックリンクなら同じ場所として扱います)。
 
 環境変数 `XDG_CONFIG_HOME` / `XDG_DATA_HOME` が設定されていれば、どの OS でも `~/.config` / `~/.local/share` の代わりに使います。
 
@@ -77,7 +78,7 @@ Neovim 版がまだ 4 の場所を使うため、存在する間はそちらを�
 
 セクション名など、ファイルの中身に関わる設定です。データと一緒に置くので、データを別のマシンへ同期しても設定が付いていきます。
 ファイルが無ければ、すべて既定値を使います。ただしセクション名は、`sections` が無ければ Neovim 版が最後に起動したときの名前 (`.state.json` に記録されたもの) を使います。Neovim 版の `setup()` で名前を変えている場合に、見出しを既定の名前で書き換えないためです。記録された名前が他のセクションの名前と重なっているなどで使えない場合、書き込むコマンドはエラーになるので、`sections` を設定してください。
-CLI はこのファイルを作らないので、設定を変えるときは手で作ってください。
+CLI も Neovim 版もこのファイルを作らないので、設定を変えるときは手で作ってください。
 
 ```json
 {

@@ -91,7 +91,7 @@ impl SectionNames {
     /// 現在の名前を `SectionKey::ALL` の順で受け取る。前後の空白は取り除く。
     ///
     /// 他のセクションの現在の名前・デフォルト名と同じ名前はエラーにする。許すと2つのセクションの
-    /// タスクが1つに合流して読まれ、書き戻すとそのまま混ざってしまう (Lua 版は検査していない)。
+    /// タスクが1つに合流して読まれ、書き戻すとそのまま混ざってしまう (Lua 版の `setup()` はデフォルト名へ差し戻す)。
     pub fn new(current: [String; 4]) -> Result<Self, SectionNameError> {
         let mut names = SectionNames::default();
         for (key, name) in SectionKey::ALL.into_iter().zip(current) {
@@ -143,7 +143,7 @@ impl SectionNames {
     ///
     /// 別名が他のキーの名前と衝突したときは、全キーの現在の名前 → デフォルト名 → 前回の名前の順に照合する。
     /// キーごとに別名をまとめて照合すると、Today の前回の名前が Next の現在の名前を奪い、
-    /// 見出しが別のセクションへ移ってしまう (Lua 版はこの順序が `pairs` 任せで定まっていない)。
+    /// 見出しが別のセクションへ移ってしまう (Lua 版も同じ順で照合する)。
     pub fn key_of(&self, heading: &str) -> Option<SectionKey> {
         let find = |names: [Option<&str>; 4]| SectionKey::ALL.into_iter().find(|&k| names[k.index()] == Some(heading));
         find(SectionKey::ALL.map(|k| Some(self.name(k))))

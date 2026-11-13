@@ -62,8 +62,7 @@ pub fn write_bytes(path: &Path, data: &[u8], base: Option<&Stamp>) -> Result<Sta
                 path: path.to_path_buf(),
             });
         }
-        // 読んだ時点で無かったファイルが作られていたら、作った側の内容を潰さない。
-        // Lua 版はこの場合を照合せずに上書きする。
+        // 読んだ時点で無かったファイルが作られていたら、作った側の内容を潰さない (Lua 版も同じ)。
         (None, Some(_)) => {
             return Err(WriteError::Changed {
                 path: path.to_path_buf(),
@@ -86,8 +85,8 @@ pub fn write_bytes(path: &Path, data: &[u8], base: Option<&Stamp>) -> Result<Sta
 /// シンボリックリンクは実体へ解決する。リンクそのものを rename の置換先にすると、
 /// リンクが実体ファイルに置き換わって消え、利用者が作った同期や共有の仕組みが壊れる。
 ///
-/// 実体の無いリンクはエラーにする。Lua 版はこの場合リンクを通常のファイルに置き換えるが、
-/// 同期先が一時的に見えないだけかもしれず、リンクを壊すよりは書かない方が安全。
+/// 実体の無いリンクはエラーにする。同期先が一時的に見えないだけかもしれず、リンクを通常の
+/// ファイルに置き換えて壊すよりは書かない方が安全 (Lua 版も同じ)。
 fn resolve_link(path: &Path) -> io::Result<PathBuf> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(path),
