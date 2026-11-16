@@ -65,17 +65,27 @@ struct TagPattern {
     key: TagKey,
     /// Vim の `\<` (単語の始まり) を要求するか。
     word_start: bool,
-    /// 開始位置以降、行末までに一致する正規表現 (`^` から `$` まで)。
+    /// 開始位置から行末までに一致する正規表現 (`$` で終わり、`^` は付けない)。
     suffix: Regex,
 }
 
 impl TagPattern {
     /// `vim.fn.match` と同じく、一致する最も左の開始位置 (バイト) を返す。
+    ///
+    /// 「その位置から行末までが一致する最も左の位置」は、行末に固定した正規表現を 1 回
+    /// 左から探した一致の開始位置と同じ (regex は最も左で始まる一致を返す)。位置ごとに
+    /// 先頭に固定した正規表現を試すと、1 行の解析に数千回の照合が要り、数万件で秒単位になる。
+    /// 単語の始まりでない位置で一致したときだけ、その次の文字から探し直す。
     fn find(&self, text: &str) -> Option<usize> {
-        text.char_indices()
-            .map(|(i, _)| i)
-            .filter(|&i| !self.word_start || is_vim_word_start(text, i))
-            .find(|&i| self.suffix.is_match(&text[i..]))
+        let mut from = 0;
+        while let Some(m) = self.suffix.find_at(text, from) {
+            let i = m.start();
+            if !self.word_start || is_vim_word_start(text, i) {
+                return Some(i);
+            }
+            from = i + text[i..].chars().next().map_or(1, char::len_utf8);
+        }
+        None
     }
 }
 
@@ -92,20 +102,20 @@ static TAG_PATTERNS: LazyLock<Vec<TagPattern>> = LazyLock::new(|| {
         suffix: Regex::new(re).expect("tag pattern must compile"),
     };
     vec![
-        p(TagKey::Id, true, r"^id:[^ \t]+[ \t]*$"),
+        p(TagKey::Id, true, r"id:[^ \t]+[ \t]*$"),
         p(
             TagKey::CompletedAt,
             true,
-            r"^completed_at:[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*$",
+            r"completed_at:[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*$",
         ),
-        p(TagKey::Done, true, r"^done:[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*$"),
-        p(TagKey::Cancelled, true, r"^cancelled:[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*$"),
-        p(TagKey::From, true, r"^from:[0-9A-Za-z_]+[ \t]*$"),
-        p(TagKey::Due, true, r"^due:[a-zA-Z0-9_/%+-]+[ \t]*$"),
-        p(TagKey::Created, true, r"^created:[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*$"),
-        p(TagKey::Context, false, r"^[ \t]+@[a-zA-Z0-9_/.-]+[ \t]*$"),
-        p(TagKey::Project, false, r"^[ \t]+\+[a-zA-Z0-9_/.-]+[ \t]*$"),
-        p(TagKey::Wait, true, r"^wait:[^\t\n\x0B\x0C\r 　。、.,()（）]+[ \t]*$"),
+        p(TagKey::Done, true, r"done:[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*$"),
+        p(TagKey::Cancelled, true, r"cancelled:[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*$"),
+        p(TagKey::From, true, r"from:[0-9A-Za-z_]+[ \t]*$"),
+        p(TagKey::Due, true, r"due:[a-zA-Z0-9_/%+-]+[ \t]*$"),
+        p(TagKey::Created, true, r"created:[0-9]{4}-[0-9]{2}-[0-9]{2}[ \t]*$"),
+        p(TagKey::Context, false, r"[ \t]+@[a-zA-Z0-9_/.-]+[ \t]*$"),
+        p(TagKey::Project, false, r"[ \t]+\+[a-zA-Z0-9_/.-]+[ \t]*$"),
+        p(TagKey::Wait, true, r"wait:[^\t\n\x0B\x0C\r 　。、.,()（）]+[ \t]*$"),
     ]
 });
 
@@ -279,6 +289,77 @@ fn split_priority(s: &str) -> Option<(char, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 速くする前の探し方 (各位置で、そこから行末までの一致を試す)。`anchored` は先頭に固定した正規表現。
+    fn find_by_trying_every_position(pattern: &TagPattern, anchored: &Regex, text: &str) -> Option<usize> {
+        text.char_indices()
+            .map(|(i, _)| i)
+            .filter(|&i| !pattern.word_start || is_vim_word_start(text, i))
+            .find(|&i| anchored.is_match(&text[i..]))
+    }
+
+    #[test]
+    fn tag_search_finds_the_same_position_as_trying_every_position() {
+        // 一致しかけて途中で外れるもの・単語の途中・全角文字の直後などを組み合わせる。
+        let pieces = [
+            " ",
+            "\t",
+            "　",
+            "x",
+            "日本",
+            "買い物",
+            "café",
+            "_",
+            "(",
+            ".",
+            "+",
+            "@",
+            "+work",
+            "@home",
+            " +a/b.c",
+            "id:",
+            "id:ab12",
+            "xid:1",
+            "due:",
+            "due:+3d",
+            "due:2026-02-30",
+            "wait:",
+            "wait:bob",
+            "wait:田中",
+            "wait:a.b",
+            "created:2026-01-01",
+            "completed_at:2026-01-0",
+            "done:2026-11-16",
+            "cancelled:2026-11-16",
+            "from:abc",
+            "from:a-b",
+            "：",
+        ];
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let anchored: Vec<Regex> = TAG_PATTERNS
+            .iter()
+            .map(|p| Regex::new(&format!("^(?:{})", p.suffix.as_str())).unwrap())
+            .collect();
+        for _ in 0..20_000 {
+            let len = 1 + next(8);
+            let text: String = (0..len).map(|_| pieces[next(pieces.len())]).collect();
+            let text = format!(" {text}");
+            for (pattern, anchored) in TAG_PATTERNS.iter().zip(&anchored) {
+                assert_eq!(
+                    pattern.find(&text),
+                    find_by_trying_every_position(pattern, anchored, &text),
+                    "{:?} in {text:?}",
+                    pattern.suffix.as_str()
+                );
+            }
+        }
+    }
 
     #[test]
     fn serialize_assigns_id_and_keeps_it_on_the_task() {
