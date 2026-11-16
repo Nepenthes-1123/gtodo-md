@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use chrono::NaiveDate;
@@ -116,8 +117,7 @@ pub enum Mode {
     Help,
     /// Waiting へ移す前に待ち先を尋ねている。
     WaitInput {
-        key: String,
-        content: String,
+        row: Box<Row>,
         input: LineInput,
     },
     /// キャンセルしてよいか尋ねている。
@@ -140,6 +140,10 @@ pub struct Message {
     pub text: String,
 }
 
+/// 操作のときにロックが空くまで待つ時間。待つ間は画面が止まるため、CLI (2 秒) より短くする。
+/// Neovim 版の自動処理がロックを持つのは数ミリ秒で、取れなければもう一度押せばよい。
+const LOCK_WAIT: Duration = Duration::from_millis(300);
+
 /// 見張るファイル。順番は [`App::stamps`] の添字。
 const WATCHED_DOCS: [FileKind; 4] = [FileKind::Inbox, FileKind::Todo, FileKind::Done, FileKind::Cancelled];
 const SETTINGS: usize = 4;
@@ -157,8 +161,14 @@ pub struct App {
     pub messages: Vec<Message>,
     /// 一覧に表示できる行数。描画のたびに更新する (半ページ・1 ページの移動に使う)。
     pub page_height: usize,
+    /// ヘルプの表示位置。描画するときに入りきる範囲へ収める。
+    pub help_scroll: usize,
     data_dir: PathBuf,
+    /// 今日の日付を返す (テストでは日付を差し替える)。
+    clock: Box<dyn Fn() -> NaiveDate>,
     today: NaiveDate,
+    /// 最後に設定を開こうとしたときの日付。開けなかったときに毎回開き直さないため。
+    opened_date: NaiveDate,
     quit: bool,
     /// 最後に読んだときの各ファイルの状態。`None` はまだ読んでいない。
     stamps: [Option<Option<Stamp>>; WATCHED],
@@ -172,8 +182,14 @@ pub struct App {
 impl App {
     /// `data_dir` を開く。開けなければ (ディレクトリが無い・gtodo.json が壊れているなど) エラー。
     /// 起動時の日次ロールオーバーも試みる (ロックが取れなければ次の [`App::tick`] でやり直す)。
-    pub fn new(data_dir: PathBuf, today: NaiveDate, keymap: Keymap, warnings: Vec<String>) -> Result<App> {
+    pub fn new(
+        data_dir: PathBuf,
+        clock: Box<dyn Fn() -> NaiveDate>,
+        keymap: Keymap,
+        warnings: Vec<String>,
+    ) -> Result<App> {
         let mut warnings = warnings;
+        let today = clock();
         // 読む前に取る。読んでいる間に書き換えられても、次の確認で読み直せる。
         let dir = DataDir::new(data_dir.clone());
         let config_stamps = [stamp(&dir.settings_file()), stamp(&dir.state_file())];
@@ -190,8 +206,11 @@ impl App {
             pending: Vec::new(),
             messages: Vec::new(),
             page_height: 10,
+            help_scroll: 0,
             data_dir,
+            clock,
             today,
+            opened_date: today,
             quit: false,
             stamps,
             config_error: None,
@@ -228,18 +247,24 @@ impl App {
 
     /// 定期的な確認 (1 秒ごと)。日付が変わっていれば日次ロールオーバーを行い、
     /// ファイルが変わっていれば読み直す。
-    pub fn tick(&mut self, today: NaiveDate) {
-        if today != self.today {
-            self.today = today;
-            self.rollover_pending = true;
-            // 新しい日付で設定を開き直してから整理する。前の日付のままだと、その日の整理は
-            // 済んでいると判定されて何もしない。
-            self.reload();
-        }
+    pub fn tick(&mut self) {
+        self.check_date();
         if self.rollover_pending {
             self.try_rollover();
         }
         self.reload();
+    }
+
+    /// 日付が変わっていれば、新しい日付で設定を開き直す (日次ロールオーバーは次の確認か、
+    /// 書き込む前の準備で行う)。前の日付のままだと、その日の整理は済んでいると判定されて
+    /// 何もせず、完了日なども前の日付になる。
+    fn check_date(&mut self) {
+        let today = (self.clock)();
+        if today != self.today {
+            self.today = today;
+            self.rollover_pending = true;
+            self.reload();
+        }
     }
 
     pub fn handle_key(&mut self, event: KeyEvent) {
@@ -251,10 +276,7 @@ impl App {
         }
         match self.mode {
             Mode::Normal => {}
-            Mode::Help => {
-                self.mode = Mode::Normal;
-                return;
-            }
+            Mode::Help => return self.handle_help(key),
             Mode::WaitInput { .. } => return self.handle_wait_input(key),
             Mode::ConfirmCancel { .. } => return self.handle_confirm_cancel(key),
         }
@@ -327,11 +349,23 @@ impl App {
     }
 
     fn move_selected(&mut self, to: SectionKey, wait: Wait) {
-        let Some(row) = self.target() else { return };
+        let Some(row) = self.movable() else { return };
+        self.move_row(&row, to, wait);
+    }
+
+    /// 選んでいるタスクのうち、セクションを移せるもの。
+    fn movable(&mut self) -> Option<Row> {
+        let row = self.target()?;
         if row.task.status == Status::Done {
             self.message(Level::Warning, "completed tasks cannot be moved".to_string());
-            return;
+            return None;
         }
+        Some(row)
+    }
+
+    /// `row` のタスクを移す。選んでいる行ではなくキーで探すので、尋ねている間に
+    /// 他のツールがタスクを別のセクションへ移していても操作できる。
+    fn move_row(&mut self, row: &Row, to: SectionKey, wait: Wait) {
         let name = self.ws.names.name(to).to_string();
         let key = row.key.clone();
         let moved = self.write(false, |ws| {
@@ -355,41 +389,50 @@ impl App {
     }
 
     fn ask_wait(&mut self) {
-        let Some(row) = self.target() else { return };
-        if row.task.status == Status::Done {
-            self.message(Level::Warning, "completed tasks cannot be moved".to_string());
-            return;
-        }
+        let Some(row) = self.movable() else { return };
+        let input = LineInput::new(row.task.wait.as_deref().unwrap_or_default());
         self.mode = Mode::WaitInput {
-            key: row.key,
-            content: row.task.content.clone(),
-            input: LineInput::new(row.task.wait.as_deref().unwrap_or_default()),
+            row: Box::new(row),
+            input,
         };
     }
 
     fn handle_wait_input(&mut self, key: Key) {
-        let Mode::WaitInput {
-            input, key: task_key, ..
-        } = &mut self.mode
-        else {
+        let Mode::WaitInput { input, .. } = &mut self.mode else {
             return;
         };
         match input.handle(key) {
             Edit::Continue => {}
             Edit::Abort => self.mode = Mode::Normal,
-            Edit::Submit => {
-                let (text, task_key) = (input.text().to_string(), task_key.clone());
-                match parse_wait(&text, self.today) {
-                    // 直せるように入力欄は閉じない。
-                    Err(e) => self.message(Level::Error, format!("{e:#}")),
-                    Ok(wait) => {
-                        self.mode = Mode::Normal;
-                        self.messages.clear();
-                        self.with_selected_key(&task_key, |app| app.move_selected(SectionKey::Waiting, wait));
-                    }
+            Edit::Submit => match parse_wait(input.text(), self.today) {
+                // 直せるように入力欄は閉じない。
+                Err(e) => self.message(Level::Error, format!("{e:#}")),
+                Ok(wait) => {
+                    let Mode::WaitInput { row, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                        unreachable!("checked above");
+                    };
+                    self.messages.clear();
+                    self.move_row(&row, SectionKey::Waiting, wait);
                 }
-            }
+            },
         }
+    }
+
+    /// ヘルプは上下の移動でスクロールし、それ以外のキーで閉じる (端末が低いと入りきらないため)。
+    fn handle_help(&mut self, key: Key) {
+        let mut pending = Vec::new();
+        let delta: isize = match self.keymap.feed(&mut pending, key) {
+            Fed::Action(Action::Down) => 1,
+            Fed::Action(Action::Up) => -1,
+            Fed::Action(Action::HalfPageDown | Action::PageDown) => self.page_height.max(2) as isize / 2,
+            Fed::Action(Action::HalfPageUp | Action::PageUp) => -(self.page_height.max(2) as isize / 2),
+            _ => {
+                self.mode = Mode::Normal;
+                self.help_scroll = 0;
+                return;
+            }
+        };
+        self.help_scroll = self.help_scroll.saturating_add_signed(delta);
     }
 
     fn ask_cancel(&mut self) {
@@ -416,18 +459,6 @@ impl App {
         if let Some(task) = cancelled {
             self.message(Level::Info, format!("cancelled: {}", task.content));
         }
-    }
-
-    /// 入力を待っている間に選択が動いていても、尋ねたときのタスクを操作する。
-    fn with_selected_key(&mut self, key: &str, f: impl FnOnce(&mut App)) {
-        if !self.view_mut().select_key(key) {
-            self.message(
-                Level::Error,
-                "the task was changed by another program; check it and try again".to_string(),
-            );
-            return;
-        }
-        f(self);
     }
 
     fn toggle_done(&mut self) {
@@ -479,6 +510,7 @@ impl App {
     /// ロックを取り、CLI の書き込むコマンドと同じ準備をしてから `op` を実行し、読み直す。
     /// 失敗したら知らせて `None`。
     fn write<T>(&mut self, checks_dues: bool, op: impl FnOnce(&Workspace) -> Result<T>) -> Option<T> {
+        self.check_date();
         if let Some(e) = &self.config_error {
             let text = format!("{e}; fix it before changing tasks");
             self.message(Level::Error, text);
@@ -486,7 +518,7 @@ impl App {
         }
         let (mut warnings, mut notes) = (Vec::new(), Vec::new());
         let result = writing::ensure_writable(&self.ws)
-            .and_then(|()| Ok(Lock::acquire(self.ws.data_dir.root(), writing::LOCK_WAIT)?))
+            .and_then(|()| Ok(Lock::acquire(self.ws.data_dir.root(), LOCK_WAIT)?))
             .and_then(|lock| {
                 writing::run_locked(
                     &self.ws,
@@ -562,12 +594,18 @@ impl App {
         now[SETTINGS] = Some(stamp(&self.ws.data_dir.settings_file()));
         now[STATE] = Some(stamp(&self.ws.data_dir.state_file()));
 
-        let reopen =
-            self.today != self.ws.today || now[SETTINGS] != self.stamps[SETTINGS] || now[STATE] != self.stamps[STATE];
+        let reopen = self.today != self.opened_date
+            || now[SETTINGS] != self.stamps[SETTINGS]
+            || now[STATE] != self.stamps[STATE];
+        // 文書の解析は、セクション名と (相対的な期日を解決する) 日付で決まる。.state.json は
+        // Neovim 版が通知のたびなどに書き換えるので、それだけで全部を読み直さない。
+        let mut reparse = false;
         if reopen {
+            self.opened_date = self.today;
             let mut warnings = Vec::new();
             match Workspace::open(self.data_dir.clone(), self.today, &mut |m| warnings.push(m)) {
                 Ok(ws) => {
+                    reparse = ws.names != self.ws.names || ws.today != self.ws.today;
                     self.ws = ws;
                     self.config_error = None;
                 }
@@ -584,7 +622,7 @@ impl App {
             }
         }
         for (i, kind) in WATCHED_DOCS.iter().enumerate() {
-            if reopen || now[i] != self.stamps[i] {
+            if reparse || now[i] != self.stamps[i] {
                 self.load(*kind);
             }
         }

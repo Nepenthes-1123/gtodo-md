@@ -14,6 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{App, Level, Mode, Row, TABS, Tab};
 use super::keymap::{Action, Key, sequence_label};
+use crate::render::{context_tag, project_tag};
 
 /// 選んでいる行の左端の印。
 pub const GUTTER: &str = "▌";
@@ -79,7 +80,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
         frame.set_cursor_position((x.min(area.right().saturating_sub(1)), y));
     }
     if app.mode == Mode::Help {
-        draw_help(frame, app, theme, area);
+        // フッターは隠さない (スクロールの案内を出すため)。
+        let help_area = Rect {
+            height: area.height.saturating_sub(footer_area.height),
+            ..area
+        };
+        draw_help(frame, app, theme, help_area);
     }
 }
 
@@ -172,14 +178,11 @@ pub fn row_line(row: &Row, selected: bool, tab: Tab, today: NaiveDate, width: us
 fn tail_spans(task: &Task, tab: Tab, today: NaiveDate, base: Style, theme: Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let value = |v: &Option<String>| v.as_deref().filter(|v| !v.is_empty()).map(str::to_string);
-    if let Some(p) = value(&task.project) {
-        spans.push(Span::styled(format!(" +{p}"), base.patch(theme.fg(Color::Magenta))));
+    if let Some(p) = project_tag(task) {
+        spans.push(Span::styled(format!(" {p}"), base.patch(theme.fg(Color::Magenta))));
     }
-    if let Some(c) = value(&task.context) {
-        spans.push(Span::styled(
-            format!(" @{}", c.trim_start_matches('@')),
-            base.patch(theme.fg(Color::Green)),
-        ));
+    if let Some(c) = context_tag(task) {
+        spans.push(Span::styled(format!(" {c}"), base.patch(theme.fg(Color::Green))));
     }
     match tab {
         Tab::Done => {
@@ -284,9 +287,9 @@ const WAIT_PROMPT: &str = "Waiting for (empty to skip/remove): ";
 
 fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     match &app.mode {
-        Mode::WaitInput { content, input, .. } => vec![
+        Mode::WaitInput { row, input } => vec![
             Line::styled(
-                format!("→ {}: {content}", app.ws.names.name(SectionKey::Waiting)),
+                format!("→ {}: {}", app.ws.names.name(SectionKey::Waiting), row.task.content),
                 theme.dim(),
             ),
             Line::from(vec![
@@ -298,7 +301,20 @@ fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             Line::styled(format!("→ cancelled.md: {content}"), theme.dim()),
             Line::from(Span::styled("Cancel this task? [y/N]", theme.key())),
         ],
-        Mode::Help => vec![Line::styled("何かキーを押すと閉じる", theme.dim())],
+        Mode::Help => {
+            let scroll = [Action::Down, Action::Up]
+                .iter()
+                .filter_map(|a| app.keymap.label(*a))
+                .collect::<Vec<_>>()
+                .join("/");
+            vec![hint_line(
+                &[
+                    (scroll, "スクロール".to_string()),
+                    ("他のキー".to_string(), "閉じる".to_string()),
+                ],
+                theme,
+            )]
+        }
         Mode::Normal if !app.pending.is_empty() => {
             let mut hints: Vec<(String, String)> = app
                 .keymap
@@ -473,7 +489,7 @@ fn all_actions() -> Vec<Action> {
     actions
 }
 
-fn draw_help(frame: &mut Frame, app: &App, theme: Theme, area: Rect) {
+fn draw_help(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {
     let entries = help_entries(app);
     let key_width = entries.iter().map(|(k, _)| k.width()).max().unwrap_or(0);
     let lines: Vec<Line> = entries
@@ -490,6 +506,8 @@ fn draw_help(frame: &mut Frame, app: &App, theme: Theme, area: Rect) {
     let content_width = lines.iter().map(Line::width).max().unwrap_or(0) + 2;
     let width = (content_width as u16 + 2).min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
+    let visible = usize::from(height.saturating_sub(2));
+    app.help_scroll = app.help_scroll.min(lines.len().saturating_sub(visible));
     let popup = Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height - height) / 2,
@@ -498,7 +516,9 @@ fn draw_help(frame: &mut Frame, app: &App, theme: Theme, area: Rect) {
     };
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" ヘルプ ").border_style(theme.accent())),
+        Paragraph::new(lines)
+            .scroll((app.help_scroll as u16, 0))
+            .block(Block::bordered().title(" ヘルプ ").border_style(theme.accent())),
         popup,
     );
 }

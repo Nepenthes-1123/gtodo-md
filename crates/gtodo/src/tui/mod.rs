@@ -31,7 +31,8 @@ pub fn run(data_dir: PathBuf, warnings: Vec<String>) -> Result<()> {
         bail!("the TUI needs a terminal; use the subcommands (see gtodo --help) from scripts");
     }
     // 端末を切り替える前に開く。開けないときのエラーを普通に表示するため。
-    let mut app = App::new(data_dir, Local::now().date_naive(), Keymap::default(), warnings)?;
+    let clock = Box::new(|| Local::now().date_naive());
+    let mut app = App::new(data_dir, clock, Keymap::default(), warnings)?;
     let theme = Theme::from_env();
 
     let mut terminal = ratatui::try_init()?;
@@ -60,7 +61,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, theme: Theme) -> Re
             }
         }
         if Instant::now() >= next_tick {
-            app.tick(Local::now().date_naive());
+            app.tick();
             next_tick = Instant::now() + TICK;
         }
     }

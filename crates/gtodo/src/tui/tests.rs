@@ -2,8 +2,10 @@
 //!
 //! 画面は ratatui の `TestBackend` に描画して、文字だけを比べる (色や太字は見ない)。
 
+use std::cell::Cell;
 use std::fs;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use chrono::NaiveDate;
 use ratatui::Terminal;
@@ -27,12 +29,15 @@ fn date(s: &str) -> NaiveDate {
 
 struct Fixture {
     dir: tempfile::TempDir,
+    /// App が読む今日の日付。
+    today: Rc<Cell<NaiveDate>>,
 }
 
 impl Fixture {
     fn new() -> Fixture {
         let f = Fixture {
             dir: tempfile::tempdir().unwrap(),
+            today: Rc::new(Cell::new(today())),
         };
         f.write("inbox.md", "# Inbox\n\n- [ ] 受信1 id:111111\n");
         f.write(
@@ -60,7 +65,14 @@ impl Fixture {
     }
 
     fn app(&self) -> App {
-        App::new(self.path(), today(), Keymap::default(), Vec::new()).unwrap()
+        let today = Rc::clone(&self.today);
+        App::new(
+            self.path(),
+            Box::new(move || today.get()),
+            Keymap::default(),
+            Vec::new(),
+        )
+        .unwrap()
     }
 }
 
@@ -527,7 +539,7 @@ fn changes_by_other_programs_are_picked_up_on_tick() {
         "todo.md",
         "# Todo\n\n## Today\n\n- [ ] 新しい id:999999\n- [ ] (A) 今日1 id:aaaaaa\n- [ ] 今日2 id:bbbbbb\n\n## Next\n\n## Waiting\n\n## Someday\n",
     );
-    app.tick(today());
+    app.tick();
     assert_eq!(app.view().rows.len(), 3);
     assert_eq!(selected_content(&app), "今日2");
     assert_eq!(app.tabs[2].rows.len(), 0);
@@ -555,7 +567,8 @@ fn a_new_day_runs_the_daily_rollover() {
     press(&mut app, "x");
     assert!(f.read("todo.md").contains("[x] (A) 今日1"));
 
-    app.tick(date("2026-11-17"));
+    f.today.set(date("2026-11-17"));
+    app.tick();
     assert!(!f.read("todo.md").contains("今日1"));
     assert!(f.read("done.md").contains("今日1"));
     assert!(f.read(".state.json").contains("2026-11-17"));
@@ -571,13 +584,16 @@ fn the_rollover_is_retried_while_another_process_holds_the_lock() {
 
     // 待たずに、次の確認でやり直す。
     f.write(".gtodo.lock", "12345 0");
-    app.tick(date("2026-11-17"));
+    f.today.set(date("2026-11-17"));
+    app.tick();
     assert!(f.read("todo.md").contains("[x] (A) 今日1"));
-    app.tick(date("2026-11-17"));
+    f.today.set(date("2026-11-17"));
+    app.tick();
     assert!(f.read("todo.md").contains("[x] (A) 今日1"));
 
     fs::remove_file(f.path().join(".gtodo.lock")).unwrap();
-    app.tick(date("2026-11-17"));
+    f.today.set(date("2026-11-17"));
+    app.tick();
     assert!(f.read("done.md").contains("今日1"));
 }
 
@@ -613,7 +629,7 @@ fn startup_writes_nothing_when_the_rollover_already_ran_today() {
     };
     let before = snapshot(&f);
     let mut app = f.app();
-    app.tick(today());
+    app.tick();
     assert_eq!(snapshot(&f), before);
 }
 
@@ -622,7 +638,7 @@ fn a_broken_settings_file_stops_writes_until_it_is_fixed() {
     let f = Fixture::new();
     let mut app = f.app();
     f.write("gtodo.json", "{");
-    app.tick(today());
+    app.tick();
     assert_eq!(app.messages.last().unwrap().level, Level::Error);
     // 前に読んだ内容は出し続ける。
     assert_eq!(app.view().rows.len(), 2);
@@ -637,7 +653,7 @@ fn a_broken_settings_file_stops_writes_until_it_is_fixed() {
     );
 
     f.write("gtodo.json", "{}");
-    app.tick(today());
+    app.tick();
     press(&mut app, "x");
     assert!(f.read("todo.md").contains("[x] (A) 今日1"));
 }
@@ -651,6 +667,111 @@ fn warnings_from_settings_are_shown_once() {
     press(&mut app, "x");
     // 書き込みで .state.json などが変わって設定を読み直しても、同じ警告は出さない。
     f.write(".state.json", r#"{"last_opened":"2026-11-16","x":1}"#);
-    app.tick(today());
+    app.tick();
     assert!(app.messages.iter().all(|m| !m.text.contains("unknown key")));
+}
+
+#[test]
+fn an_operation_right_after_midnight_uses_the_new_date() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "x");
+    // 完了したタスクは下へ並び替わり、選択もついていく。
+    press(&mut app, "k");
+    assert_eq!(selected_content(&app), "今日2");
+    // 次の確認より前に押した。
+    f.today.set(date("2026-11-17"));
+    press(&mut app, "x");
+    let todo = f.read("todo.md");
+    // 前の日に完了したものは日次の整理で done.md へ移り、新しく完了したものは今日の日付になる。
+    assert!(f.read("done.md").contains("今日1"), "{todo}");
+    assert!(todo.contains("- [x] 今日2 completed_at:2026-11-17"), "{todo}");
+}
+
+#[test]
+fn the_wait_prompt_moves_the_task_even_if_it_was_moved_elsewhere_meanwhile() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "w");
+    // 尋ねている間に、Neovim 版が Next へ移した。
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [ ] 今日2 id:bbbbbb\n\n## Next\n\n- [ ] (A) 今日1 +work @office due:2026-11-16 id:aaaaaa\n\n## Waiting\n\n## Someday\n",
+    );
+    app.tick();
+    press(&mut app, "bob");
+    press_code(&mut app, KeyCode::Enter);
+    let todo = f.read("todo.md");
+    let waiting = todo.find("## Waiting").unwrap();
+    assert!(
+        todo[waiting..].contains("今日1 +work @office due:2026-11-16 wait:bob id:aaaaaa"),
+        "{todo}"
+    );
+}
+
+#[test]
+fn a_held_lock_fails_the_operation_quickly() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    f.write(".gtodo.lock", "12345 0");
+    let before = f.read("todo.md");
+    let started = std::time::Instant::now();
+    press(&mut app, "x");
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(f.read("todo.md"), before);
+    assert!(
+        last_message(&app).contains("held by another process"),
+        "{}",
+        last_message(&app)
+    );
+}
+
+#[test]
+fn a_state_file_change_alone_does_not_reread_the_tasks() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    // 同じ長さ・同じ更新時刻で書き換える (状態からは変化が見えない)。
+    let path = f.path().join("todo.md");
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let todo = f.read("todo.md").replace("今日2", "今日X");
+    f.write("todo.md", &todo);
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+
+    f.write(
+        ".state.json",
+        r#"{"last_opened":"2026-11-16","last_notify_due":"2026-11-16"}"#,
+    );
+    app.tick();
+    assert_eq!(app.view().rows[1].task.content, "今日2");
+
+    // セクション名が変われば読み直す。
+    f.write(
+        "gtodo.json",
+        r#"{"sections":{"today":"Today","next":"Next","waiting":"Waiting","someday":"いつか"}}"#,
+    );
+    app.tick();
+    assert_eq!(app.view().rows[1].task.content, "今日X");
+}
+
+#[test]
+fn the_help_scrolls_on_a_short_terminal() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "?");
+    let first = screen(&mut app, 80, 12).join("\n");
+    assert!(first.contains("j / ↓"), "{first}");
+    assert!(!first.contains("q / Esc"), "{first}");
+    assert!(first.ends_with("j/k スクロール  他のキー 閉じる"), "{first}");
+    press(&mut app, &"j".repeat(30));
+    let last = screen(&mut app, 80, 12).join("\n");
+    assert!(last.contains("q / Esc"), "{last}");
+    assert!(!last.contains("j / ↓"), "{last}");
+    assert_eq!(app.mode, Mode::Help);
+    press(&mut app, "x");
+    assert_eq!(app.mode, Mode::Normal);
 }
