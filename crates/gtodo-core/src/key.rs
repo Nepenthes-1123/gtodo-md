@@ -78,10 +78,10 @@ pub fn find(docs: &[(FileKind, &Document)], key: &str) -> Result<Location, FindE
             .chain(doc.sections.iter().enumerate().map(|(i, s)| (Some(i), &s.items)));
         for (section, items) in groups {
             for (index, item) in items.iter().enumerate() {
-                if let Item::Task(t) = item {
-                    if matches(t) {
-                        found.push((Location { file, section, index }, t.as_ref()));
-                    }
+                if let Item::Task(t) = item
+                    && matches(t)
+                {
+                    found.push((Location { file, section, index }, t.as_ref()));
                 }
             }
         }
