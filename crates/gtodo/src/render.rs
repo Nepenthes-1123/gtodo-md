@@ -59,10 +59,15 @@ pub fn project_tag(task: &Task) -> Option<String> {
 
 /// `@context`。無ければ `None`。
 pub fn context_tag(task: &Task) -> Option<String> {
+    context_name(task).map(|c| format!("@{c}"))
+}
+
+/// コンテキストの名前 (`@` を除く)。無ければ `None`。
+pub fn context_name(task: &Task) -> Option<&str> {
     task.context
         .as_deref()
+        .map(|c| c.trim_start_matches('@'))
         .filter(|c| !c.is_empty())
-        .map(|c| format!("@{}", c.trim_start_matches('@')))
 }
 
 #[derive(Serialize)]

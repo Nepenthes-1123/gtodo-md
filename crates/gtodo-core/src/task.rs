@@ -235,7 +235,15 @@ impl Task {
         if present(&self.id).is_none() {
             self.id = Some(generate_id());
         }
+        self.format_line(true)
+    }
 
+    /// ID を付けずに文字列にする (確定前のプレビュー用。ID は書き込むときに付く)。
+    pub fn to_line_without_id(&self) -> String {
+        self.format_line(false)
+    }
+
+    fn format_line(&self, with_id: bool) -> String {
         let status = match self.status {
             Status::Open => ' ',
             Status::Done => 'x',
@@ -261,7 +269,7 @@ impl Task {
             ("done", &self.done),
             ("cancelled", &self.cancelled),
             ("from", &self.from),
-            ("id", &self.id),
+            ("id", if with_id { &self.id } else { &None }),
         ] {
             if let Some(v) = present(value) {
                 parts.push(format!("{name}:{v}"));
@@ -359,6 +367,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_line_without_id_is_the_serialized_line_minus_the_id() {
+        let mut task = Task::parse("- [ ] (A) 本文 +p @c due:2026-01-02 wait:bob id:abcdef").unwrap();
+        assert_eq!(
+            task.to_line_without_id(),
+            "- [ ] (A) 本文 +p @c due:2026-01-02 wait:bob"
+        );
+        assert_eq!(
+            task.serialize(),
+            "- [ ] (A) 本文 +p @c due:2026-01-02 wait:bob id:abcdef"
+        );
+        let new = Task::parse("- [ ] 新しい").unwrap();
+        assert_eq!(new.to_line_without_id(), "- [ ] 新しい");
+        assert_eq!(new.id, None);
     }
 
     #[test]

@@ -27,6 +27,7 @@ use super::form::{Form, Outcome, Submit};
 use super::input::{Edit, LineInput};
 use super::keymap::{Action, Fed, Key, Keymap, TAB_COUNT};
 use crate::commands::{add, edit};
+use crate::render::context_name;
 use crate::workspace::Workspace;
 use crate::writing;
 
@@ -254,6 +255,9 @@ impl App {
     /// ファイルが変わっていれば読み直す。
     pub fn tick(&mut self) {
         self.check_date();
+        if let Mode::Form(form) = &mut self.mode {
+            form.set_today(self.today);
+        }
         if self.rollover_pending {
             self.try_rollover();
         }
@@ -467,13 +471,7 @@ impl App {
             if let Some(p) = row.task.project.as_deref().filter(|p| !p.is_empty()) {
                 projects.insert(p.to_string());
             }
-            if let Some(c) = row
-                .task
-                .context
-                .as_deref()
-                .map(|c| c.trim_start_matches('@'))
-                .filter(|c| !c.is_empty())
-            {
+            if let Some(c) = context_name(&row.task) {
                 contexts.insert(c.to_string());
             }
         }

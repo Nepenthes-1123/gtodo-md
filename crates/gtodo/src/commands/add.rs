@@ -103,3 +103,26 @@ fn build(text: &str, fields: Fields, today: NaiveDate) -> Result<Task> {
     };
     Ok(input::new_task(text, &fields, today)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn options_are_passed_as_fields() {
+        let today = NaiveDate::from_ymd_opt(2026, 2, 3).unwrap();
+        let fields = Fields {
+            due: Some("+1w".into()),
+            project: Some("+work".into()),
+            context: Some("@office".into()),
+            priority: Some('B'),
+        };
+        let task = build("(A) 資料 +home @15 due:today", fields, today).unwrap();
+        assert_eq!(task.content, "資料");
+        assert_eq!(task.priority, Some('B'));
+        assert_eq!(task.project.as_deref(), Some("work"));
+        assert_eq!(task.context.as_deref(), Some("office"));
+        assert_eq!(task.due.as_deref(), Some("2026-02-10"));
+        assert_eq!(task.created.as_deref(), Some("2026-02-03"));
+    }
+}

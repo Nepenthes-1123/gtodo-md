@@ -13,6 +13,7 @@ use ratatui::crossterm::event::KeyCode;
 use super::app::{Row, Tab};
 use super::input::{Edit, LineInput};
 use super::keymap::Key;
+use crate::render::context_name;
 
 /// 追加先の候補 (表示の順)。
 pub const DESTINATIONS: [Destination; 5] = [
@@ -117,7 +118,7 @@ impl Form {
             t.content.clone(),
             value(&t.due),
             value(&t.project),
-            value(&t.context).trim_start_matches('@').to_string(),
+            context_name(t).unwrap_or_default().to_string(),
             t.priority.map(String::from).unwrap_or_default(),
             value(&t.wait),
         ];
@@ -222,6 +223,15 @@ impl Form {
             }
             Kind::Edit { row, .. } => {
                 if self.value(Field::Text).trim().is_empty() {
+                    return Err(InputError::Empty);
+                }
+                // タグだけの本文は、CLI の edit では本文を変えない指定だが、フォームでは本文の欄が
+                // タグだけに見えたまま元の本文が残り、紛らわしい。本文の欄には本文を入れてもらう。
+                if self.changed(Field::Text)
+                    && input::parse_text(self.value(Field::Text), self.today, "editing")?
+                        .content
+                        .is_empty()
+                {
                     return Err(InputError::Empty);
                 }
                 // 変えた項目だけを渡す。変えていない本文を読み直すと、本文の先頭の `(A)` が
@@ -334,9 +344,19 @@ impl Form {
     pub fn paste(&mut self, text: &str) {
         self.cycle = None;
         let focus = self.focus;
+        // 打ったときと同じく、優先度は大文字にする。
+        let text = match focus {
+            Field::Priority => text.to_ascii_uppercase(),
+            _ => text.to_string(),
+        };
         if let Some(input) = self.input_mut(focus) {
-            input.paste(text);
+            input.paste(&text);
         }
+    }
+
+    /// 日付が変わったら呼ぶ。相対的な期日 (`tomorrow` など) を新しい日付から読み直す。
+    pub fn set_today(&mut self, today: NaiveDate) {
+        self.today = today;
     }
 
     fn move_focus(&mut self, delta: isize) {
@@ -376,15 +396,7 @@ impl Form {
 
 /// 書き込まれる行 (ID は付ける前なので出さない)。
 pub fn preview_line(task: &Task) -> String {
-    const PLACEHOLDER: &str = "000000";
-    let mut task = Task {
-        id: Some(PLACEHOLDER.to_string()),
-        ..task.clone()
-    };
-    let line = task.serialize();
-    line.strip_suffix(&format!(" id:{PLACEHOLDER}"))
-        .unwrap_or(&line)
-        .to_string()
+    task.to_line_without_id()
 }
 
 #[cfg(test)]
@@ -558,5 +570,28 @@ mod tests {
         typing(&mut form, "b");
         assert_eq!(form.value(Field::Priority), "B");
         assert_eq!(form.preview().unwrap().priority, Some('B'));
+        form.handle(Key::plain(KeyCode::Backspace));
+        form.paste("c");
+        assert_eq!(form.value(Field::Priority), "C");
+    }
+
+    #[test]
+    fn a_body_of_only_tags_is_refused_when_editing() {
+        let r = row("- [ ] 本文 +work id:aaaaaa");
+        let mut form = Form::edit(r, Tab::Inbox, vec![], vec![], today());
+        form.handle(Key::ctrl('u'));
+        typing(&mut form, "+home");
+        assert_eq!(form.evaluate(), Err(InputError::Empty));
+        typing(&mut form, " 新しい本文");
+        assert!(matches!(form.evaluate(), Ok(Submit::Edit { .. })));
+    }
+
+    #[test]
+    fn relative_dues_follow_a_date_change() {
+        let mut form = add_form(Tab::Inbox);
+        typing(&mut form, "x due:tomorrow");
+        assert_eq!(form.preview().unwrap().due.as_deref(), Some("2026-11-17"));
+        form.set_today(NaiveDate::from_ymd_opt(2026, 11, 17).unwrap());
+        assert_eq!(form.preview().unwrap().due.as_deref(), Some("2026-11-18"));
     }
 }
