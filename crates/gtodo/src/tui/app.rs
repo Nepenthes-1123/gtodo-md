@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::Result;
 use chrono::NaiveDate;
 use gtodo_core::document::Document;
+use gtodo_core::input;
 use gtodo_core::key::task_key;
 use gtodo_core::lock::Lock;
 use gtodo_core::ops::{self, Moved, Wait};
@@ -23,7 +24,6 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::input::{Edit, LineInput};
 use super::keymap::{Action, Fed, Key, Keymap, TAB_COUNT};
-use crate::commands::move_task::parse_wait;
 use crate::workspace::Workspace;
 use crate::writing;
 
@@ -406,7 +406,7 @@ impl App {
         match input.handle(key) {
             Edit::Continue => {}
             Edit::Abort => self.mode = Mode::Normal,
-            Edit::Submit => match parse_wait(input.text(), self.today) {
+            Edit::Submit => match input::parse_wait(input.text(), self.today) {
                 // 直せるように入力欄は閉じない。
                 Err(e) => self.message(Level::Error, format!("{e:#}")),
                 Ok(wait) => {
