@@ -72,7 +72,7 @@ pub fn run(
 }
 
 /// 空なら待ち先を消す (Neovim 版の入力欄と同じ)。
-fn parse_wait(value: &str, today: NaiveDate) -> Result<Wait> {
+pub fn parse_wait(value: &str, today: NaiveDate) -> Result<Wait> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(Wait::Remove);

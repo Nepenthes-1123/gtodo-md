@@ -353,6 +353,21 @@ fn read_only_commands_never_modify_existing_state_and_settings() {
     assert_eq!(snapshot(&f.data_dir()), before);
 }
 
+#[test]
+fn the_tui_refuses_to_start_without_a_terminal_and_writes_nothing() {
+    // 引数なしで TUI が開くようになった。スクリプトから誤って実行しても、端末を待って止まったり
+    // 日次ロールオーバーでファイルを書き換えたりしない。
+    let f = sample();
+    let before = snapshot(&f.data_dir());
+    for args in [&[][..], &["tui"]] {
+        let out = f.run(args);
+        assert!(!out.status.success(), "gtodo {args:?} should fail");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("the TUI needs a terminal"), "{stderr}");
+    }
+    assert_eq!(snapshot(&f.data_dir()), before);
+}
+
 fn today_str() -> String {
     Local::now().date_naive().format("%Y-%m-%d").to_string()
 }
