@@ -291,8 +291,10 @@ fn a_pending_key_shows_what_can_follow_and_esc_cancels_it() {
     assert_eq!(footer(&mut app), "gg 先頭へ  gt 次のタブ  gT 前のタブ  Esc 取り消す");
     press_code(&mut app, KeyCode::Esc);
     assert!(app.pending.is_empty());
-    assert!(!app.should_quit(), "Esc only cancels the pending key");
+    // Esc は戻る・取り消すだけで、何度押しても終了しない (lazygit と同じ)。終了は q。
     press_code(&mut app, KeyCode::Esc);
+    assert!(!app.should_quit());
+    press(&mut app, "q");
     assert!(app.should_quit());
 }
 
@@ -507,7 +509,8 @@ fn help_lists_every_key_and_closes_on_any_key() {
         "完了と未完了を切り替える",
         "Waiting へ移す (待ち先を入れる。Waiting にあれば待ち先を変える)",
         "キャンセルする (cancelled.md へ移す。確認あり)",
-        "q / Esc",
+        "終了 (Ctrl-c でも)",
+        "押しかけのキー・入力・確認を取り消す (終了はしない)",
     ] {
         assert!(rows.contains(expected), "{expected:?} not in\n{rows}");
     }
@@ -765,11 +768,11 @@ fn the_help_scrolls_on_a_short_terminal() {
     press(&mut app, "?");
     let first = screen(&mut app, 80, 12).join("\n");
     assert!(first.contains("j / ↓"), "{first}");
-    assert!(!first.contains("q / Esc"), "{first}");
+    assert!(!first.contains("終了 (Ctrl-c でも)"), "{first}");
     assert!(first.ends_with("j/k スクロール  他のキー 閉じる"), "{first}");
     press(&mut app, &"j".repeat(30));
     let last = screen(&mut app, 80, 12).join("\n");
-    assert!(last.contains("q / Esc"), "{last}");
+    assert!(last.contains("終了 (Ctrl-c でも)"), "{last}");
     assert!(!last.contains("j / ↓"), "{last}");
     assert_eq!(app.mode, Mode::Help);
     press(&mut app, "x");

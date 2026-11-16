@@ -280,8 +280,10 @@ impl App {
             Mode::WaitInput { .. } => return self.handle_wait_input(key),
             Mode::ConfirmCancel { .. } => return self.handle_confirm_cancel(key),
         }
-        if key.code == KeyCode::Esc && !self.pending.is_empty() {
+        if key.code == KeyCode::Esc && !key.ctrl && !key.alt {
+            // 押しかけのキーと知らせを取り消すだけで、終了しない (終了は q)。
             self.pending.clear();
+            self.messages.clear();
             return;
         }
         if let Fed::Action(action) = self.keymap.feed(&mut self.pending, key) {

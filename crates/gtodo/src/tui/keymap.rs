@@ -150,8 +150,9 @@ impl Default for Keymap {
             (vec![Key::char('c')], Cancel),
             (vec![Key::char('o')], Sort),
             (vec![Key::char('?')], Help),
+            // Esc は終了に割り当てない。戻る・取り消すだけにする (lazygit・lazydocker と同じ)。
+            // vim を使う人は癖で押すため、一覧で押して終了すると困る。
             (vec![Key::char('q')], Quit),
-            (vec![Key::plain(KeyCode::Esc)], Quit),
         ];
         for (i, c) in ('1'..='7').enumerate() {
             bindings.push((vec![Key::char(c)], GoTab(i)));

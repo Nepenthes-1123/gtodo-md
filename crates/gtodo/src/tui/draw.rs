@@ -433,7 +433,7 @@ fn description(app: &App, action: Action) -> String {
         Action::Cancel => "キャンセルする (cancelled.md へ移す。確認あり)".to_string(),
         Action::Sort => "期日が来たタスクを移し、並べ替える".to_string(),
         Action::Help => "このヘルプ".to_string(),
-        Action::Quit => "終了".to_string(),
+        Action::Quit => "終了 (Ctrl-c でも)".to_string(),
     }
 }
 
@@ -458,6 +458,11 @@ pub fn help_entries(app: &App) -> Vec<(String, String)> {
             entries.push((keys.join(" / "), description(app, action)));
         }
     }
+    // Esc は割り当てを変えられない (入力欄やヘルプでも同じ意味で使うため)。
+    entries.push((
+        "Esc".to_string(),
+        "押しかけのキー・入力・確認を取り消す (終了はしない)".to_string(),
+    ));
     entries
 }
 
