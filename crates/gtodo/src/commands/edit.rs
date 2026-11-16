@@ -50,7 +50,8 @@ pub fn run(
     Ok(())
 }
 
-fn check_dues_and_sort(ws: &Workspace, sort: bool) -> Result<DueOutcome> {
+/// 編集した後の期日のチェックと並べ替え (TUI のフォームも使う)。
+pub fn check_dues_and_sort(ws: &Workspace, sort: bool) -> Result<DueOutcome> {
     let dues = ops::check_dues(&ws.data_dir, &ws.names, ws.today, ws.auto_move_inbox_to_today)?;
     if sort || dues.todo_changed {
         ops::sort_todo(&ws.data_dir, &ws.names, ws.today)?;

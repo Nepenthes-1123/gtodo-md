@@ -105,6 +105,8 @@ pub enum Action {
     ToggleDone,
     Cancel,
     Sort,
+    Add,
+    Edit,
     Help,
     Quit,
 }
@@ -149,6 +151,8 @@ impl Default for Keymap {
             (vec![Key::char('s')], MoveSomeday),
             (vec![Key::char('c')], Cancel),
             (vec![Key::char('o')], Sort),
+            (vec![Key::char('a')], Add),
+            (vec![Key::char('e')], Edit),
             (vec![Key::char('?')], Help),
             // Esc は終了に割り当てない。戻る・取り消すだけにする (lazygit・lazydocker と同じ)。
             // vim を使う人は癖で押すため、一覧で押して終了すると困る。

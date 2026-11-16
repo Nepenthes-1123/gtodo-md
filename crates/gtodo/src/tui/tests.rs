@@ -143,7 +143,7 @@ fn the_screen_shows_tabs_rows_and_hints() {
             "  [ ] 今日2",
             "",
             "",
-            "x 完了にする  n Next へ  w Waiting へ  s Someday へ  c キャンセル  o 並べ替え  ? ヘルプ  q 終了",
+            "x 完了にする  n Next へ  w Waiting へ  s Someday へ  c キャンセル  e 編集  a 追加  ? ヘルプ",
         ]
     );
 }
@@ -171,22 +171,22 @@ fn hints_follow_the_selected_task_and_tab() {
     // 完了したタスクは移せないので、移動の案内を出さない。
     assert_eq!(
         footer(&mut app),
-        "x 未完了に戻す  c キャンセル  o 並べ替え  ? ヘルプ  q 終了"
+        "x 未完了に戻す  c キャンセル  e 編集  a 追加  o 並べ替え  ? ヘルプ  q 終了"
     );
 
     press(&mut app, "4");
     assert_eq!(
         footer(&mut app),
-        "x 完了にする  d Today へ  n Next へ  w 待ち先を変える  s Someday へ  c キャンセル  o 並べ替え  ? ヘルプ  q 終了"
+        "x 完了にする  d Today へ  n Next へ  w 待ち先を変える  s Someday へ  c キャンセル  e 編集  a 追加  o 並べ替え  ? ヘルプ"
     );
 
     // 空のタブでは、タスクの操作を出さない。
     press(&mut app, "3");
-    assert_eq!(footer(&mut app), "o 並べ替え  ? ヘルプ  q 終了");
+    assert_eq!(footer(&mut app), "a 追加  o 並べ替え  ? ヘルプ  q 終了");
 
     // done.md は見るだけ。
     press(&mut app, "6");
-    assert_eq!(footer(&mut app), "? ヘルプ  q 終了");
+    assert_eq!(footer(&mut app), "a 追加  ? ヘルプ  q 終了");
 }
 
 #[test]
@@ -195,9 +195,9 @@ fn hints_that_do_not_fit_are_dropped_but_help_stays() {
     let mut app = f.app();
     assert_eq!(
         screen(&mut app, 60, 5)[4],
-        "x 完了にする  n Next へ  w Waiting へ  ? ヘルプ"
+        "x 完了にする  n Next へ  w Waiting へ  a 追加  ? ヘルプ"
     );
-    assert_eq!(screen(&mut app, 30, 5)[4], "x 完了にする  ? ヘルプ");
+    assert_eq!(screen(&mut app, 30, 5)[4], "x 完了にする  a 追加  ? ヘルプ");
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn custom_section_names_are_used_in_tabs_and_hints() {
     );
     assert_eq!(
         rows[4],
-        "x 完了にする  n 次 へ  w 待ち へ  s いつか へ  c キャンセル  o 並べ替え  ? ヘルプ  q 終了"
+        "x 完了にする  n 次 へ  w 待ち へ  s いつか へ  c キャンセル  e 編集  a 追加  o 並べ替え  ? ヘルプ"
     );
 }
 
@@ -777,4 +777,216 @@ fn the_help_scrolls_on_a_short_terminal() {
     assert_eq!(app.mode, Mode::Help);
     press(&mut app, "x");
     assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn the_add_form_shows_fields_and_the_line_to_be_written() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "a");
+    press(&mut app, "買い物 +home");
+    press_code(&mut app, KeyCode::Tab);
+    press(&mut app, "fri");
+    let rows = screen(&mut app, 80, 20);
+    let form: Vec<&str> = rows[3..16].iter().map(|r| r.trim_end()).collect();
+    assert_eq!(
+        form,
+        [
+            "  ┌ 追加 ────────────────────────────────────────────────────────────────────┐",
+            "  │                                                                          │",
+            "  │  本文          買い物 +home                                              │",
+            "  │▌ 期日          fri  → due:2026-11-20 (4日後)                             │",
+            "  │  プロジェクト  +                                                         │",
+            "  │  コンテキスト  @                                                         │",
+            "  │  優先度                                                                  │",
+            "  │  追加先         Inbox [Today] Next  Waiting  Someday                     │",
+            "  │                                                                          │",
+            "  │  書き込む行                                                              │",
+            "  │  - [ ] 買い物 +home due:2026-11-20 created:2026-11-16                    │",
+            "  └──────────────────────────────────────────────────────────────────────────┘",
+            "",
+        ]
+    );
+    assert_eq!(rows[19], "Tab/↓ 次の項目  S-Tab/↑ 前の項目  Enter 確定  Esc 取り消す");
+}
+
+#[test]
+fn adding_puts_the_task_where_the_form_says() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    // Next のタブで開くと Next へ入れる。期日が今日でも動かさない (gtodo add --to と同じ)。
+    press(&mut app, "3a");
+    press(&mut app, "資料を読む due:today");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    let todo = f.read("todo.md");
+    let next = todo.find("## Next").unwrap();
+    let waiting = todo.find("## Waiting").unwrap();
+    assert!(
+        todo[next..waiting].contains("資料を読む due:2026-11-16 created:2026-11-16 id:"),
+        "{todo}"
+    );
+    assert_eq!(last_message(&app), "added to Next: 資料を読む");
+    assert_eq!(selected_content(&app), "資料を読む");
+}
+
+#[test]
+fn a_due_task_added_to_the_inbox_moves_to_today() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "1a");
+    press(&mut app, "期限切れ due:2026-11-10");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(!f.read("inbox.md").contains("期限切れ"));
+    assert!(f.read("todo.md").contains("期限切れ"));
+    let messages: Vec<String> = app.messages.iter().map(|m| m.text.clone()).collect();
+    assert_eq!(
+        messages,
+        ["added to inbox.md: 期限切れ", "moved 1 due task(s) to Today"]
+    );
+}
+
+#[test]
+fn the_destination_and_wait_can_be_chosen_in_the_form() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "1a");
+    press(&mut app, "返事を待つ");
+    for _ in 0..5 {
+        press_code(&mut app, KeyCode::Tab);
+    }
+    for _ in 0..3 {
+        press_code(&mut app, KeyCode::Right);
+    }
+    press_code(&mut app, KeyCode::Tab);
+    press(&mut app, "bob");
+    press_code(&mut app, KeyCode::Enter);
+    let todo = f.read("todo.md");
+    let waiting = todo.find("## Waiting").unwrap();
+    assert!(
+        todo[waiting..].contains("返事を待つ created:2026-11-16 wait:bob id:"),
+        "{todo}"
+    );
+    assert_eq!(last_message(&app), "added to Waiting: 返事を待つ");
+}
+
+#[test]
+fn an_unreadable_value_keeps_the_form_open_and_esc_writes_nothing() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    let before = (f.read("inbox.md"), f.read("todo.md"));
+    press(&mut app, "a");
+    press(&mut app, "x due:2/30");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode, Mode::Form(_)));
+    let rows = screen(&mut app, 80, 20).join("\n");
+    assert!(rows.contains("error: invalid due date"), "{rows}");
+    press_code(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!((f.read("inbox.md"), f.read("todo.md")), before);
+}
+
+#[test]
+fn editing_changes_only_the_edited_fields() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "e");
+    let Mode::Form(form) = &app.mode else {
+        panic!("no form");
+    };
+    assert!(!form.is_add());
+    // 期日を変え、プロジェクトを消す。
+    press_code(&mut app, KeyCode::Tab);
+    press_ctrl(&mut app, 'u');
+    press(&mut app, "+3d");
+    press_code(&mut app, KeyCode::Tab);
+    press_ctrl(&mut app, 'u');
+    press_code(&mut app, KeyCode::Enter);
+    let todo = f.read("todo.md");
+    assert!(
+        todo.contains("- [ ] (A) 今日1 @office due:2026-11-19 created:2026-11-16 id:aaaaaa"),
+        "{todo}"
+    );
+    assert_eq!(last_message(&app), "edited: 今日1");
+    assert_eq!(selected_content(&app), "今日1");
+
+    // 何も変えずに確定しても書かない。
+    let before = f.read("todo.md");
+    press(&mut app, "e");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(f.read("todo.md"), before);
+    assert_eq!(last_message(&app), "nothing changed");
+}
+
+#[test]
+fn tasks_in_done_md_cannot_be_edited() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "6e");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(last_message(&app), "tasks in done.md cannot be changed");
+}
+
+#[test]
+fn project_files_and_tags_in_use_are_offered_as_candidates() {
+    let f = Fixture::new();
+    fs::create_dir(f.path().join("projects")).unwrap();
+    f.write("projects/garden.md", "---\ntitle: 庭\n---\n");
+    let mut app = f.app();
+    press(&mut app, "a");
+    press(&mut app, "x");
+    press_code(&mut app, KeyCode::Tab);
+    press_code(&mut app, KeyCode::Tab);
+    let rows = screen(&mut app, 80, 20).join("\n");
+    assert!(rows.contains("候補  +garden  +work"), "{rows}");
+    press_ctrl(&mut app, 'n');
+    press_ctrl(&mut app, 'n');
+    press_code(&mut app, KeyCode::Tab);
+    press_ctrl(&mut app, 'n');
+    let Mode::Form(form) = &app.mode else {
+        panic!("no form");
+    };
+    let task = form.preview().unwrap();
+    assert_eq!(
+        (task.project.as_deref(), task.context.as_deref()),
+        (Some("work"), Some("office"))
+    );
+    // projects/*.md は作らない (プロジェクトファイルは M3)。
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(fs::read_dir(f.path().join("projects")).unwrap().count(), 1);
+}
+
+#[test]
+fn pasted_text_goes_into_the_focused_field() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "a");
+    app.handle_paste("貼り付けた\n本文");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(
+        f.read("todo.md")
+            .contains("- [ ] 貼り付けた 本文 created:2026-11-16 id:")
+    );
+}
+
+#[test]
+fn a_long_line_to_be_written_is_wrapped_not_cut() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "a");
+    press(
+        &mut app,
+        "請求書を送る https://example.com/invoice/2026/11/very/long/path +work @office due:fri",
+    );
+    let rows = screen(&mut app, 60, 24);
+    let start = rows.iter().position(|r| r.contains("書き込む行")).unwrap() + 1;
+    let preview: String = rows[start..]
+        .iter()
+        .take_while(|r| !r.contains('└'))
+        .map(|r| r.trim_start_matches([' ', '│']).trim_end_matches([' ', '│']))
+        .collect();
+    assert_eq!(
+        preview,
+        "- [ ] 請求書を送る https://example.com/invoice/2026/11/very/long/path +work @office due:2026-11-20 created:2026-11-16"
+    );
 }

@@ -5,7 +5,7 @@
 //! メモリ上のタスクは表示のためだけに持ち、書き戻さない。操作はロックを取ってからファイルを
 //! 読み直し、タスクのキーで探して書く (CLI と同じ `ops`)。表示が古くても他のツールの変更を潰さない。
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -15,15 +15,18 @@ use gtodo_core::document::Document;
 use gtodo_core::input;
 use gtodo_core::key::task_key;
 use gtodo_core::lock::Lock;
-use gtodo_core::ops::{self, Moved, Wait};
+use gtodo_core::logic::due::DueOutcome;
+use gtodo_core::ops::{self, Destination, Moved, Wait};
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::{DataDir, FileKind, Stamp};
 use gtodo_core::task::{Status, Task};
 use gtodo_core::view::entries;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use super::form::{Form, Outcome, Submit};
 use super::input::{Edit, LineInput};
 use super::keymap::{Action, Fed, Key, Keymap, TAB_COUNT};
+use crate::commands::{add, edit};
 use crate::workspace::Workspace;
 use crate::writing;
 
@@ -125,6 +128,8 @@ pub enum Mode {
         key: String,
         content: String,
     },
+    /// 追加・編集のフォーム。
+    Form(Box<Form>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +284,7 @@ impl App {
             Mode::Help => return self.handle_help(key),
             Mode::WaitInput { .. } => return self.handle_wait_input(key),
             Mode::ConfirmCancel { .. } => return self.handle_confirm_cancel(key),
+            Mode::Form(_) => return self.handle_form(key),
         }
         if key.code == KeyCode::Esc && !key.ctrl && !key.alt {
             // 押しかけのキーと知らせを取り消すだけで、終了しない (終了は q)。
@@ -293,8 +299,10 @@ impl App {
     }
 
     pub fn handle_paste(&mut self, text: &str) {
-        if let Mode::WaitInput { input, .. } = &mut self.mode {
-            input.paste(text);
+        match &mut self.mode {
+            Mode::WaitInput { input, .. } => input.paste(text),
+            Mode::Form(form) => form.paste(text),
+            _ => {}
         }
     }
 
@@ -322,6 +330,8 @@ impl App {
             Action::ToggleDone => self.toggle_done(),
             Action::Cancel => self.ask_cancel(),
             Action::Sort => self.sort(),
+            Action::Add => self.open_add(),
+            Action::Edit => self.open_edit(),
             Action::Help => self.mode = Mode::Help,
             Action::Quit => self.quit = true,
         }
@@ -435,6 +445,118 @@ impl App {
             }
         };
         self.help_scroll = self.help_scroll.saturating_add_signed(delta);
+    }
+
+    fn open_add(&mut self) {
+        let (projects, contexts) = self.tag_candidates();
+        self.mode = Mode::Form(Box::new(Form::add(self.tab(), projects, contexts, self.today)));
+    }
+
+    fn open_edit(&mut self) {
+        let Some(row) = self.target() else { return };
+        let (projects, contexts) = self.tag_candidates();
+        let form = Form::edit(row, self.tab(), projects, contexts, self.today);
+        self.mode = Mode::Form(Box::new(form));
+    }
+
+    /// プロジェクトとコンテキストの候補。使われているタグと、projects/*.md の名前 (作りはしない)。
+    fn tag_candidates(&self) -> (Vec<String>, Vec<String>) {
+        let mut projects = BTreeSet::new();
+        let mut contexts = BTreeSet::new();
+        for row in self.tabs.iter().flat_map(|t| &t.rows) {
+            if let Some(p) = row.task.project.as_deref().filter(|p| !p.is_empty()) {
+                projects.insert(p.to_string());
+            }
+            if let Some(c) = row
+                .task
+                .context
+                .as_deref()
+                .map(|c| c.trim_start_matches('@'))
+                .filter(|c| !c.is_empty())
+            {
+                contexts.insert(c.to_string());
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(self.ws.data_dir.root().join("projects")) {
+            for path in entries.flatten().map(|e| e.path()) {
+                if path.extension().is_some_and(|e| e == "md")
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                {
+                    projects.insert(stem.to_string());
+                }
+            }
+        }
+        (projects.into_iter().collect(), contexts.into_iter().collect())
+    }
+
+    fn handle_form(&mut self, key: Key) {
+        let Mode::Form(form) = &mut self.mode else { return };
+        match form.handle(key) {
+            Outcome::Continue => {}
+            Outcome::Abort => self.mode = Mode::Normal,
+            Outcome::Submit(submit) => {
+                self.mode = Mode::Normal;
+                self.messages.clear();
+                self.submit_form(submit);
+            }
+        }
+    }
+
+    fn submit_form(&mut self, submit: Submit) {
+        match submit {
+            Submit::Unchanged => self.message(Level::Info, "nothing changed".to_string()),
+            Submit::Add(task, destination) => {
+                let content = task.content.clone();
+                let to_inbox = destination == Destination::Inbox;
+                let added = self.write(to_inbox, |ws| {
+                    let id = ops::add_task(&ws.data_dir, &ws.names, ws.today, *task, destination)?;
+                    // 期日がすでに来ていれば Today へ移す (CLI の add と同じ)。失敗しても追加は済んでいる。
+                    let dues = to_inbox.then(|| add::check_dues_and_sort(ws));
+                    Ok((id, dues))
+                });
+                let Some((id, dues)) = added else { return };
+                let name = match destination {
+                    Destination::Inbox => "inbox.md".to_string(),
+                    Destination::Section(key) => self.ws.names.name(key).to_string(),
+                };
+                self.message(Level::Info, format!("added to {name}: {content}"));
+                self.report_after_write(dues, "added");
+                self.view_mut().select_key(&id);
+            }
+            Submit::Edit { key, changes } => {
+                let edited = self.write(true, |ws| {
+                    let edited = ops::edit_task(&ws.data_dir, &ws.names, ws.today, &key, &changes)?;
+                    let dues = edit::check_dues_and_sort(ws, edited.file == FileKind::Todo);
+                    Ok((edited.task, dues))
+                });
+                let Some((task, dues)) = edited else { return };
+                self.message(Level::Info, format!("edited: {}", task.content));
+                self.report_after_write(Some(dues), "edited");
+                self.select_task(&task);
+            }
+        }
+    }
+
+    /// 追加・編集の後の期日のチェックの結果を知らせる。
+    fn report_after_write(&mut self, dues: Option<Result<DueOutcome>>, verb: &str) {
+        match dues {
+            Some(Ok(dues)) => {
+                let (mut warnings, mut notes) = (Vec::new(), Vec::new());
+                writing::report_dues(&self.ws, &dues, &mut |m| warnings.push(m), |m| notes.push(m));
+                for n in notes {
+                    self.message(Level::Info, n);
+                }
+                for w in warnings {
+                    self.message(Level::Warning, w);
+                }
+            }
+            // 書き込みは済んでいるため、失敗として扱うと利用者はもう一度書いてしまう。
+            Some(Err(e)) => self.message(
+                Level::Warning,
+                format!("the task was {verb}, but checking due dates failed: {e:#}"),
+            ),
+            None => {}
+        }
     }
 
     fn ask_cancel(&mut self) {
