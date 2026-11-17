@@ -6,6 +6,7 @@ mod form;
 mod input;
 mod kanban;
 mod keymap;
+mod markdown;
 mod queue;
 mod search;
 

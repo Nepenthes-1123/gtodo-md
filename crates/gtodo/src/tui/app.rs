@@ -28,6 +28,7 @@ use super::form::{Form, Outcome, Submit};
 use super::input::{Edit, LineInput};
 use super::kanban::{self, KanbanView};
 use super::keymap::{Action, Fed, Key, Keymap, TAB_COUNT};
+use super::markdown;
 use super::queue;
 use super::search::{self, SearchView};
 use crate::commands::{add, edit};
@@ -136,6 +137,11 @@ pub enum Mode {
     },
     /// 追加・編集のフォーム。
     Form(Box<Form>),
+    /// 開くリンクを選んでいる (リンクが複数あるとき)。
+    ChooseLink {
+        links: Vec<String>,
+        cursor: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +160,9 @@ pub struct Message {
 /// 操作のときにロックが空くまで待つ時間。待つ間は画面が止まるため、CLI (2 秒) より短くする。
 /// Neovim 版の自動処理がロックを持つのは数ミリ秒で、取れなければもう一度押せばよい。
 const LOCK_WAIT: Duration = Duration::from_millis(300);
+
+/// リンクを開く関数。
+pub type Opener = Box<dyn Fn(&str) -> std::io::Result<()>>;
 
 /// 今の画面。Queue は一覧から開く全画面で、`Esc` で一覧へ戻る。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +251,8 @@ pub struct App {
     /// ヘルプの表示位置。描画するときに入りきる範囲へ収める。
     pub help_scroll: usize,
     data_dir: PathBuf,
+    /// リンクを開く (テストでは差し替えて、開いたものを記録する)。
+    opener: Opener,
     /// 今日の日付を返す (テストでは日付を差し替える)。
     clock: Box<dyn Fn() -> NaiveDate>,
     today: NaiveDate,
@@ -301,6 +312,7 @@ impl App {
             page_height: 10,
             help_scroll: 0,
             data_dir,
+            opener: Box::new(|url| open::that_detached(url)),
             clock,
             today,
             opened_date: today,
@@ -323,6 +335,12 @@ impl App {
         app.try_rollover();
         app.notice_inbox_due();
         Ok(app)
+    }
+
+    /// リンクを開く方法を差し替える (テスト用)。
+    #[cfg(test)]
+    pub fn set_opener(&mut self, opener: Opener) {
+        self.opener = opener;
     }
 
     pub fn should_quit(&self) -> bool {
@@ -404,6 +422,7 @@ impl App {
             Mode::WaitInput { .. } => return self.handle_wait_input(key),
             Mode::ConfirmCancel { .. } => return self.handle_confirm_cancel(key),
             Mode::Form(_) => return self.handle_form(key),
+            Mode::ChooseLink { .. } => return self.handle_choose_link(key),
         }
         if self.screen == Screen::Search && self.search.typing {
             return self.handle_search_input(key);
@@ -500,6 +519,7 @@ impl App {
                 Screen::List | Screen::Kanban => {}
             },
             Action::Search => self.open_search(),
+            Action::OpenLink => self.open_link(),
             Action::Open => self.open_in_list(),
             Action::Back => self.screen = Screen::List,
             Action::MoveToday => self.move_selected(SectionKey::Today, Wait::Keep),
@@ -862,6 +882,58 @@ impl App {
         if let Some((verb, task)) = result {
             self.message(Level::Info, format!("{verb}: {}", task.content));
             self.select_task(&task);
+        }
+    }
+
+    /// 選んでいるタスクのリンクを開く。複数あれば選ばせる。
+    fn open_link(&mut self) {
+        let Some(selected) = self.selected() else { return };
+        let mut links = markdown::links(&selected.row.task.content);
+        match links.len() {
+            0 => self.message(Level::Warning, "the task has no links".to_string()),
+            1 => self.open_url(&links.remove(0)),
+            _ => self.mode = Mode::ChooseLink { links, cursor: 0 },
+        }
+    }
+
+    /// 開くリンクを選ぶ。`j`/`k` (矢印) で選んで `Enter`、または番号。それ以外のキーで取り消す。
+    fn handle_choose_link(&mut self, key: Key) {
+        let Mode::ChooseLink { links, cursor } = &mut self.mode else {
+            return;
+        };
+        let chosen = match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                *cursor = (*cursor + 1).min(links.len() - 1);
+                return;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                *cursor = cursor.saturating_sub(1);
+                return;
+            }
+            KeyCode::Enter => links.get(*cursor).cloned(),
+            KeyCode::Char(c @ '1'..='9') => links.get(c as usize - '1' as usize).cloned(),
+            _ => None,
+        };
+        self.mode = Mode::Normal;
+        if let Some(url) = chosen {
+            self.open_url(&url);
+        }
+    }
+
+    /// ブラウザなどで開く。開くのは http(s) と mailto だけ (本文に書かれたファイルのパスなどを、
+    /// 関連付けられたアプリで実行しないため)。
+    fn open_url(&mut self, url: &str) {
+        let lower = url.to_ascii_lowercase();
+        if !["http://", "https://", "mailto:"].iter().any(|p| lower.starts_with(p)) {
+            self.message(
+                Level::Warning,
+                format!("only http(s) and mailto links are opened: {url}"),
+            );
+            return;
+        }
+        match (self.opener)(url) {
+            Ok(()) => self.message(Level::Info, format!("opened {url}")),
+            Err(e) => self.message(Level::Error, format!("failed to open {url}: {e}")),
         }
     }
 

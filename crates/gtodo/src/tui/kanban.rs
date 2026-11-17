@@ -7,7 +7,6 @@
 use gtodo_core::sections::SectionKey;
 use gtodo_core::store::FileKind;
 use gtodo_core::task::{Status, Task};
-use unicode_width::UnicodeWidthChar;
 
 use super::app::{Row, TABS, Tab, TabView};
 
@@ -24,7 +23,7 @@ pub const DONE: usize = 4;
 /// 列の幅の最小 (これより狭くなるなら、入らない列を左右に送る)。
 pub const MIN_COLUMN_WIDTH: usize = 20;
 /// カードの本文の最大の行数。
-const BODY_LINES: usize = 2;
+pub const BODY_LINES: usize = 2;
 
 /// カード。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,41 +141,6 @@ pub fn first_visible(focus: usize, visible: usize, current: usize) -> usize {
     first.min(max)
 }
 
-/// カードの本文の行 (優先度と本文。`width` ごとに折り返し、`BODY_LINES` 行を超える分は `…`)。
-pub fn body_lines(task: &Task, width: usize) -> Vec<String> {
-    let mut text = String::new();
-    if let Some(p) = task.priority {
-        text.push_str(&format!("({p}) "));
-    }
-    text.push_str(&task.content);
-    wrap(&text, width.max(1), BODY_LINES)
-}
-
-/// 表示幅 `width` ごとに折り返し、`max_lines` 行を超えるなら最後の行の末尾を `…` にする。
-fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
-    let mut lines = vec![String::new()];
-    let mut used = 0;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > width {
-            if lines.len() == max_lines {
-                // 入りきらない。最後の行の末尾を `…` にする。
-                let last = lines.last_mut().expect("never empty");
-                while last.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>() + 1 > width {
-                    last.pop();
-                }
-                last.push('…');
-                return lines;
-            }
-            lines.push(String::new());
-            used = 0;
-        }
-        lines.last_mut().expect("never empty").push(c);
-        used += w;
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -252,15 +216,5 @@ mod tests {
         assert_eq!(first_visible(1, 3, 2), 1);
         assert_eq!(first_visible(2, 3, 1), 1);
         assert_eq!(first_visible(0, 5, 3), 0);
-    }
-
-    #[test]
-    fn bodies_wrap_to_two_lines() {
-        let task = Task::parse("- [ ] (A) とても長いタスクの本文がここに続く").unwrap();
-        assert_eq!(body_lines(&task, 12), ["(A) とても長", "いタスクの…"]);
-        let short = Task::parse("- [ ] 短い").unwrap();
-        assert_eq!(body_lines(&short, 12), ["短い"]);
-        assert_eq!(wrap("abcdef", 3, 2), ["abc", "def"]);
-        assert_eq!(wrap("abcdefg", 3, 2), ["abc", "de…"]);
     }
 }
