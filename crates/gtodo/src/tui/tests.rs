@@ -1247,3 +1247,148 @@ fn the_place_stays_visible_on_a_narrow_terminal() {
     let rows = screen(&mut app, 40, 8);
     assert!(rows[3].ends_with("Waiting"), "{}", rows[3]);
 }
+
+/// 検索のテスト用のデータ (今日は 2026-11-16)。
+fn search_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("inbox.md", "# Inbox\n\n- [ ] 受信した資料 id:111111\n");
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [ ] 会議の資料を作る +work @office id:aaaaaa\n- [ ] 牛乳 id:bbbbbb\n\n\
+         ## Next\n\n## Waiting\n\n- [ ] 見積もり wait:田中 id:cccccc\n\n## Someday\n",
+    );
+    f.write(
+        "done.md",
+        "# Done\n\n## 2026-11\n\n- [x] 先月の資料 completed_at:2026-11-02 id:f00001\n",
+    );
+    f
+}
+
+fn search_results(app: &App) -> Vec<String> {
+    app.search
+        .results
+        .iter()
+        .map(|r| app.search.entry(r).row.task.content.clone())
+        .collect()
+}
+
+#[test]
+fn slash_opens_the_search_and_typing_narrows_the_results() {
+    let f = search_fixture();
+    let mut app = f.app();
+    press(&mut app, "/");
+    assert_eq!(app.screen, Screen::Search);
+    // 何も入れていなければ全部出す。
+    assert_eq!(search_results(&app).len(), 5);
+    press(&mut app, "資料");
+    assert_eq!(
+        screen(&mut app, 70, 8),
+        [
+            " / 資料                                   [すべて] 未完了  完了  3 件",
+            "──────────────────────────────────────────────────────────────────────",
+            "▌ [ ] 受信した資料                                               Inbox",
+            "  [ ] 会議の資料を作る +work @office                             Today",
+            "  [x] 先月の資料  2026-11-02                                      Done",
+            "",
+            "",
+            "Enter 結果へ  ↑/↓ 選ぶ  Tab 状態  Esc 一覧へ",
+        ]
+    );
+    // 当たった部分の位置 (強調して見せる)。
+    let (entry, _) = app.search.selected().unwrap();
+    let ranges = app.search.query.highlight(&entry.row.task.content);
+    assert_eq!(&entry.row.task.content[ranges[0].clone()], "資料");
+    // 入力欄で打った q は文字。
+    press(&mut app, " q");
+    assert!(!app.should_quit());
+    assert_eq!(app.search.input.text(), "資料 q");
+}
+
+#[test]
+fn tags_and_status_narrow_the_search() {
+    let f = search_fixture();
+    let mut app = f.app();
+    press(&mut app, "/+wo");
+    assert_eq!(search_results(&app), ["会議の資料を作る"]);
+    press_ctrl(&mut app, 'u');
+    press(&mut app, "wait:田");
+    assert_eq!(search_results(&app), ["見積もり"]);
+    press_ctrl(&mut app, 'u');
+    press(&mut app, "資料");
+    press_code(&mut app, KeyCode::Tab);
+    assert_eq!(search_results(&app), ["受信した資料", "会議の資料を作る"]);
+    press_code(&mut app, KeyCode::Tab);
+    assert_eq!(search_results(&app), ["先月の資料"]);
+    press_code(&mut app, KeyCode::Tab);
+    assert_eq!(search_results(&app).len(), 3);
+}
+
+#[test]
+fn results_can_be_changed_and_opened_in_the_list() {
+    let f = search_fixture();
+    let mut app = f.app();
+    press(&mut app, "/資料");
+    // 入力欄にいるまま、矢印で選ぶ。
+    press_code(&mut app, KeyCode::Down);
+    press_code(&mut app, KeyCode::Enter);
+    assert!(!app.search.typing);
+    assert_eq!(
+        footer(&mut app),
+        "x 完了にする  n Next へ  w Waiting へ  s Someday へ  e 編集  a 追加  Enter 一覧で開く  Tab 状態  Esc 一覧へ  ? ヘルプ"
+    );
+    press(&mut app, "x");
+    assert!(f.read("todo.md").contains("- [x] 会議の資料を作る"));
+    // 完了したタスクも「すべて」なので残り、選んだまま。
+    assert_eq!(app.selected().unwrap().row.task.content, "会議の資料を作る");
+
+    // done.md のタスクは見るだけ。
+    press(&mut app, "j");
+    press(&mut app, "x");
+    assert_eq!(last_message(&app), "tasks in done.md cannot be changed");
+
+    // Enter で一覧のそのタスクへ。
+    press(&mut app, "k");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!((app.screen, app.current), (Screen::List, 1));
+    assert_eq!(selected_content(&app), "会議の資料を作る");
+}
+
+#[test]
+fn slash_returns_to_the_input_and_esc_to_the_list_keeping_the_query() {
+    let f = search_fixture();
+    let mut app = f.app();
+    press(&mut app, "/資料");
+    press_code(&mut app, KeyCode::Enter);
+    press(&mut app, "/");
+    assert!(app.search.typing);
+    press(&mut app, "を");
+    assert_eq!(search_results(&app), ["会議の資料を作る"]);
+    press_code(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::List);
+    // 開き直すと前の検索語のまま (続きから絞り込める)。
+    press(&mut app, "/");
+    assert_eq!(app.search.input.text(), "資料を");
+    // 当たるものが無ければ、Enter しても入力欄に留まる。
+    press(&mut app, "ん");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(app.search.typing);
+    let rows = screen(&mut app, 60, 6);
+    assert_eq!(rows[2], "  一致するタスクはありません");
+}
+
+#[test]
+fn the_search_follows_changes_by_other_programs() {
+    let f = search_fixture();
+    let mut app = f.app();
+    press(&mut app, "/資料");
+    f.write(
+        "inbox.md",
+        "# Inbox\n\n- [ ] 新しい資料 id:222222\n- [ ] 受信した資料 id:111111\n",
+    );
+    app.tick();
+    assert_eq!(
+        search_results(&app),
+        ["新しい資料", "受信した資料", "会議の資料を作る", "先月の資料"]
+    );
+    assert_eq!(app.selected().unwrap().row.task.content, "受信した資料");
+}

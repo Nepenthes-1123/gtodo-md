@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,13 +21,14 @@ use gtodo_core::ops::{self, Destination, Moved, Wait};
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::{DataDir, FileKind, Stamp};
 use gtodo_core::task::{Status, Task};
-use gtodo_core::view::entries;
+use gtodo_core::view::{SEARCH_FILES, entries};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::form::{Form, Outcome, Submit};
 use super::input::{Edit, LineInput};
 use super::keymap::{Action, Fed, Key, Keymap, TAB_COUNT};
 use super::queue;
+use super::search::{self, SearchView};
 use crate::commands::{add, edit};
 use crate::render::context_name;
 use crate::workspace::Workspace;
@@ -84,7 +86,8 @@ impl Tab {
 pub struct Row {
     /// 操作のときにタスクを探すキー (ID、無ければ行の内容から作った一時キー)。
     pub key: String,
-    pub task: Task,
+    /// 一覧のタブと検索で同じタスクを共有する (数万件を二重に持たないため)。
+    pub task: Rc<Task>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -156,6 +159,7 @@ const LOCK_WAIT: Duration = Duration::from_millis(300);
 pub enum Screen {
     List,
     Queue,
+    Search,
 }
 
 /// Queue の状態。
@@ -225,6 +229,7 @@ pub struct App {
     pub current: usize,
     pub screen: Screen,
     pub queue: QueueView,
+    pub search: SearchView,
     pub mode: Mode,
     /// 押しかけのキー列 (`g` の後など)。
     pub pending: Vec<Key>,
@@ -251,6 +256,8 @@ pub struct App {
     inbox_noticed: Option<NaiveDate>,
     /// Queue を開いていない間に inbox.md・todo.md が変わり、作り直しが要る。
     queue_stale: bool,
+    /// 検索を開いていない間に対象のファイルが変わり、絞り込み直しが要る。
+    search_stale: bool,
     /// Queue を作るために持っておく、最後に読んだ inbox.md と todo.md。
     inbox_doc: Document,
     todo_doc: Document,
@@ -281,6 +288,7 @@ impl App {
             current: START_TAB,
             screen: Screen::List,
             queue: QueueView::default(),
+            search: SearchView::default(),
             mode: Mode::Normal,
             pending: Vec::new(),
             messages: Vec::new(),
@@ -297,6 +305,7 @@ impl App {
             seen_warnings: HashSet::new(),
             inbox_noticed: None,
             queue_stale: true,
+            search_stale: true,
             inbox_doc: Document::default(),
             todo_doc: Document::default(),
         };
@@ -389,6 +398,9 @@ impl App {
             Mode::ConfirmCancel { .. } => return self.handle_confirm_cancel(key),
             Mode::Form(_) => return self.handle_form(key),
         }
+        if self.screen == Screen::Search && self.search.typing {
+            return self.handle_search_input(key);
+        }
         if key.code == KeyCode::Esc && !key.ctrl && !key.alt {
             // 押しかけのキーがあれば取り消し、無ければ Queue などから一覧へ戻る。知らせはどちらでも消す。
             // 終了はしない (終了は q)。
@@ -409,6 +421,10 @@ impl App {
         match &mut self.mode {
             Mode::WaitInput { input, .. } => input.paste(text),
             Mode::Form(form) => form.paste(text),
+            Mode::Normal if self.screen == Screen::Search && self.search.typing => {
+                self.search.input.paste(text);
+                self.search.run(false);
+            }
             _ => {}
         }
     }
@@ -448,8 +464,8 @@ impl App {
                     }
                 }
             }
-            Action::QueueMode => {
-                if self.screen == Screen::Queue {
+            Action::SwitchView => match self.screen {
+                Screen::Queue => {
                     self.queue.wait = !self.queue.wait;
                     self.queue.offset = 0;
                     // 選んでいたタスクが切り替えた先にもあれば選んだまま、無ければ先頭。
@@ -457,7 +473,13 @@ impl App {
                         self.queue.cursor = 0;
                     }
                 }
-            }
+                Screen::Search => {
+                    self.search.status = self.search.status.next();
+                    self.search.run(true);
+                }
+                Screen::List => {}
+            },
+            Action::Search => self.open_search(),
             Action::Open => self.open_in_list(),
             Action::Back => self.screen = Screen::List,
             Action::MoveToday => self.move_selected(SectionKey::Today, Wait::Keep),
@@ -478,6 +500,7 @@ impl App {
         let (len, cursor) = match self.screen {
             Screen::List => (self.view().rows.len(), &mut self.tabs[self.current].cursor),
             Screen::Queue => (self.queue.len(), &mut self.queue.cursor),
+            Screen::Search => (self.search.results.len(), &mut self.search.cursor),
         };
         if len == 0 {
             return;
@@ -504,6 +527,11 @@ impl App {
                 file: item.file,
                 section: item.section,
             }),
+            Screen::Search => self.search.selected().map(|(entry, _)| Selected {
+                row: &entry.row,
+                file: entry.file,
+                section: entry.section,
+            }),
         }
     }
 
@@ -519,12 +547,14 @@ impl App {
     }
 
     /// Queue で選んでいるタスクを、一覧のタブで選ぶ。
+    /// Queue・検索で選んでいるタスクを、一覧のタブで選ぶ。
     fn open_in_list(&mut self) {
-        if self.screen != Screen::Queue {
+        if self.screen == Screen::List {
             return;
         }
-        let Some(item) = self.queue.selected() else { return };
-        let key = item.row.key.clone();
+        let Some(key) = self.selected().map(|s| s.row.key.clone()) else {
+            return;
+        };
         for i in 0..TAB_COUNT {
             if self.tabs[i].select_key(&key) {
                 self.current = i;
@@ -649,7 +679,7 @@ impl App {
         // Queue から開いたときは inbox へ入れる (どのセクションとも決まっていないため)。
         let tab = match self.screen {
             Screen::List => self.tab(),
-            Screen::Queue => Tab::Inbox,
+            Screen::Queue | Screen::Search => Tab::Inbox,
         };
         self.mode = Mode::Form(Box::new(Form::add(tab, projects, contexts, self.today)));
     }
@@ -763,7 +793,7 @@ impl App {
         let Some(row) = self.target() else { return };
         self.mode = Mode::ConfirmCancel {
             key: row.key,
-            content: row.task.content,
+            content: row.task.content.clone(),
         };
     }
 
@@ -802,6 +832,42 @@ impl App {
         }
     }
 
+    /// 検索を開く。前の検索語と状態は残す (続きから絞り込めるように)。
+    fn open_search(&mut self) {
+        if self.screen != Screen::Search && self.search_stale {
+            self.search.run(true);
+            self.search_stale = false;
+        }
+        self.screen = Screen::Search;
+        self.search.typing = true;
+    }
+
+    /// 検索の入力欄にいる間のキー。文字は入力欄へ入れ、打つたびに絞り込む。
+    fn handle_search_input(&mut self, key: Key) {
+        match (key.code, key.ctrl) {
+            (KeyCode::Esc, _) => {
+                self.screen = Screen::List;
+                self.messages.clear();
+            }
+            // 結果の中へ移り、一覧と同じキーで操作する。
+            (KeyCode::Enter, _) => {
+                if !self.search.results.is_empty() {
+                    self.search.typing = false;
+                }
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('n'), true) => self.move_cursor(1),
+            (KeyCode::Up, _) | (KeyCode::Char('p'), true) => self.move_cursor(-1),
+            (KeyCode::Tab, _) => self.perform(Action::SwitchView),
+            _ => {
+                let before = self.search.input.text().to_string();
+                self.search.input.handle(key);
+                if self.search.input.text() != before {
+                    self.search.run(false);
+                }
+            }
+        }
+    }
+
     fn sort(&mut self) {
         if self.screen == Screen::List && !self.tab().writable() {
             return;
@@ -836,6 +902,7 @@ impl App {
         match self.screen {
             Screen::List => self.view_mut().select_key(key),
             Screen::Queue => self.queue.select_key(key),
+            Screen::Search => self.search.select_key(key),
         };
     }
 
@@ -965,10 +1032,19 @@ impl App {
             }
         }
         let mut queue_changed = false;
+        let mut search_changed = false;
         for (i, kind) in WATCHED_DOCS.iter().enumerate() {
             if reparse || now[i] != self.stamps[i] {
                 self.load(*kind);
                 queue_changed |= matches!(kind, FileKind::Inbox | FileKind::Todo);
+                search_changed |= SEARCH_FILES.contains(kind);
+            }
+        }
+        if search_changed {
+            if self.screen == Screen::Search {
+                self.search.run(true);
+            } else {
+                self.search_stale = true;
             }
         }
         // inbox.md と todo.md を読み終えてから作り直す。片方ずつ作り直すと、inbox.md から
@@ -992,16 +1068,27 @@ impl App {
                 Document::default()
             }
         };
+        // 検索のための正規化は、読み込んだときに 1 回だけ行う (打つたびには行わない)。
+        // 一覧のタブの行は検索の対象から作り、タスクを共有する。
+        let index = SEARCH_FILES
+            .contains(&kind)
+            .then(|| search::index(kind, &doc, &self.ws.names));
         for (i, tab) in TABS.iter().enumerate() {
             if tab.file() != kind {
                 continue;
             }
             let view = &mut self.tabs[i];
             let selected = view.selected().map(|r| r.key.clone());
-            view.rows = rows(*tab, &doc, &self.ws.names);
+            view.rows = match &index {
+                Some(entries) => rows_from(*tab, entries),
+                None => rows(*tab, &doc),
+            };
             if !selected.is_some_and(|k| view.select_key(&k)) {
                 view.clamp();
             }
+        }
+        if let Some(entries) = index {
+            self.search.set_part(kind, entries);
         }
         match kind {
             FileKind::Inbox => self.inbox_doc = doc,
@@ -1029,26 +1116,26 @@ fn stamp(path: &std::path::Path) -> Option<Stamp> {
     Stamp::of(path).ok().flatten()
 }
 
-/// タブに出すタスク。Done・Cancelled は新しいものから (ファイルの末尾が新しい)。
-fn rows(tab: Tab, doc: &Document, names: &SectionNames) -> Vec<Row> {
-    let row = |e: gtodo_core::view::Entry| Row {
-        key: task_key(e.task(), &e.item.line),
-        task: e.task().clone(),
-    };
-    let file = tab.file();
-    match tab {
-        Tab::Inbox => entries(file, doc).map(row).collect(),
-        Tab::Section(key) => {
-            let name = names.name(key);
-            entries(file, doc)
-                .filter(|e| e.section == Some(name))
-                .map(row)
-                .collect()
-        }
-        Tab::Done | Tab::Cancelled => {
-            let mut rows: Vec<Row> = entries(file, doc).map(row).collect();
-            rows.reverse();
-            rows
-        }
-    }
+/// 検索の対象でないファイル (cancelled.md) のタブに出すタスク。新しいものから (ファイルの末尾が新しい)。
+fn rows(tab: Tab, doc: &Document) -> Vec<Row> {
+    let mut rows: Vec<Row> = entries(tab.file(), doc)
+        .map(|e| Row {
+            key: task_key(e.task(), &e.item.line),
+            task: Rc::new(e.task().clone()),
+        })
+        .collect();
+    rows.reverse();
+    rows
+}
+
+/// 検索の対象から、タブに出す行を作る (検索の対象は、一覧と同じ順に並べてある)。
+fn rows_from(tab: Tab, entries: &[search::Entry]) -> Vec<Row> {
+    entries
+        .iter()
+        .filter(|e| match tab {
+            Tab::Section(key) => e.section == Some(key),
+            _ => true,
+        })
+        .map(|e| e.row.clone())
+        .collect()
 }

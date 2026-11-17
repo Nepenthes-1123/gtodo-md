@@ -1,14 +1,17 @@
 use std::fmt::Write;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+use gtodo_core::search::{Indexed, Query};
 use gtodo_core::task::Status;
-use gtodo_core::view::{Entry, SEARCH_FILES, SearchQuery, entries};
+use gtodo_core::view::{Entry, SEARCH_FILES, entries};
 
 use crate::render::{KEY_WIDTH, TaskJson, key_of, summary};
 use crate::workspace::Workspace;
 
+/// 書き方と一致の規則は TUI の検索と同じ (core の `search`)。CLI ではすべての語が確定しているので、
+/// タグは完全一致になる。並びはファイルの順のまま。
 pub fn run(ws: &Workspace, terms: &[String], status: Option<Status>, json: bool, out: &mut String) -> Result<()> {
-    let query = parse_query(terms, status)?;
+    let query = Query::parse(&terms.join(" "), false)?.with_status(status);
 
     let docs = SEARCH_FILES
         .iter()
@@ -17,7 +20,7 @@ pub fn run(ws: &Workspace, terms: &[String], status: Option<Status>, json: bool,
     let hits: Vec<Entry> = docs
         .iter()
         .flat_map(|(f, doc)| entries(*f, doc))
-        .filter(|e| query.matches(e.task()))
+        .filter(|e| query.matches(&Indexed::new(e.task())).is_some())
         .collect();
 
     if json {
@@ -34,45 +37,4 @@ pub fn run(ws: &Workspace, terms: &[String], status: Option<Status>, json: bool,
         writeln!(out, "{:<KEY_WIDTH$}  {location}  {}", key_of(e), summary(e.task()))?;
     }
     Ok(())
-}
-
-fn parse_query(terms: &[String], status: Option<Status>) -> Result<SearchQuery> {
-    let mut query = SearchQuery {
-        status,
-        ..SearchQuery::default()
-    };
-    for term in terms {
-        if let Some(p) = term.strip_prefix('+').filter(|p| !p.is_empty()) {
-            query.projects.push(p.to_string());
-        } else if let Some(c) = term.strip_prefix('@').filter(|c| !c.is_empty()) {
-            query.contexts.push(c.to_string());
-        } else {
-            bail!("unsupported search term {term:?}: use +project or @context");
-        }
-    }
-    Ok(query)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn terms(ts: &[&str]) -> Vec<String> {
-        ts.iter().map(|t| t.to_string()).collect()
-    }
-
-    #[test]
-    fn terms_become_project_and_context_conditions() {
-        let q = parse_query(&terms(&["+work", "@office", "@home"]), Some(Status::Open)).unwrap();
-        assert_eq!(q.projects, ["work"]);
-        assert_eq!(q.contexts, ["office", "home"]);
-        assert_eq!(q.status, Some(Status::Open));
-    }
-
-    #[test]
-    fn bare_words_and_empty_tags_are_rejected() {
-        for t in ["word", "+", "@"] {
-            assert!(parse_query(&terms(&[t]), None).is_err(), "{t:?}");
-        }
-    }
 }

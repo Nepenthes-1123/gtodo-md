@@ -10,7 +10,7 @@ Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled
 ```sh
 gtodo list                    # inbox.md と todo.md のタスク
 gtodo list today              # inbox | todo | today | next | waiting | someday | done | cancelled
-gtodo search +work @office    # +project / @context の AND 検索 (--open / --done で絞り込み)
+gtodo search 資料 +work       # 本文の語・+project・@context・wait:誰 の AND 検索 (--open / --done で絞り込み)
 gtodo queue                   # 期日ごとの一覧 (--wait で待ち先ごと)
 gtodo stats                   # ステータスライン向けの件数
 gtodo add 牛乳を買う +home     # inbox.md へ追加 (--to today|next|waiting|someday で todo.md のセクションへ)
@@ -26,6 +26,8 @@ gtodo sort                    # 期日が来たタスクを Today へ移し、to
 
 `add` の本文に書いた `+project`・`@context`・`due:`・`wait:`・先頭の `(A)` は、タスク行と同じくタグとして読みます。`--due` などのオプションを付けた場合はそちらを優先します。
 追加したタスクの ID を表示します。inbox へ追加したタスクの期日がすでに来ていれば、Neovim 版と同じく Today へ移します (`auto_move_inbox_to_today` が `true` のとき)。
+
+`search` の語は、本文に含まれる語 (一部だけでも当たり、大文字小文字と全角半角は区別しない)、`+project`・`@context`・`wait:誰` (タグの値と完全一致) です。すべての語に当たるタスクを出します。対象は inbox.md・todo.md・done.md で、タグや日付 (`created:` など) の文字は探しません。TUI の検索と同じ規則です。
 
 `list`・`search`・`stats` は `--json` で JSON を出力します。
 各タスクの先頭に表示されるキーは、タスクの ID (`id:` タグ) です。ID の無いタスクには、行の内容から作った一時キー (`~` で始まる) を表示します。
@@ -48,7 +50,7 @@ Neovim 版で開いているファイルを書き換えた場合、Neovim 側の
 
 ## TUI
 
-`gtodo` を引数なしで実行すると (`gtodo tui` でも) TUI が開きます。今はセクションごとの一覧、タスクの操作、追加と編集、Queue が使えます (検索・カンバンなどは開発中)。
+`gtodo` を引数なしで実行すると (`gtodo tui` でも) TUI が開きます。今はセクションごとの一覧、タスクの操作、追加と編集、Queue、検索が使えます (カンバンなどは開発中)。
 
 | キー | 動作 |
 | --- | --- |
@@ -59,6 +61,7 @@ Neovim 版で開いているファイルを書き換えた場合、Neovim 側の
 | `c` | キャンセルする (確認あり) |
 | `a` / `e` | タスクを追加する / 編集する (下記のフォーム) |
 | `Q` | Queue を開く (下記) |
+| `/` | 検索 (下記) |
 | `o` | 期日が来たタスクを Today へ移し、並べ替える (`gtodo sort` と同じ) |
 | `?` | ヘルプ |
 | `q` / `Ctrl-c` | 終了 |
@@ -75,6 +78,9 @@ inbox へ追加したタスクの期日がすでに来ていれば、`gtodo add`
 `Q` は Queue (期日の来るタスクの一覧。Neovim 版の Queue ビューと同じ見出しと並び) を開きます。inbox.md と todo.md の未完了のタスクを、期限切れ・今日・明日・日付ごとに並べ、右端にどこにあるか (Inbox・セクション名) を出します。31 日以上先は薄く表示します。
 Queue の中でも `x`・`d`/`n`/`w`/`s`・`c`・`e` でタスクを操作できます。`Tab` で期日別と待ち先別 (`wait:` ごと) を切り替え、`Enter` で一覧のそのタスクへ移り、`Esc` で一覧へ戻ります。
 `gtodo.json` で `auto_move_inbox_to_today` を `false` にしているときは、起動したときと日付が変わったときに、期日が来ても inbox.md に残っているタスクの数を知らせます。
+
+`/` は検索を開きます。打つたびに inbox.md・todo.md・done.md のタスクを絞り込み、当たった部分を太字と下線で示します。書き方は `gtodo search` と同じで、打っている途中の最後の `+project`・`@context`・`wait:` だけは前方一致になります。何も入れていなければ全部出します。
+入力中も `↑` / `↓` で選べます。`Tab` で「すべて → 未完了 → 完了」を切り替え、`Enter` で結果の中へ移ると、一覧と同じキーで操作できます (done.md のタスクは見るだけ)。結果の中で `Enter` を押すと一覧のそのタスクへ移り、`/` で入力欄へ戻り、`Esc` で一覧へ戻ります。開き直すと前の検索語が残っています。
 
 操作のたびに、書き込むコマンドと同じくロックを持ってファイルを読み直してから書くので、表示が古くても Neovim 版の変更を潰しません。
 他のツールがファイルを書き換えると、1 秒以内に表示へ反映します。起動したときと日付が変わったときに、日次の整理をします (その日すでに済んでいれば何も書きません)。

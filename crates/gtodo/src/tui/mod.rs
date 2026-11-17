@@ -6,6 +6,7 @@ mod form;
 mod input;
 mod keymap;
 mod queue;
+mod search;
 
 #[cfg(test)]
 mod tests;

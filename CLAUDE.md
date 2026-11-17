@@ -49,14 +49,15 @@ OS で分かれるコード (`#[cfg(unix)]` や `std::os::unix` を使うテス�
   - `ops.rs` — `data_dir` のファイルを読み、`logic/` の操作をして書き戻す。2 ファイルにまたがる移動の書き込み順 (追記してから削除) もここで固定する。ロックは呼び出し元が持つ。
   - `input.rs` — 利用者が入力したタスクの本文と項目 (期日・タグ・優先度・待ち先) の読み取りと検証。CLI の `add`・`edit`・`move --wait` と TUI のフォームで共有する (同じ入力がツールによって違うタスクにならないように)。
   - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`) と、キーからのタスクの検索。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
-  - `view.rs` — 読み取り専用のビュー (一覧・検索・Queue・件数)。CLI と TUI で共有する。
+  - `view.rs` — 読み取り専用のビュー (一覧・Queue・件数)。CLI と TUI で共有する。
+  - `search.rs` — 検索の書き方と一致の規則 (本文の語は部分一致、タグは完全一致・打っている途中は前方一致、NFKC と小文字にそろえて比べる)。CLI の `search` と TUI の検索で共有する。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
   - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。
 - `crates/gtodo` — CLI (`gtodo` コマンド) と TUI (`tui/`、`gtodo tui` と引数なしの `gtodo`)。`workspace.rs` が `data_dir` とその設定を読む。
   書き込むコマンドは必ず `writing.rs` の `with_lock` の中で書く (ロック・無いファイルの作成・日次ロールオーバーを済ませるため)。
   TUI はロックの取り方 (待つ時間) と知らせの出し方を変えるため、同じ準備をする `run_locked` を使う (`with_lock` もこれを呼ぶ)。
   TUI はメモリ上のタスクを書き戻さない。操作のたびに `ops` でファイルを読み直し、タスクのキーで探して書く。
-  - `tui/app.rs` — 状態とキー操作 (描画と端末から切り離し、画面を通さずにテストする)。`draw.rs` — 描画。`keymap.rs` — 動作とキーの表 (最下段の案内とヘルプはここから作る)。`form.rs` — 追加・編集フォーム (core の `input` で読み、編集では変えた項目だけを渡す)。`queue.rs` — Queue の行 (core の `view::due_queue`・`wait_queue` から作る。見出しの文言は CLI の `queue` と共有)。
+  - `tui/app.rs` — 状態とキー操作 (描画と端末から切り離し、画面を通さずにテストする)。`draw.rs` — 描画。`keymap.rs` — 動作とキーの表 (最下段の案内とヘルプはここから作る)。`form.rs` — 追加・編集フォーム (core の `input` で読み、編集では変えた項目だけを渡す)。`queue.rs` — Queue の行 (core の `view::due_queue`・`wait_queue` から作る。見出しの文言は CLI の `queue` と共有)。`search.rs` — 検索の画面の状態 (正規化は読み込んだときに 1 回だけ、強調の範囲は描くときに求める)。
   - TUI のテストは `tui/tests.rs`。ratatui の `TestBackend` に描画して文字を比べる。
   **読むだけのコマンドはファイルを一切書き換えない** (書くと Neovim 側の未保存の編集が破棄されるため)。
   `tests/cli.rs` の `read_only_commands_never_create_or_modify_files` で固定している。

@@ -268,11 +268,11 @@ impl Form {
         match (self.evaluate()?, &self.kind) {
             (Submit::Add(task, _), _) => Ok(*task),
             (Submit::Edit { changes, .. }, Kind::Edit { row, .. }) => {
-                let mut task = row.task.clone();
+                let mut task = Task::clone(&row.task);
                 changes.apply(&mut task);
                 Ok(task)
             }
-            (Submit::Unchanged, Kind::Edit { row, .. }) => Ok(row.task.clone()),
+            (Submit::Unchanged, Kind::Edit { row, .. }) => Ok(Task::clone(&row.task)),
             (Submit::Edit { .. } | Submit::Unchanged, Kind::Add) => unreachable!("adding always gives Submit::Add"),
         }
     }
@@ -417,7 +417,7 @@ mod tests {
         let task = Task::parse_at(line, today()).unwrap();
         Row {
             key: task.id.clone().unwrap_or_default(),
-            task,
+            task: task.into(),
         }
     }
 

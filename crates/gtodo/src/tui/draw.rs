@@ -4,7 +4,9 @@
 
 use chrono::NaiveDate;
 use gtodo_core::ops::Destination;
+use gtodo_core::search::Hit;
 use gtodo_core::sections::SectionKey;
+use gtodo_core::store::FileKind;
 use gtodo_core::task::{Status, Task};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -17,6 +19,7 @@ use super::app::{App, Level, Mode, Row, Screen, TABS, Tab};
 use super::form::{DESTINATIONS, Field, Form, preview_line};
 use super::keymap::{Action, Key, sequence_label};
 use super::queue::{self, Heading};
+use super::search::{self, StatusFilter};
 use crate::render::{context_tag, project_tag};
 
 /// 選んでいる行の左端の印。
@@ -89,6 +92,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
                 tabs_area,
             );
             draw_queue(frame, app, theme, list_area);
+        }
+        Screen::Search => {
+            let cursor = draw_search_bar(frame, app, theme, tabs_area);
+            if app.search.typing && app.mode == Mode::Normal {
+                frame.set_cursor_position(cursor);
+            }
+            draw_search(frame, app, theme, list_area);
         }
     }
     frame.render_widget(Paragraph::new(messages), message_area);
@@ -186,18 +196,53 @@ pub fn row_line(row: &Row, selected: bool, tab: Tab, today: NaiveDate, width: us
     }
     let tail = tail_spans(task, tab, today, base, theme);
 
-    let used: usize = head.iter().chain(&tail).map(Span::width).sum();
-    let room = width.saturating_sub(used).max(MIN_CONTENT_WIDTH);
-    let content = truncate(&task.content, room);
     let content_style = if selected {
         base.add_modifier(Modifier::BOLD)
     } else {
         base
     };
+    let content = Content {
+        text: &task.content,
+        ranges: &[],
+        style: content_style,
+        mark: content_style,
+        min_width: MIN_CONTENT_WIDTH,
+    };
+    layout_row(head, content, tail, None, width)
+}
 
+/// 行の本文 (幅に合わせて切り詰める部分)。
+struct Content<'a> {
+    text: &'a str,
+    /// 強調する範囲 (検索で当たった部分)。
+    ranges: &'a [std::ops::Range<usize>],
+    style: Style,
+    mark: Style,
+    /// 狭くても残す幅。
+    min_width: usize,
+}
+
+/// 一覧・Queue・検索の行を組み立てる。本文が入りきらなければ `…` で切り、タグなどは残す。
+/// `place` があれば右端にそろえて出す (本文との間は 2 文字以上空ける)。
+fn layout_row(
+    head: Vec<Span<'static>>,
+    content: Content,
+    tail: Vec<Span<'static>>,
+    place: Option<Span<'static>>,
+    width: usize,
+) -> Line<'static> {
+    let place_room = place.as_ref().map_or(0, |p| p.width() + 2);
+    let fixed: usize = head.iter().chain(&tail).map(Span::width).sum::<usize>() + place_room;
+    let room = width.saturating_sub(fixed).max(content.min_width);
+    let (body, body_width) = highlighted(content.text, content.ranges, room, content.style, content.mark);
     let mut spans = head;
-    spans.push(Span::styled(content, content_style));
+    spans.extend(body);
     spans.extend(tail);
+    if let Some(place) = place {
+        let used = fixed - place_room + body_width + place.width();
+        spans.push(Span::raw(" ".repeat(width.saturating_sub(used).max(2))));
+        spans.push(place);
+    }
     Line::from(spans)
 }
 
@@ -356,6 +401,11 @@ fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             hints.push(("Esc".to_string(), "取り消す".to_string()));
             vec![hint_line(&hints, theme)]
         }
+        Mode::Normal if app.screen == Screen::Search && app.search.typing => {
+            let hints = [("Enter", "結果へ"), ("↑/↓", "選ぶ"), ("Tab", "状態"), ("Esc", "一覧へ")]
+                .map(|(k, d)| (k.to_string(), d.to_string()));
+            vec![hint_line(&hints, theme)]
+        }
         Mode::Normal if !app.pending.is_empty() => {
             let mut hints: Vec<(String, String)> = app
                 .keymap
@@ -428,8 +478,16 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
                 add(Action::Open, "一覧で開く".to_string());
             }
             let mode = if app.queue.wait { "期日別" } else { "待ち先別" };
-            add(Action::QueueMode, mode.to_string());
+            add(Action::SwitchView, mode.to_string());
             add(Action::Sort, "並べ替え".to_string());
+            hints.push((Action::Back, "Esc".to_string(), "一覧へ".to_string()));
+        }
+        Screen::Search => {
+            if selected.is_some() {
+                add(Action::Open, "一覧で開く".to_string());
+            }
+            add(Action::Search, "検索語".to_string());
+            add(Action::SwitchView, "状態".to_string());
             hints.push((Action::Back, "Esc".to_string(), "一覧へ".to_string()));
         }
     }
@@ -445,10 +503,11 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
 
 /// 幅に収まるまで、重要でない案内から外す。`?` (ヘルプ) は外さない (外したキーもヘルプで分かるように)。
 fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(String, String)> {
-    const DROP_ORDER: [Action; 14] = [
+    const DROP_ORDER: [Action; 15] = [
         Action::Quit,
         Action::Sort,
         Action::OpenQueue,
+        Action::Search,
         Action::Cancel,
         Action::Edit,
         Action::Back,
@@ -458,7 +517,7 @@ fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(Str
         Action::MoveToday,
         Action::Add,
         Action::Open,
-        Action::QueueMode,
+        Action::SwitchView,
         Action::ToggleDone,
     ];
     let line_width = |hints: &[(Action, String, String)]| -> usize {
@@ -503,7 +562,8 @@ fn description(app: &App, action: Action) -> String {
         Action::Add => "タスクを追加する (追加先の初期値は開いているタブ)".to_string(),
         Action::Edit => "タスクを編集する".to_string(),
         Action::OpenQueue => "Queue を開く (期日・待ち先ごとの一覧)".to_string(),
-        Action::QueueMode => "Queue: 期日別と待ち先別を切り替える".to_string(),
+        Action::Search => "検索 (本文の語・+project・@context・wait:。結果の中では入力欄へ戻る)".to_string(),
+        Action::SwitchView => "表示を切り替える (Queue は期日別と待ち先別、検索はすべて・未完了・完了)".to_string(),
         Action::Open => "Queue: 選んでいるタスクを一覧で開く".to_string(),
         Action::Back => "一覧へ戻る".to_string(),
         Action::Help => "このヘルプ".to_string(),
@@ -565,7 +625,8 @@ fn all_actions() -> Vec<Action> {
         Action::Edit,
         Action::Sort,
         Action::OpenQueue,
-        Action::QueueMode,
+        Action::Search,
+        Action::SwitchView,
         Action::Open,
         Action::Help,
         Action::Quit,
@@ -884,22 +945,185 @@ fn queue_item_line(item: &queue::Item, selected: bool, width: usize, theme: Them
     }
     let place = Span::styled(item.place.clone(), theme.dim());
 
-    // 本文と右端の場所の間は 2 文字以上空ける。
-    let fixed: usize = head.iter().chain(&tail).map(Span::width).sum::<usize>() + place.width() + 2;
-    // 狭くても右端の場所を残すため、一覧より本文を短くしてよい。
-    let content = truncate(&task.content, width.saturating_sub(fixed).max(MIN_QUEUE_CONTENT_WIDTH));
     let content_style = if selected {
         base.add_modifier(Modifier::BOLD)
     } else {
         base
     };
-    let used = fixed - 2 + content.width();
-    let mut spans = head;
-    spans.push(Span::styled(content, content_style));
-    spans.extend(tail);
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(used).max(2))));
-    spans.push(place);
-    Line::from(spans)
+    // 狭くても右端の場所を残すため、一覧より本文を短くしてよい。
+    let content = Content {
+        text: &task.content,
+        ranges: &[],
+        style: content_style,
+        mark: content_style,
+        min_width: MIN_QUEUE_CONTENT_WIDTH,
+    };
+    layout_row(head, content, tail, Some(place), width)
+}
+
+/// 検索の入力欄と状態の行。入力欄のカーソルの位置を返す。
+fn draw_search_bar(frame: &mut Frame, app: &App, theme: Theme, area: Rect) -> (u16, u16) {
+    let search = &app.search;
+    let mut right = vec![];
+    for status in [StatusFilter::All, StatusFilter::Open, StatusFilter::Done] {
+        right.push(if status == search.status {
+            Span::styled(format!("[{}]", status.label()), theme.key())
+        } else {
+            Span::styled(format!(" {} ", status.label()), theme.dim())
+        });
+    }
+    right.push(Span::raw(format!(" {} 件 ", search.results.len())));
+    let right_width: usize = right.iter().map(Span::width).sum();
+    let room = usize::from(area.width).saturating_sub(right_width + 3);
+    let (shown, at) = visible_input(search.input.text(), search.input.cursor_width(), room);
+    let pad = room.saturating_sub(shown.width());
+    let mut spans = vec![Span::styled(" /", theme.key()), Span::raw(" "), Span::raw(shown)];
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.extend(right);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    (area.x + 3 + at as u16, area.y)
+}
+
+fn draw_search(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {
+    let block = Block::new().borders(Borders::TOP).border_style(theme.dim());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let height = usize::from(inner.height);
+    app.page_height = height;
+    let today = app.today();
+    let search = &mut app.search;
+    if search.results.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("  一致するタスクはありません", theme.dim())),
+            inner,
+        );
+        return;
+    }
+    if search.cursor < search.offset {
+        search.offset = search.cursor;
+    } else if height > 0 && search.cursor >= search.offset + height {
+        search.offset = search.cursor + 1 - height;
+    }
+    search.offset = search.offset.min(search.results.len().saturating_sub(height.max(1)));
+    let width = usize::from(inner.width);
+    let lines: Vec<Line> = search
+        .results
+        .iter()
+        .enumerate()
+        .skip(search.offset)
+        .take(height)
+        .map(|(i, found)| {
+            let entry = search.entry(found);
+            // 当たった部分は、画面に出す行についてだけ求める。
+            let ranges = search.query.highlight(&entry.row.task.content);
+            search_row_line(entry, &found.hit, &ranges, i == search.cursor, today, width, theme)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// 検索の結果の行。当たった部分は太字と下線で示し (色に頼らない)、右端にどこにあるかを出す。
+fn search_row_line(
+    entry: &search::Entry,
+    hit: &Hit,
+    ranges: &[std::ops::Range<usize>],
+    selected: bool,
+    today: NaiveDate,
+    width: usize,
+    theme: Theme,
+) -> Line<'static> {
+    let task = &entry.row.task;
+    let done = task.status == Status::Done;
+    let base = if done { theme.dim() } else { Style::new() };
+    let mark = theme
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let mut head = vec![
+        if selected {
+            Span::styled(GUTTER, theme.accent())
+        } else {
+            Span::raw(" ")
+        },
+        Span::raw(" "),
+        Span::styled(if done { "[x] " } else { "[ ] " }, base),
+    ];
+    if let Some(p) = task.priority {
+        head.push(Span::styled(format!("({p}) "), base.add_modifier(Modifier::BOLD)));
+    }
+    let mut tail = Vec::new();
+    for (tag, matched) in [(project_tag(task), hit.project), (context_tag(task), hit.context)] {
+        if let Some(tag) = tag {
+            tail.push(Span::raw(" "));
+            tail.push(Span::styled(tag, if matched { mark } else { base }));
+        }
+    }
+    if entry.file == FileKind::Done {
+        if let Some(d) = task.completed_at.as_deref().filter(|d| !d.is_empty()) {
+            tail.push(Span::styled(format!("  {d}"), theme.dim()));
+        }
+    } else if let Some(due) = task.due.as_deref().filter(|d| !d.is_empty()) {
+        tail.push(Span::styled(format!("  {}", due_label(due, today).0), base));
+    }
+    if let Some(w) = task.wait.as_deref().filter(|w| !w.is_empty()) {
+        tail.push(Span::raw("  "));
+        tail.push(Span::styled(format!("wait:{w}"), if hit.wait { mark } else { base }));
+    }
+    let place = Span::styled(entry.place.clone(), theme.dim());
+
+    let content_style = if selected {
+        base.add_modifier(Modifier::BOLD)
+    } else {
+        base
+    };
+    let content = Content {
+        text: &task.content,
+        ranges,
+        style: content_style,
+        mark,
+        min_width: MIN_QUEUE_CONTENT_WIDTH,
+    };
+    layout_row(head, content, tail, Some(place), width)
+}
+
+/// `ranges` の部分を `mark` で強調した `text`。幅 `width` を超えれば `…` で切る。
+/// 作った幅も返す。
+fn highlighted(
+    text: &str,
+    ranges: &[std::ops::Range<usize>],
+    width: usize,
+    base: Style,
+    mark: Style,
+) -> (Vec<Span<'static>>, usize) {
+    let cut = text.width() > width;
+    let limit = if cut { width.saturating_sub(1) } else { width };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    let mut current = String::new();
+    let mut current_marked = false;
+    for (i, c) in text.char_indices() {
+        let w = c.width().unwrap_or(0);
+        if used + w > limit {
+            break;
+        }
+        let marked = ranges.iter().any(|r| r.contains(&i));
+        if marked != current_marked && !current.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut current),
+                if current_marked { mark } else { base },
+            ));
+        }
+        current_marked = marked;
+        current.push(c);
+        used += w;
+    }
+    if !current.is_empty() {
+        spans.push(Span::styled(current, if current_marked { mark } else { base }));
+    }
+    if cut {
+        spans.push(Span::styled("…", base));
+        used += 1;
+    }
+    (spans, used)
 }
 
 #[cfg(test)]
@@ -946,6 +1170,33 @@ mod tests {
         assert_eq!(wrap_plain("abcdef", 4), ["abcd", "ef"]);
         assert_eq!(wrap_plain("日本語", 4), ["日本", "語"]);
         assert_eq!(wrap_plain("", 4), [""]);
+    }
+
+    #[test]
+    fn highlights_are_cut_with_the_content_and_the_ellipsis_is_not_marked() {
+        use std::ops::Range;
+
+        let (base, mark) = (Style::new(), Style::new().add_modifier(Modifier::UNDERLINED));
+        let text = "会議の資料を作る";
+        // 「資料」は 6〜12 バイト目。幅 9 では「会議の資…」になる。
+        let (spans, width) = highlighted(text, &[Range { start: 9, end: 15 }], 9, base, mark);
+        let parts: Vec<(String, bool)> = spans.iter().map(|s| (s.content.to_string(), s.style == mark)).collect();
+        assert_eq!(
+            parts,
+            [
+                ("会議の".to_string(), false),
+                ("資".to_string(), true),
+                ("…".to_string(), false)
+            ]
+        );
+        assert_eq!(width, 9);
+        // 当たった部分が切った先だけにあれば、強調は出ない。
+        let (spans, _) = highlighted(text, &[Range { start: 18, end: 24 }], 9, base, mark);
+        assert!(spans.iter().all(|s| s.style == base));
+        // 入りきれば切らない。
+        let (spans, width) = highlighted("abc", &[Range { start: 1, end: 2 }], 10, base, mark);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(width, 3);
     }
 
     #[test]

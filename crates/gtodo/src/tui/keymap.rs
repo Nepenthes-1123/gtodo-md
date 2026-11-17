@@ -108,8 +108,9 @@ pub enum Action {
     Add,
     Edit,
     OpenQueue,
-    /// Queue の期日別と待ち先別を切り替える。
-    QueueMode,
+    Search,
+    /// 表示を切り替える (Queue は期日別と待ち先別、検索は状態)。
+    SwitchView,
     /// Queue で選んでいるタスクを一覧で開く。
     Open,
     /// Queue などから一覧へ戻る。`Esc` に固定で、割り当てを変えられない (案内に出すためだけにある)。
@@ -161,7 +162,8 @@ impl Default for Keymap {
             (vec![Key::char('a')], Add),
             (vec![Key::char('e')], Edit),
             (vec![Key::char('Q')], OpenQueue),
-            (vec![Key::plain(KeyCode::Tab)], QueueMode),
+            (vec![Key::char('/')], Search),
+            (vec![Key::plain(KeyCode::Tab)], SwitchView),
             (vec![Key::plain(KeyCode::Enter)], Open),
             (vec![Key::char('?')], Help),
             // Esc は終了に割り当てない。戻る・取り消すだけにする (lazygit・lazydocker と同じ)。
