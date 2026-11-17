@@ -1244,7 +1244,9 @@ fn split_replaces_a_task_with_subtasks_that_inherit_its_tags() {
     let f = sample();
     let out = f.stdout(&["split", "aaaaaa", "-p", "launch", "資料", "練習 @home"]);
     assert!(out.starts_with("split aaaaaa into 2 task(s): "), "{out}");
-    assert!(out.contains("projects/launch.md"), "{out}");
+    let created = f.data_dir().join("projects").join("launch.md");
+    assert!(out.contains(&format!("created {}", created.display())), "{out}");
+    assert!(created.exists());
     let todo = fs::read_to_string(f.data_dir().join("todo.md")).unwrap();
     assert!(!todo.contains("今日1"), "{todo}");
     // プロジェクトは指定したもの、コンテキストは書かなければ引き継ぐ。優先度は引き継がない。
