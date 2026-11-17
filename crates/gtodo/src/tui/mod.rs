@@ -13,11 +13,12 @@ mod search;
 #[cfg(test)]
 mod tests;
 
+use std::fs;
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use chrono::Local;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind};
@@ -31,13 +32,20 @@ use self::keymap::Keymap;
 const TICK: Duration = Duration::from_secs(1);
 
 /// `warnings` は data_dir を決めるまでに出た警告。画面に出す (標準エラーに書くと画面が崩れるため)。
-pub fn run(data_dir: PathBuf, warnings: Vec<String>) -> Result<()> {
+/// `keys` は `tui.toml` のパス (決められなければ `None`)。
+pub fn run(data_dir: PathBuf, warnings: Vec<String>, keys: Option<PathBuf>) -> Result<()> {
+    let mut warnings = warnings;
+    // 端末を確かめる前に読む。書き方の誤りは、どこから実行しても知らせる。
+    let keymap = match keys {
+        Some(path) => load_keymap(&path, &mut warnings)?,
+        None => Keymap::default(),
+    };
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("the TUI needs a terminal; use the subcommands (see gtodo --help) from scripts");
     }
     // 端末を切り替える前に開く。開けないときのエラーを普通に表示するため。
     let clock = Box::new(|| Local::now().date_naive());
-    let mut app = App::new(data_dir, clock, Keymap::default(), warnings)?;
+    let mut app = App::new(data_dir, clock, keymap, warnings)?;
     let theme = Theme::from_env();
 
     let mut terminal = ratatui::try_init()?;
@@ -47,6 +55,18 @@ pub fn run(data_dir: PathBuf, warnings: Vec<String>) -> Result<()> {
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::try_restore()?;
     result
+}
+
+/// `tui.toml` を読む。無ければ既定のキー。書き方の誤りは、どこが誤りかを添えてエラーにする。
+fn load_keymap(path: &Path, warnings: &mut Vec<String>) -> Result<Keymap> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Keymap::default()),
+        Err(e) => bail!("failed to read {}: {e}", path.display()),
+    };
+    let loaded = Keymap::from_toml(&text).map_err(|e| anyhow!("invalid {}: {e}", path.display()))?;
+    warnings.extend(loaded.warnings.into_iter().map(|w| format!("{}: {w}", path.display())));
+    Ok(loaded.keymap)
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, theme: Theme) -> Result<()> {

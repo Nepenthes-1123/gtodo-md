@@ -170,7 +170,8 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
         let data_dir = config::resolve_data_dir(cli.data_dir, &ProcessEnv, Platform::current(), &mut |m| {
             warnings.push(m)
         })?;
-        return tui::run(data_dir, warnings);
+        let keys = config::tui_config_path(&ProcessEnv, Platform::current());
+        return tui::run(data_dir, warnings, keys);
     }
 
     let mut warn = |msg: String| eprintln!("gtodo: warning: {msg}");

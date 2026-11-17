@@ -647,7 +647,7 @@ pub fn help_entries(app: &App) -> Vec<(String, String)> {
         keys.len() == 1 && keys[0] == [Key::char(char::from(b'1' + i as u8))]
     });
     let mut entries = Vec::new();
-    for action in all_actions() {
+    for action in Action::configurable() {
         if digits_only && matches!(action, Action::GoTab(_)) {
             if action == Action::GoTab(0) {
                 entries.push((format!("1〜{}", TABS.len()), "番号のタブへ".to_string()));
@@ -665,42 +665,6 @@ pub fn help_entries(app: &App) -> Vec<(String, String)> {
         "押しかけのキー・入力・確認を取り消す。Queue からは一覧へ戻る (終了はしない)".to_string(),
     ));
     entries
-}
-
-fn all_actions() -> Vec<Action> {
-    let mut actions = vec![
-        Action::Down,
-        Action::Up,
-        Action::Top,
-        Action::Bottom,
-        Action::HalfPageDown,
-        Action::HalfPageUp,
-        Action::PageDown,
-        Action::PageUp,
-        Action::NextTab,
-        Action::PrevTab,
-    ];
-    actions.extend((0..TABS.len()).map(Action::GoTab));
-    actions.extend([
-        Action::ToggleDone,
-        Action::MoveToday,
-        Action::MoveNext,
-        Action::MoveWaiting,
-        Action::MoveSomeday,
-        Action::Cancel,
-        Action::Add,
-        Action::Edit,
-        Action::Sort,
-        Action::OpenQueue,
-        Action::OpenKanban,
-        Action::Search,
-        Action::OpenLink,
-        Action::SwitchView,
-        Action::Open,
-        Action::Help,
-        Action::Quit,
-    ]);
-    actions
 }
 
 fn draw_help(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {

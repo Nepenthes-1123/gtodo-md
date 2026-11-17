@@ -389,6 +389,25 @@ fn the_tui_refuses_to_start_without_a_terminal_and_writes_nothing() {
     assert_eq!(snapshot(&f.data_dir()), before);
 }
 
+#[test]
+fn tui_toml_next_to_config_json_is_checked_before_starting() {
+    let f = sample();
+    // 書き方の誤りは、どこから実行しても (端末でなくても) どこが誤りかを添えて知らせる。
+    fs::write(f.dir.path().join("tui.toml"), "[keys]\nquit = \"x\"\n").unwrap();
+    let out = f.run(&[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("tui.toml") && stderr.contains("x is bound to both toggle_done and quit"),
+        "{stderr}"
+    );
+
+    // 正しければ、端末でないことで止まる。
+    fs::write(f.dir.path().join("tui.toml"), "[keys]\nquit = \"Z\"\n").unwrap();
+    let out = f.run(&[]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("the TUI needs a terminal"));
+}
+
 fn today_str() -> String {
     Local::now().date_naive().format("%Y-%m-%d").to_string()
 }

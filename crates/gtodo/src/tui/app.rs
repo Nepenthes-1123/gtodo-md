@@ -708,8 +708,9 @@ impl App {
 
     /// ヘルプは上下の移動でスクロールし、それ以外のキーで閉じる (端末が低いと入りきらないため)。
     fn handle_help(&mut self, key: Key) {
-        let mut pending = Vec::new();
-        let delta: isize = match self.keymap.feed(&mut pending, key) {
+        // 続けて押すキー (tui.toml で `down = "gj"` など) も使えるよう、押しかけのキーは一覧と共有する。
+        let delta: isize = match self.keymap.feed(&mut self.pending, key) {
+            Fed::Pending => return,
             Fed::Action(Action::Down) => 1,
             Fed::Action(Action::Up) => -1,
             Fed::Action(Action::HalfPageDown | Action::PageDown) => self.page_height.max(2) as isize / 2,
@@ -717,6 +718,7 @@ impl App {
             _ => {
                 self.mode = Mode::Normal;
                 self.help_scroll = 0;
+                self.pending.clear();
                 return;
             }
         };
@@ -896,24 +898,33 @@ impl App {
         }
     }
 
-    /// 開くリンクを選ぶ。`j`/`k` (矢印) で選んで `Enter`、または番号。それ以外のキーで取り消す。
+    /// 開くリンクを選ぶ。矢印 (と下へ・上への動作のキー) で選んで `Enter`、または番号。
+    /// それ以外のキーで取り消す。
     fn handle_choose_link(&mut self, key: Key) {
         let Mode::ChooseLink { links, cursor } = &mut self.mode else {
             return;
         };
+        let step = match key.code {
+            KeyCode::Down => Some(1),
+            KeyCode::Up => Some(-1),
+            KeyCode::Enter | KeyCode::Char('1'..='9') => None,
+            _ => match self.keymap.feed(&mut self.pending, key) {
+                Fed::Pending => return,
+                Fed::Action(Action::Down) => Some(1),
+                Fed::Action(Action::Up) => Some(-1),
+                _ => None,
+            },
+        };
+        if let Some(step) = step {
+            *cursor = cursor.saturating_add_signed(step).min(links.len() - 1);
+            return;
+        }
         let chosen = match key.code {
-            KeyCode::Down | KeyCode::Char('j') => {
-                *cursor = (*cursor + 1).min(links.len() - 1);
-                return;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                *cursor = cursor.saturating_sub(1);
-                return;
-            }
             KeyCode::Enter => links.get(*cursor).cloned(),
             KeyCode::Char(c @ '1'..='9') => links.get(c as usize - '1' as usize).cloned(),
             _ => None,
         };
+        self.pending.clear();
         self.mode = Mode::Normal;
         if let Some(url) = chosen {
             self.open_url(&url);

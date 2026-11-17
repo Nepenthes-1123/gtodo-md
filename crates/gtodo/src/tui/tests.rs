@@ -1724,3 +1724,65 @@ fn gx_works_and_is_offered_for_read_only_tasks_too() {
     press(&mut app, "gx");
     assert_eq!(*opened.borrow(), ["https://example.com/report"]);
 }
+
+#[test]
+fn keys_from_tui_toml_are_used_and_shown() {
+    let f = Fixture::new();
+    let keymap = Keymap::from_toml("[keys]\ntoggle_done = \"<Space>\"\ndown = [\"<C-n>\"]\ncancel = []\n")
+        .unwrap()
+        .keymap;
+    let today = Rc::clone(&f.today);
+    let mut app = App::new(f.path(), Box::new(move || today.get()), keymap, Vec::new()).unwrap();
+    // 案内とヘルプは、設定したキーから作る。外した動作は出さない。
+    let footer = screen(&mut app, 120, 12).pop().unwrap();
+    assert!(footer.starts_with("Space 完了にする"), "{footer}");
+    assert!(!footer.contains("キャンセル"), "{footer}");
+    press(&mut app, "?");
+    let help = screen(&mut app, 100, 40).join("\n");
+    assert!(help.contains("Ctrl-n") && help.contains("Space"), "{help}");
+    press_code(&mut app, KeyCode::Esc);
+    // 既定の j は効かず、Ctrl-n で下へ。
+    press(&mut app, "j");
+    assert_eq!(selected_content(&app), "今日1");
+    press_ctrl(&mut app, 'n');
+    assert_eq!(selected_content(&app), "今日2");
+    press(&mut app, " ");
+    assert!(f.read("todo.md").contains("- [x] 今日2"));
+    press(&mut app, "c");
+    assert_eq!(app.mode, Mode::Normal, "c is unbound");
+}
+
+#[test]
+fn keys_from_tui_toml_also_move_in_the_help_and_the_link_choice() {
+    let f = markdown_fixture();
+    let keymap = Keymap::from_toml("[keys]\ndown = \"<C-n>\"\nup = \"<C-p>\"\nhalf_page_down = \"zj\"\n")
+        .unwrap()
+        .keymap;
+    let today = Rc::clone(&f.today);
+    let mut app = App::new(f.path(), Box::new(move || today.get()), keymap, Vec::new()).unwrap();
+    // ヘルプは続けて押すキーでもスクロールし、途中のキーで閉じない。
+    press(&mut app, "?");
+    screen(&mut app, 80, 12);
+    press(&mut app, "z");
+    assert_eq!(app.mode, Mode::Help);
+    press(&mut app, "j");
+    assert_eq!(app.mode, Mode::Help);
+    assert!(app.help_scroll > 0);
+    press(&mut app, "q");
+    assert_eq!(app.mode, Mode::Normal);
+    // リンクを選ぶときも、設定した下へ・上へのキーで選ぶ。
+    let opened = record_opened(&mut app);
+    press_ctrl(&mut app, 'n');
+    press(&mut app, "gx");
+    assert!(matches!(app.mode, Mode::ChooseLink { .. }));
+    press_ctrl(&mut app, 'n');
+    press_ctrl(&mut app, 'p');
+    press_ctrl(&mut app, 'n');
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(opened.borrow().last().unwrap(), "https://b.example/y/z");
+    // 既定の j は割り当てていないので、取り消しになる。
+    press(&mut app, "gx");
+    press(&mut app, "j");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(opened.borrow().len(), 1);
+}
