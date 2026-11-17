@@ -13,6 +13,7 @@ use crate::document::{Document, Item, Section, TaskItem};
 use crate::guard::{self, Landmarks};
 use crate::key::{self, FindError};
 use crate::logic::{completion, due, history, sort};
+use crate::project;
 use crate::sections::{SectionKey, SectionNames};
 use crate::store::{self, DataDir, FileKind, RawFile, ReadError, Stamp};
 use crate::task::{self, Status, Task};
@@ -54,29 +55,123 @@ pub enum EditedError {
     Write(#[from] WriteError),
 }
 
-/// 利用者が手で編集した内容 `edited` で `kind` のファイルを置き換える (TUI の `$EDITOR`)。
+/// 手で編集できるファイル (TUI の `$EDITOR`)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditTarget {
+    Data(FileKind),
+    /// プロジェクトファイル。タグは [`project::check_tag`] を通ったもの。
+    Project(String),
+}
+
+impl EditTarget {
+    pub fn path(&self, data_dir: &DataDir) -> PathBuf {
+        match self {
+            EditTarget::Data(kind) => data_dir.path(*kind),
+            EditTarget::Project(tag) => project::path(data_dir, tag),
+        }
+    }
+
+    /// 知らせに出す名前 (データディレクトリからの相対パス。`todo.md`・`projects/site.md`)。
+    pub fn name(&self) -> String {
+        match self {
+            EditTarget::Data(kind) => kind.file_name().to_string(),
+            EditTarget::Project(tag) => format!("{}/{tag}.md", project::DIR),
+        }
+    }
+
+    /// ファイル名 (`todo.md`・`site.md`)。編集するコピーに同じ名前を付けるため。
+    pub fn file_name(&self) -> String {
+        match self {
+            EditTarget::Data(kind) => kind.file_name().to_string(),
+            EditTarget::Project(tag) => format!("{tag}.md"),
+        }
+    }
+}
+
+/// 利用者が手で編集した内容 `edited` で `target` のファイルを置き換える (TUI の `$EDITOR`)。
 /// `original` は編集を始めたときに読んだ内容。
 ///
-/// Neovim 版の保存時の検証と同じ規則 ([`guard::hand_edit_problems`]) で確かめ、通らなければ書かない。
-/// 読んだときからファイルが変わっていれば書かない ([`WriteError::Changed`])。内容は手を加えずに
-/// (改行も ID も変えずに) 書く。Neovim 版で `:w` したときと同じく、並べ替えや期日のチェックもしない。
+/// Neovim 版の保存時の検証と同じ規則 ([`guard::hand_edit_problems`]・[`project::hand_edit_problems`]) で
+/// 確かめ、通らなければ書かない。読んだときからファイルが変わっていれば書かない ([`WriteError::Changed`])。
+/// 内容は手を加えずに (改行も ID も変えずに) 書く。Neovim 版で `:w` したときと同じく、並べ替えや期日の
+/// チェックもしない。
 pub fn write_edited(
     data_dir: &DataDir,
     names: &SectionNames,
-    kind: FileKind,
+    target: &EditTarget,
     original: &RawFile,
     edited: &[u8],
 ) -> Result<(), EditedError> {
     // 読めない文字があると、以後 gtodo がこのファイルを読めなくなる。
     let after =
         std::str::from_utf8(edited).map_err(|_| EditedError::Invalid(vec!["the file is not valid UTF-8".into()]))?;
-    let before = String::from_utf8_lossy(&original.bytes);
-    let problems = guard::hand_edit_problems(kind, &store::split_lines(&before), &store::split_lines(after), names);
+    let before = store::split_lines(&String::from_utf8_lossy(&original.bytes));
+    let after = store::split_lines(after);
+    let problems = match target {
+        EditTarget::Data(kind) => guard::hand_edit_problems(*kind, &before, &after, names),
+        EditTarget::Project(tag) => project::hand_edit_problems(tag, &before, &after),
+    };
     if !problems.is_empty() {
         return Err(EditedError::Invalid(problems));
     }
-    atomic::write_bytes(&data_dir.path(kind), edited, original.stamp.as_ref())?;
+    atomic::write_bytes(&target.path(data_dir), edited, original.stamp.as_ref())?;
     Ok(())
+}
+
+/// プロジェクトファイルを作れない・書き換えられないとき。
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectError {
+    #[error(transparent)]
+    Tag(#[from] project::TagError),
+    #[error("no project file for {0:?} (projects/{0}.md)")]
+    NotFound(String),
+    #[error("{} already exists", .0.display())]
+    Exists(PathBuf),
+    #[error("projects/{tag}.md: {source}")]
+    Status { tag: String, source: project::StatusError },
+    #[error(transparent)]
+    Read(#[from] ReadError),
+    #[error(transparent)]
+    Write(#[from] WriteError),
+}
+
+/// `projects/<tag>.md` を Lua 版と同じ雛形で作る。すでにあればエラー (上書きしない)。作ったパスを返す。
+pub fn create_project(data_dir: &DataDir, tag: &str, today: NaiveDate) -> Result<PathBuf, ProjectError> {
+    let tag = project::check_tag(tag)?;
+    let path = project::path(data_dir, &tag);
+    let dir = data_dir.root().join(project::DIR);
+    std::fs::create_dir_all(&dir).map_err(|source| WriteError::Io {
+        op: "create",
+        path: dir,
+        source,
+    })?;
+    match atomic::write_bytes(&path, project::template(&tag, today).as_bytes(), None) {
+        Ok(_) => Ok(path),
+        // 書く直前にできていた (確かめてから書くまでの間に、他のプロセスが作ったものを含む)。
+        Err(WriteError::Changed { .. }) => Err(ProjectError::Exists(path)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `projects/<tag>.md` の `status:` を書き換える (アーカイブ・復元)。書き換えたか (すでにその値なら偽) を返す。
+pub fn set_project_status(data_dir: &DataDir, tag: &str, status: &str) -> Result<bool, ProjectError> {
+    let tag = project::check_tag(tag)?;
+    let path = project::path(data_dir, &tag);
+    let file = store::read_file(&path)?;
+    let Some(stamp) = file.stamp else {
+        return Err(ProjectError::NotFound(tag));
+    };
+    let lines = project::with_status(&file.lines, status).map_err(|source| ProjectError::Status {
+        tag: tag.clone(),
+        source,
+    })?;
+    match lines {
+        Some(lines) => {
+            atomic::write_lines(&path, &lines, file.crlf, Some(&stamp))?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 /// 無いファイルを Lua 版 `io.ensure_files` と同じ雛形で作る。
@@ -746,25 +841,93 @@ mod tests {
         let todo = "# Todo\r\n## Today\r\n## Next\r\n## Waiting\r\n## Someday\r\n";
         fs::write(&path, todo).unwrap();
         let original = store::read_raw(&path).unwrap();
+        let todo_target = EditTarget::Data(FileKind::Todo);
 
         // 足りないセクションがあれば書かない。
-        let err = write_edited(&data_dir, &names, FileKind::Todo, &original, b"## Today\n").unwrap_err();
+        let err = write_edited(&data_dir, &names, &todo_target, &original, b"## Today\n").unwrap_err();
         assert_eq!(
             err.to_string(),
             "required sections are missing: ## Next, ## Waiting, ## Someday"
         );
-        let err = write_edited(&data_dir, &names, FileKind::Todo, &original, b"\xff").unwrap_err();
+        let err = write_edited(&data_dir, &names, &todo_target, &original, b"\xff").unwrap_err();
         assert!(matches!(err, EditedError::Invalid(_)), "{err}");
         assert_eq!(fs::read_to_string(&path).unwrap(), todo);
 
         // 改行・ID の無いタスク・末尾の改行の無さも、書かれたまま。並べ替えもしない。
         let edited = "# Todo\r\n## Today\r\n- [ ] b\r\n- [ ] a due:2026-01-01\r\n## Next\r\n## Waiting\r\n## Someday";
-        write_edited(&data_dir, &names, FileKind::Todo, &original, edited.as_bytes()).unwrap();
+        write_edited(&data_dir, &names, &todo_target, &original, edited.as_bytes()).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), edited);
 
         // 読んだときから変わっていれば書かない。
-        let err = write_edited(&data_dir, &names, FileKind::Todo, &original, todo.as_bytes()).unwrap_err();
+        let err = write_edited(&data_dir, &names, &todo_target, &original, todo.as_bytes()).unwrap_err();
         assert!(matches!(err, EditedError::Write(WriteError::Changed { .. })), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+    }
+
+    #[test]
+    fn project_files_are_created_once_and_archived_by_their_status_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let path = create_project(&data_dir, "+site", today()).unwrap();
+        assert_eq!(path, dir.path().join("projects/site.md"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), project::template("site", today()));
+        // 上書きしない。
+        fs::write(&path, "---\ntitle: 手で書いた\nstatus: active\n---\n").unwrap();
+        assert!(matches!(
+            create_project(&data_dir, "site", today()),
+            Err(ProjectError::Exists(_))
+        ));
+        assert!(matches!(
+            create_project(&data_dir, "../x", today()),
+            Err(ProjectError::Tag(project::TagError::Unsafe { .. }))
+        ));
+        assert!(!dir.path().join("x.md").exists());
+
+        assert!(set_project_status(&data_dir, "site", project::ARCHIVED).unwrap());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "---\ntitle: 手で書いた\nstatus: archived\n---\n",
+            "only the status line changes"
+        );
+        assert!(!set_project_status(&data_dir, "site", project::ARCHIVED).unwrap());
+        assert!(matches!(
+            set_project_status(&data_dir, "none", project::ARCHIVED),
+            Err(ProjectError::NotFound(_))
+        ));
+        fs::write(&path, "# 見出しだけ\n").unwrap();
+        assert!(matches!(
+            set_project_status(&data_dir, "site", project::ACTIVE),
+            Err(ProjectError::Status { .. })
+        ));
+    }
+
+    #[test]
+    fn hand_edits_of_project_files_follow_the_neovim_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let path = create_project(&data_dir, "site", today()).unwrap();
+        let original = store::read_raw(&path).unwrap();
+        let target = EditTarget::Project("site".into());
+        assert_eq!(target.name(), "projects/site.md");
+        let text = String::from_utf8(original.bytes.clone()).unwrap();
+        let err = write_edited(
+            &data_dir,
+            &SectionNames::default(),
+            &target,
+            &original,
+            text.replace("tag: site", "tag: other").as_bytes(),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "tag must be the file name (site)");
+        let edited = text.replace("title:", "title: サイト改修");
+        write_edited(
+            &data_dir,
+            &SectionNames::default(),
+            &target,
+            &original,
+            edited.as_bytes(),
+        )
+        .unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), edited);
     }
 

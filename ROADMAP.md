@@ -81,7 +81,7 @@ CLI (`gtodo`)
 画面と操作の決め事は、決定事項の「M3」以降を参照。ファイルの形は Neovim 版と同じにし、どちらで作ったものもそのまま使えるようにする。
 
 - [x] Waiting タスクの期限警告 (TUI)
-- [ ] プロジェクトファイル (`projects/<tag>.md`): 作成・一覧と進捗・アーカイブと復元・手で編集したときの検証 (CLI の `gtodo project`、TUI のプロジェクト画面)
+- [x] プロジェクトファイル (`projects/<tag>.md`): 作成・一覧と進捗・アーカイブと復元・手で編集したときの検証 (CLI の `gtodo project`、TUI のプロジェクト画面)
 - [ ] テンプレート (`templates/<name>.md`): 作成・編集・挿入・アーカイブと復元 (CLI の `gtodo template`、TUI のテンプレート画面)
 - [ ] タスクの分割・プロジェクトへの昇格 (CLI の `gtodo split`、TUI の `p`)
 

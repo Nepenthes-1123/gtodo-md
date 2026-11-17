@@ -20,7 +20,8 @@ use gtodo_core::input;
 use gtodo_core::key::task_key;
 use gtodo_core::lock::Lock;
 use gtodo_core::logic::due::DueOutcome;
-use gtodo_core::ops::{self, Destination, EditedError, Moved, Wait};
+use gtodo_core::ops::{self, Destination, EditTarget, EditedError, Moved, ProjectError, Wait};
+use gtodo_core::project;
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::{self, DataDir, FileKind, RawFile, Stamp};
 use gtodo_core::task::{Status, Task};
@@ -33,6 +34,7 @@ use super::input::{Edit, LineInput};
 use super::kanban::{self, KanbanView};
 use super::keymap::{Action, Fed, Key, Keymap, TAB_COUNT};
 use super::markdown;
+use super::projects::{self, ProjectsView};
 use super::queue;
 use super::search::{self, SearchView};
 use crate::commands::{add, edit};
@@ -61,6 +63,9 @@ pub const TABS: [Tab; TAB_COUNT] = [
 
 /// 起動したときに開くタブ (Today)。
 const START_TAB: usize = 1;
+
+/// Done のタブの位置 (done.md のタスクを、プロジェクトの進捗を数えるのに使う)。
+const DONE_TAB: usize = 5;
 
 impl Tab {
     pub fn file(self) -> FileKind {
@@ -141,6 +146,10 @@ pub enum Mode {
     },
     /// 追加・編集のフォーム。
     Form(Box<Form>),
+    /// 新しいプロジェクトの名前を尋ねている。
+    NewProject {
+        input: LineInput,
+    },
     /// 開くリンクを選んでいる (リンクが複数あるとき)。
     ChooseLink {
         links: Vec<String>,
@@ -148,7 +157,8 @@ pub enum Mode {
     },
     /// `$EDITOR` で編集した内容が保存時の検証に通らず、もう一度編集するか尋ねている。
     FixEdit {
-        file: FileKind,
+        /// データディレクトリからの相対パス (`todo.md`・`projects/site.md`)。
+        name: String,
         problems: Vec<String>,
     },
 }
@@ -185,7 +195,7 @@ pub type EditorRunner = Box<dyn Fn(&Path, Option<usize>) -> std::io::Result<bool
 /// 書かれてしまい、Neovim 版の保存時の検証で止めることも、編集している間に Neovim 版などが書いた
 /// 変更を潰さないよう確かめることもできないため。閉じた後に検証し、読んだときの状態と照らして書き戻す。
 struct EditSession {
-    file: FileKind,
+    target: EditTarget,
     /// 編集を始めたときに読んだ内容と状態。
     original: RawFile,
     /// コピーを置いた一時ディレクトリ。セッションを捨てると一緒に消える。
@@ -201,6 +211,7 @@ pub enum Screen {
     Queue,
     Search,
     Kanban,
+    Projects,
 }
 
 /// Queue の状態。
@@ -272,6 +283,7 @@ pub struct App {
     pub queue: QueueView,
     pub search: SearchView,
     pub kanban: KanbanView,
+    pub projects: ProjectsView,
     pub mode: Mode,
     /// 押しかけのキー列 (`g` の後など)。
     pub pending: Vec<Key>,
@@ -316,6 +328,8 @@ pub struct App {
     search_stale: bool,
     /// カンバンを開いていない間に todo.md・done.md が変わり、作り直しが要る。
     kanban_stale: bool,
+    /// inbox.md・todo.md・done.md が変わり、プロジェクトの進捗を数え直す必要がある。
+    projects_stale: bool,
     /// Queue を作るために持っておく、最後に読んだ inbox.md と todo.md。
     inbox_doc: Document,
     todo_doc: Document,
@@ -350,6 +364,7 @@ impl App {
             queue: QueueView::default(),
             search: SearchView::default(),
             kanban: KanbanView::default(),
+            projects: ProjectsView::default(),
             mode: Mode::Normal,
             pending: Vec::new(),
             messages: Vec::new(),
@@ -375,6 +390,7 @@ impl App {
             queue_stale: true,
             search_stale: true,
             kanban_stale: true,
+            projects_stale: true,
             inbox_doc: Document::default(),
             todo_doc: Document::default(),
         };
@@ -408,7 +424,7 @@ impl App {
     /// `Ctrl-c` で終えたときなど) のものもコピーを残して返す (編集した内容を黙って消さないため)。
     pub fn finish(&mut self) -> Vec<PathBuf> {
         if let Some(session) = self.edit.take() {
-            let name = session.file.file_name();
+            let name = session.target.file_name();
             self.kept_copies.push(session.dir.keep().join(name));
         }
         std::mem::take(&mut self.kept_copies)
@@ -443,6 +459,11 @@ impl App {
         self.reload();
         self.notice_inbox_due();
         self.notice_waiting_due();
+        if self.screen == Screen::Projects
+            && (self.projects_stale || self.projects.signature != projects::signature(&self.projects_dir()))
+        {
+            self.refresh_projects();
+        }
     }
 
     /// 期日が近い (2 日後まで。過ぎたものを含む) Waiting のタスクを知らせる (Neovim 版の警告と同じ条件と文言)。
@@ -526,6 +547,7 @@ impl App {
             Mode::Form(_) => return self.handle_form(key),
             Mode::ChooseLink { .. } => return self.handle_choose_link(key),
             Mode::FixEdit { .. } => return self.handle_fix_edit(key),
+            Mode::NewProject { .. } => return self.handle_new_project(key),
         }
         if self.screen == Screen::Search && self.search.typing {
             return self.handle_search_input(key);
@@ -548,7 +570,7 @@ impl App {
 
     pub fn handle_paste(&mut self, text: &str) {
         match &mut self.mode {
-            Mode::WaitInput { input, .. } => input.paste(text),
+            Mode::WaitInput { input, .. } | Mode::NewProject { input } => input.paste(text),
             Mode::Form(form) => form.paste(text),
             Mode::Normal if self.screen == Screen::Search && self.search.typing => {
                 self.search.input.paste(text);
@@ -619,11 +641,26 @@ impl App {
                     self.search.status = self.search.status.next();
                     self.search.run(true);
                 }
+                Screen::Projects => {
+                    self.projects.archived = !self.projects.archived;
+                    self.projects.cursor = 0;
+                    self.projects.offset = 0;
+                    self.refresh_projects();
+                }
                 Screen::List | Screen::Kanban => {}
             },
             Action::Search => self.open_search(),
             Action::OpenLink => self.open_link(),
+            Action::Open if self.screen == Screen::Projects => self.search_project(),
             Action::Open => self.open_in_list(),
+            Action::OpenProjects => self.open_projects(),
+            Action::Archive => self.archive_project(),
+            Action::EditFile if self.screen == Screen::Projects => self.edit_project(),
+            Action::Add if self.screen == Screen::Projects => {
+                self.mode = Mode::NewProject {
+                    input: LineInput::new(""),
+                };
+            }
             Action::EditFile => self.start_edit(),
             Action::Back => self.screen = Screen::List,
             Action::MoveToday => self.move_selected(SectionKey::Today, Wait::Keep),
@@ -649,6 +686,7 @@ impl App {
                 let focus = self.kanban.focus;
                 (self.kanban.columns[focus].len(), &mut self.kanban.cursors[focus])
             }
+            Screen::Projects => (self.projects.rows.len(), &mut self.projects.cursor),
         };
         if len == 0 {
             return;
@@ -685,6 +723,8 @@ impl App {
                 file: card.file,
                 section: card.section,
             }),
+            // 並んでいるのはタスクではなくプロジェクト。
+            Screen::Projects => None,
         }
     }
 
@@ -834,7 +874,7 @@ impl App {
         // Queue から開いたときは inbox へ入れる (どのセクションとも決まっていないため)。
         let tab = match self.screen {
             Screen::List => self.tab(),
-            Screen::Queue | Screen::Search => Tab::Inbox,
+            Screen::Queue | Screen::Search | Screen::Projects => Tab::Inbox,
             // 選んでいる列のセクションへ入れる (Done の列からは inbox へ)。
             Screen::Kanban => kanban::SECTION_COLUMNS
                 .get(self.kanban.focus)
@@ -866,13 +906,13 @@ impl App {
                 contexts.insert(c.to_string());
             }
         }
-        if let Ok(entries) = std::fs::read_dir(self.ws.data_dir.root().join("projects")) {
-            for path in entries.flatten().map(|e| e.path()) {
-                if path.extension().is_some_and(|e| e == "md")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                {
-                    projects.insert(stem.to_string());
-                }
+        // アーカイブしたプロジェクトは候補から外す (Neovim 版と同じ)。読めないファイルは候補にしないだけ。
+        let files = project::list(&self.ws.data_dir, &mut Vec::new()).unwrap_or_default();
+        for file in &files {
+            if file.archived {
+                projects.remove(&file.tag);
+            } else {
+                projects.insert(file.tag.clone());
             }
         }
         (projects.into_iter().collect(), contexts.into_iter().collect())
@@ -967,11 +1007,24 @@ impl App {
                 _ => (FileKind::Todo, None),
             },
         };
-        let path = self.ws.data_dir.path(file);
+        self.edit_file(EditTarget::Data(file), key);
+    }
+
+    /// `target` のコピーを作り、エディタで開くよう求める。`key` のタスクがあれば、カーソルをその行に置く。
+    /// 無いファイルは雛形で作ってから開く (書き戻すときに、作られたファイルと食い違わないように)。
+    fn edit_file(&mut self, target: EditTarget, key: Option<String>) {
+        let path = target.path(&self.ws.data_dir);
         let mut original = store::read_raw(&path);
         if matches!(&original, Ok(raw) if raw.stamp.is_none()) {
-            // 無いファイルは雛形で作ってから開く (書き戻すときに、作られたファイルと食い違わないように)。
-            if self.write(false, |_| Ok(())).is_none() {
+            let created = self.write(false, |ws| match &target {
+                // 無いデータファイルは、書き込む前の準備 (`ensure_files`) で作られる。
+                EditTarget::Data(_) => Ok(()),
+                EditTarget::Project(tag) => match ops::create_project(&ws.data_dir, tag, ws.today) {
+                    Ok(_) | Err(ProjectError::Exists(_)) => Ok(()),
+                    Err(e) => Err(e.into()),
+                },
+            });
+            if created.is_none() {
                 return;
             }
             original = store::read_raw(&path);
@@ -981,7 +1034,7 @@ impl App {
             Err(e) => return self.message(Level::Error, e.to_string()),
         };
         let Ok(text) = std::str::from_utf8(&original.bytes) else {
-            let text = format!("{} is not valid UTF-8", file.file_name());
+            let text = format!("{} is not valid UTF-8", target.name());
             return self.message(Level::Error, text);
         };
         let line = key.and_then(|key| {
@@ -995,10 +1048,10 @@ impl App {
             .prefix("gtodo-edit-")
             .tempdir()
             .and_then(|dir| {
-                let copy = dir.path().join(file.file_name());
+                let copy = dir.path().join(target.file_name());
                 fs::write(&copy, &original.bytes)?;
                 Ok(EditSession {
-                    file,
+                    target,
                     original,
                     dir,
                     copy,
@@ -1025,7 +1078,7 @@ impl App {
     pub fn run_editor(&mut self) {
         self.editor_requested = false;
         let Some(session) = self.edit.take() else { return };
-        let name = session.file.file_name();
+        let name = session.target.name();
         self.messages.clear();
         match (self.editor)(&session.copy, session.line) {
             Ok(true) => {}
@@ -1060,7 +1113,7 @@ impl App {
             Changed,
         }
         let saved = self.write(false, |ws| {
-            match ops::write_edited(&ws.data_dir, &ws.names, session.file, &session.original, &edited) {
+            match ops::write_edited(&ws.data_dir, &ws.names, &session.target, &session.original, &edited) {
                 Ok(()) => Ok(Saved::Yes),
                 Err(EditedError::Invalid(problems)) => Ok(Saved::Invalid(problems)),
                 Err(EditedError::Write(WriteError::Changed { .. })) => Ok(Saved::Changed),
@@ -1072,7 +1125,7 @@ impl App {
             Some(Saved::Invalid(problems)) => {
                 self.message(Level::Error, format!("{name} was not saved: {}", problems.join("; ")));
                 self.mode = Mode::FixEdit {
-                    file: session.file,
+                    name: name.clone(),
                     problems,
                 };
                 self.edit = Some(session);
@@ -1080,7 +1133,7 @@ impl App {
             // 書けなかった。編集した内容を失わないよう、コピーを残して場所を知らせる。
             // 場所は切り詰められないよう、行を分けて出す。
             Some(Saved::Changed) => {
-                let kept = session.dir.keep().join(name);
+                let kept = session.dir.keep().join(session.target.file_name());
                 let text = format!(
                     "{name} was changed while you were editing and was not saved. Your copy:\n{}",
                     kept.display()
@@ -1089,7 +1142,7 @@ impl App {
                 self.kept_copies.push(kept);
             }
             None => {
-                let kept = session.dir.keep().join(name);
+                let kept = session.dir.keep().join(session.target.file_name());
                 let text = format!("{name} was not saved. Your copy:\n{}", kept.display());
                 self.message(Level::Warning, text);
                 self.kept_copies.push(kept);
@@ -1099,9 +1152,10 @@ impl App {
 
     /// 保存時の検証に通らなかったとき。`y` でもう一度編集し、`n`・`Esc` で編集した内容を捨てる。
     fn handle_fix_edit(&mut self, key: Key) {
-        let Mode::FixEdit { file, .. } = self.mode else {
+        let Mode::FixEdit { name, .. } = &self.mode else {
             return;
         };
+        let name = name.clone();
         if key.ctrl || key.alt {
             return;
         }
@@ -1115,10 +1169,150 @@ impl App {
                 self.mode = Mode::Normal;
                 self.edit = None;
                 self.messages.clear();
-                self.message(Level::Info, format!("discarded the changes to {}", file.file_name()));
+                self.message(Level::Info, format!("discarded the changes to {name}"));
             }
             _ => {}
         }
+    }
+
+    fn projects_dir(&self) -> PathBuf {
+        self.ws.data_dir.root().join(project::DIR)
+    }
+
+    /// プロジェクト画面を開く。選んでいるタスクにプロジェクトがあれば、それを選ぶ
+    /// (アーカイブしたプロジェクトなら、アーカイブしたものの表示で)。
+    fn open_projects(&mut self) {
+        let wanted = self
+            .selected()
+            .and_then(|s| s.row.task.project.clone())
+            .filter(|p| !p.is_empty());
+        let reopen = self.screen != Screen::Projects;
+        self.screen = Screen::Projects;
+        self.refresh_projects();
+        let Some(tag) = wanted else {
+            if reopen {
+                self.projects.cursor = 0;
+                self.projects.offset = 0;
+            }
+            return;
+        };
+        if !self.projects.select_tag(&tag) {
+            self.projects.archived = !self.projects.archived;
+            self.refresh_projects();
+            if !self.projects.select_tag(&tag) {
+                self.projects.archived = !self.projects.archived;
+                self.refresh_projects();
+            }
+        }
+    }
+
+    /// プロジェクトの一覧と進捗を作り直す。選んでいたプロジェクトは選んだまま。
+    fn refresh_projects(&mut self) {
+        let mut warnings = Vec::new();
+        let files = project::list(&self.ws.data_dir, &mut warnings).unwrap_or_else(|e| {
+            warnings.push(format!("failed to read {}: {e}", self.projects_dir().display()));
+            Vec::new()
+        });
+        let done = &self.tabs[DONE_TAB].rows;
+        let progress = project::progress(
+            project::tasks(&self.inbox_doc).chain(project::tasks(&self.todo_doc)),
+            done.iter().map(|r| r.task.as_ref()),
+        );
+        let keep = self.projects.selected().map(|r| r.tag.clone());
+        self.projects.rows = projects::rows(&files, &progress, self.projects.archived);
+        self.projects.signature = projects::signature(&self.projects_dir());
+        self.projects_stale = false;
+        if !keep.is_some_and(|tag| self.projects.select_tag(&tag)) {
+            self.projects.cursor = self.projects.cursor.min(self.projects.rows.len().saturating_sub(1));
+        }
+        for w in warnings {
+            self.config_warning(w);
+        }
+    }
+
+    /// 選んでいるプロジェクトのタスクを検索で開く (`+tag`)。
+    fn search_project(&mut self) {
+        let Some(tag) = self.projects.selected().map(|r| r.tag.clone()) else {
+            return;
+        };
+        self.open_search();
+        self.search.input = LineInput::new(&format!("+{tag} "));
+        self.search.run(false);
+        // 結果があれば、一覧と同じキーで操作できるよう結果の中へ移る。
+        self.search.typing = self.search.results.is_empty();
+    }
+
+    /// 選んでいるプロジェクトのファイルを `$EDITOR` で開く (無ければ作ってから)。
+    fn edit_project(&mut self) {
+        let Some(tag) = self.projects.selected().map(|r| r.tag.clone()) else {
+            return;
+        };
+        match project::check_tag(&tag) {
+            Ok(tag) => {
+                self.projects_stale = true;
+                self.edit_file(EditTarget::Project(tag), None);
+            }
+            Err(e) => self.message(Level::Error, e.to_string()),
+        }
+    }
+
+    /// 新しいプロジェクトの名前の入力。`Enter` で作って `$EDITOR` で開き、`Esc` で取り消す。
+    fn handle_new_project(&mut self, key: Key) {
+        let Mode::NewProject { input } = &mut self.mode else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Enter => {
+                let tag = match project::check_tag(input.text()) {
+                    Ok(tag) => tag,
+                    // 直せるように、入力は残す。
+                    Err(e) => return self.message(Level::Error, e.to_string()),
+                };
+                self.mode = Mode::Normal;
+                self.messages.clear();
+                let created = self.write(false, |ws| Ok(ops::create_project(&ws.data_dir, &tag, ws.today)?));
+                if created.is_some() {
+                    self.message(Level::Info, format!("created {}/{tag}.md", project::DIR));
+                    self.projects.archived = false;
+                    self.refresh_projects();
+                    self.projects.select_tag(&tag);
+                    self.edit_file(EditTarget::Project(tag), None);
+                }
+            }
+            _ => {
+                input.handle(key);
+            }
+        }
+    }
+
+    /// 選んでいるプロジェクトをアーカイブする (アーカイブしたものの表示では復元する)。
+    fn archive_project(&mut self) {
+        if self.screen != Screen::Projects {
+            return;
+        }
+        let Some(row) = self.projects.selected() else { return };
+        let tag = row.tag.clone();
+        if !row.has_file {
+            let text = format!(
+                "{}/{tag}.md does not exist, so there is nothing to archive",
+                project::DIR
+            );
+            return self.message(Level::Warning, text);
+        }
+        let (status, done, already) = if self.projects.archived {
+            (project::ACTIVE, "restored", "active")
+        } else {
+            (project::ARCHIVED, "archived", "archived")
+        };
+        self.messages.clear();
+        let changed = self.write(false, |ws| Ok(ops::set_project_status(&ws.data_dir, &tag, status)?));
+        match changed {
+            Some(true) => self.message(Level::Info, format!("{done} {tag}")),
+            Some(false) => self.message(Level::Info, format!("{tag} is already {already}")),
+            None => {}
+        }
+        self.refresh_projects();
     }
 
     fn handle_confirm_cancel(&mut self, key: Key) {
@@ -1289,6 +1483,7 @@ impl App {
             Screen::Queue => self.queue.select_key(key),
             Screen::Search => self.search.select_key(key),
             Screen::Kanban => self.kanban.select_key(key),
+            Screen::Projects => false,
         };
     }
 
@@ -1427,6 +1622,7 @@ impl App {
                 search_changed |= SEARCH_FILES.contains(kind);
                 // カンバンに出るのは todo.md と done.md (inbox.md は出さない)。
                 kanban_changed |= matches!(kind, FileKind::Todo | FileKind::Done);
+                self.projects_stale |= matches!(kind, FileKind::Inbox | FileKind::Todo | FileKind::Done);
             }
         }
         if kanban_changed {

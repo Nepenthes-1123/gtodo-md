@@ -4,6 +4,7 @@ pub mod done;
 pub mod edit;
 pub mod list;
 pub mod move_task;
+pub mod project;
 pub mod queue;
 pub mod search;
 pub mod sort;

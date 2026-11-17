@@ -343,6 +343,10 @@ const READ_ONLY_COMMANDS: &[&[&str]] = &[
     &["queue", "--wait"],
     &["stats"],
     &["stats", "--json"],
+    &["project", "list"],
+    &["project", "list", "--archived", "--json"],
+    &["project", "show", "work"],
+    &["project", "show", "+work", "--json"],
 ];
 
 /// 読むだけのコマンドが書き込むと、Neovim 側の未保存の編集が破棄されるため、一切書かないこと。
@@ -1115,4 +1119,57 @@ fn an_edited_inbox_task_that_is_due_stays_when_it_is_not_moved_automatically() {
     assert!(read(&f, "inbox.md").contains("id:aaaaaa"));
     assert_eq!(read(&f, "todo.md"), "# Todo\n\n## Today\n");
     assert!(String::from_utf8_lossy(&out.stderr).contains("due tasks in inbox.md"));
+}
+
+#[test]
+fn projects_are_created_listed_with_progress_and_archived() {
+    let f = sample();
+    // ファイルが無くても、タスクに使われているタグなら表示できる (作り方を添える)。
+    let shown = f.stdout(&["project", "show", "work"]);
+    assert!(
+        shown.contains("no project file (create it with `gtodo project new work`)"),
+        "{shown}"
+    );
+    assert_eq!(f.stdout(&["project", "list"]), "No projects.\n");
+
+    let created = f.stdout(&["project", "new", "+work"]);
+    assert!(
+        created.starts_with("created ") && created.trim_end().ends_with("work.md"),
+        "{created}"
+    );
+    let file = fs::read_to_string(f.data_dir().join("projects/work.md")).unwrap();
+    assert!(file.starts_with("---\ntitle:\ntag: work\ncreated: "), "{file}");
+    let out = f.run(&["project", "new", "work"]);
+    assert!(!out.status.success(), "creating it again must fail");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already exists"));
+
+    // 完了は done.md と完了済みのタスク、未完了は inbox.md と todo.md (cancelled.md は数えない)。
+    assert_eq!(f.stdout(&["project", "list"]), "work  [███░░░░░░░] 33% (1/3 done)\n");
+    let shown = f.stdout(&["project", "show", "work"]);
+    assert!(shown.contains("  status:  active\n"), "{shown}");
+    assert!(shown.contains("[ ] 受信2 +work  [inbox.md]"), "{shown}");
+    assert!(shown.contains("[ ] (A) 今日1 +work @office  [Today]"), "{shown}");
+
+    assert_eq!(f.stdout(&["project", "archive", "work"]), "archived work\n");
+    assert_eq!(f.stdout(&["project", "archive", "work"]), "work is already archived\n");
+    assert_eq!(f.stdout(&["project", "list"]), "No projects.\n");
+    let json: serde_json::Value =
+        serde_json::from_str(&f.stdout(&["project", "list", "--archived", "--json"])).unwrap();
+    assert_eq!(json[0]["tag"], "work");
+    assert_eq!(json[0]["status"], "archived");
+    assert_eq!((json[0]["done"].as_u64(), json[0]["open"].as_u64()), (Some(1), Some(2)));
+    assert_eq!(f.stdout(&["project", "restore", "work"]), "restored work\n");
+}
+
+#[test]
+fn project_names_that_cannot_be_file_names_are_refused() {
+    let f = sample();
+    let out = f.run(&["project", "new", "../outside"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(r#"use "outside" instead"#), "{stderr}");
+    assert!(!f.data_dir().join("outside.md").exists() && !f.data_dir().join("projects").exists());
+    let out = f.run(&["project", "show", "nothing"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no project file (projects/nothing.md) and no tasks"));
 }
