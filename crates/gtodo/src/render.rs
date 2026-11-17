@@ -42,13 +42,27 @@ pub fn summary(task: &Task) -> String {
 /// ` +project @context` (無いものは省く)。
 pub fn tags(task: &Task) -> String {
     let mut s = String::new();
-    if let Some(p) = task.project.as_deref().filter(|p| !p.is_empty()) {
-        s.push_str(&format!(" +{p}"));
-    }
-    if let Some(c) = task.context.as_deref().filter(|c| !c.is_empty()) {
-        s.push_str(&format!(" @{}", c.trim_start_matches('@')));
+    for tag in [project_tag(task), context_tag(task)].into_iter().flatten() {
+        s.push(' ');
+        s.push_str(&tag);
     }
     s
+}
+
+/// `+project`。無ければ `None`。
+pub fn project_tag(task: &Task) -> Option<String> {
+    task.project
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .map(|p| format!("+{p}"))
+}
+
+/// `@context`。無ければ `None`。
+pub fn context_tag(task: &Task) -> Option<String> {
+    task.context
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .map(|c| format!("@{}", c.trim_start_matches('@')))
 }
 
 #[derive(Serialize)]

@@ -3,7 +3,7 @@
 GTD 志向の Markdown Todo 管理ツール [gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) の TUI/CLI 版です。
 Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled.md` / `projects/*.md`) を読み書きし、同じデータを同時に使えることを目指しています。
 
-開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`undone`・`cancel`・`move`・`edit`・`sort` が使えます。
+開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`undone`・`cancel`・`move`・`edit`・`sort`、TUI の一覧とタスクの操作が使えます。
 
 ## 使い方
 
@@ -45,6 +45,28 @@ gtodo sort                    # 期日が来たタスクを Today へ移し、to
 - その日まだ行っていなければ、日次の整理 (完了したタスクを `done.md` へ移し、期日が来たタスクを Today へ移す) をする
 
 Neovim 版で開いているファイルを書き換えた場合、Neovim 側の未保存の編集は破棄されます (Neovim 版の仕様。undo で戻せます)。
+
+## TUI
+
+`gtodo` を引数なしで実行すると (`gtodo tui` でも) TUI が開きます。今はセクションごとの一覧とタスクの操作ができます (追加・検索・Queue・カンバンなどは開発中)。
+
+| キー | 動作 |
+| --- | --- |
+| `j` / `k` (`↓` / `↑`) | 上下に移る。`gg` / `G` で先頭・末尾、`Ctrl-d` / `Ctrl-u` で半ページ、`Ctrl-f` / `Ctrl-b` で 1 ページ |
+| `h` / `l` (`gT` / `gt`、`←` / `→`)、`1`〜`7` | タブを切り替える (Inbox・Today・Next・Waiting・Someday・Done・Cancelled) |
+| `x` | 完了と未完了を切り替える |
+| `d` / `n` / `w` / `s` | Today・Next・Waiting・Someday へ移す。`w` は待ち先を尋ねる (Waiting にあるタスクでは待ち先を変える。空にすると消す) |
+| `c` | キャンセルする (確認あり) |
+| `o` | 期日が来たタスクを Today へ移し、並べ替える (`gtodo sort` と同じ) |
+| `?` | ヘルプ |
+| `q` / `Ctrl-c` | 終了 |
+| `Esc` | 押しかけのキー (`g` の後など)・入力・確認を取り消す。終了はしない |
+
+最下段には、選んでいるタスクで押したときに起きることを出します。Done と Cancelled のタブは見るだけです。
+`NO_COLOR` を設定すると色を使いません。
+
+操作のたびに、書き込むコマンドと同じくロックを持ってファイルを読み直してから書くので、表示が古くても Neovim 版の変更を潰しません。
+他のツールがファイルを書き換えると、1 秒以内に表示へ反映します。起動したときと日付が変わったときに、日次の整理をします (その日すでに済んでいれば何も書きません)。
 
 ## 設定
 

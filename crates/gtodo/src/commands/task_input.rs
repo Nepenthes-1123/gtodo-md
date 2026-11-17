@@ -28,10 +28,10 @@ pub fn parse_text(text: &str, today: NaiveDate, action: &str) -> Result<Task> {
             bail!("{tag}: cannot be set when {action} a task");
         }
     }
-    if let Some(created) = &task.created {
-        if !is_date(created) {
-            bail!("invalid created date {created:?} (use YYYY-MM-DD)");
-        }
+    if let Some(created) = &task.created
+        && !is_date(created)
+    {
+        bail!("invalid created date {created:?} (use YYYY-MM-DD)");
     }
     Ok(task)
 }

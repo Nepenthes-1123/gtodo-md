@@ -1,5 +1,6 @@
 mod commands;
 mod render;
+mod tui;
 mod workspace;
 mod writing;
 
@@ -21,18 +22,21 @@ use crate::workspace::Workspace;
 
 /// GTD-style todo manager backed by Markdown, compatible with gtodo-md.nvim.
 #[derive(Debug, Parser)]
-#[command(name = "gtodo", version, arg_required_else_help = true)]
+#[command(name = "gtodo", version)]
 struct Cli {
     /// Data directory [default: GTODO_DATA_DIR, data_dir in config.json, $XDG_DATA_HOME/gtodo-md, or Neovim's old default stdpath("data")/gtodo-md if only that exists]
     #[arg(long, global = true, value_name = "DIR")]
     data_dir: Option<PathBuf>,
 
+    // 省略すると TUI を開く。
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Open the TUI (also opens when no command is given)
+    Tui,
     /// Add a task (to inbox.md unless --to is given)
     Add {
         /// Task text; +project, @context, due:, wait: and a leading (A) are read as in task lines
@@ -160,12 +164,22 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli, out: &mut String) -> Result<()> {
+    let command = cli.command.unwrap_or(Command::Tui);
+    if let Command::Tui = command {
+        let mut warnings = Vec::new();
+        let data_dir = config::resolve_data_dir(cli.data_dir, &ProcessEnv, Platform::current(), &mut |m| {
+            warnings.push(m)
+        })?;
+        return tui::run(data_dir, warnings);
+    }
+
     let mut warn = |msg: String| eprintln!("gtodo: warning: {msg}");
     let data_dir = config::resolve_data_dir(cli.data_dir, &ProcessEnv, Platform::current(), &mut warn)?;
     let today = Local::now().date_naive();
     let ws = Workspace::open(data_dir, today, &mut warn)?;
 
-    match cli.command {
+    match command {
+        Command::Tui => unreachable!("handled above"),
         Command::Add {
             text,
             to,

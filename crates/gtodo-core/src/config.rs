@@ -77,10 +77,10 @@ pub fn resolve_data_dir(
     if let Some(dir) = env.var("GTODO_DATA_DIR") {
         return expand_home(PathBuf::from(dir), env, platform);
     }
-    if let Some((path, explicit)) = config_path(env, platform) {
-        if let Some(dir) = read_config_data_dir(&path, explicit, env, platform, warn)? {
-            return Ok(dir);
-        }
+    if let Some((path, explicit)) = config_path(env, platform)
+        && let Some(dir) = read_config_data_dir(&path, explicit, env, platform, warn)?
+    {
+        return Ok(dir);
     }
     default_data_dir(env, platform, warn)
 }
