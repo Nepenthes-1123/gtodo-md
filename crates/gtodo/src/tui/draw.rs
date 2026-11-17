@@ -358,21 +358,8 @@ pub fn due_label(due: &str, today: NaiveDate) -> (String, Urgency) {
 
 /// 表示幅 `width` に収まるよう切り詰める (超えた分は `…`)。
 pub fn truncate(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w + 1 > width {
-            break;
-        }
-        out.push(c);
-        used += w;
-    }
-    out.push('…');
-    out
+    let (spans, _) = fit(vec![(text.to_string(), Style::new())], width, Style::new());
+    spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
 fn message_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
@@ -515,9 +502,13 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
         }
         add(Action::Cancel, "キャンセル".to_string());
         add(Action::Edit, "編集".to_string());
-        if !markdown::links(&selected.row.task.content).is_empty() {
-            add(Action::OpenLink, "リンクを開く".to_string());
-        }
+    }
+    // リンクは見るだけのタスク (done.md など) でも開ける。
+    if selected
+        .as_ref()
+        .is_some_and(|s| !markdown::links(&s.row.task.content).is_empty())
+    {
+        add(Action::OpenLink, "リンクを開く".to_string());
     }
     add(Action::Add, "追加".to_string());
     match app.screen {
@@ -1379,16 +1370,24 @@ fn draw_kanban_column(
         return 0;
     }
     let inner_width = usize::from(area.width.saturating_sub(2));
-    // 高さは見えるあたりのカードについてだけ求める (Done の列は数万枚になりうる)。
-    let height = |card: &kanban::Card| card_lines(card, inner_width, today, theme).len() as u16 + 2;
+    // 中身は見えるあたりのカードについてだけ作る (Done の列は数万枚になりうる)。高さを
+    // 測るのに作ったものは、描くときに使い回す。
+    let mut built: std::collections::HashMap<usize, Vec<Line<'static>>> = std::collections::HashMap::new();
+    let height = |built: &mut std::collections::HashMap<usize, Vec<Line<'static>>>, i: usize| {
+        built
+            .entry(i)
+            .or_insert_with(|| card_lines(&cards[i], inner_width, today, theme))
+            .len() as u16
+            + 2
+    };
 
     // 選んでいるカードが全部見えるよう、表示する最初のカードをずらす。選んでいるカードから
     // 上へ、入るだけ数えたところが、選んでいるカードが見える一番上。
     let cursor = app.kanban.cursors[column].min(cards.len() - 1);
     let mut top = cursor;
-    let mut used = height(&cards[cursor]);
+    let mut used = height(&mut built, cursor);
     while top > 0 {
-        let h = height(&cards[top - 1]);
+        let h = height(&mut built, top - 1);
         if used + h > body.height {
             break;
         }
@@ -1401,7 +1400,7 @@ fn draw_kanban_column(
     let mut y = body.y;
     let mut shown = 0;
     for (i, card) in cards.iter().enumerate().skip(offset) {
-        let mut height = height(card);
+        let mut height = height(&mut built, i);
         let mut sides = Borders::ALL;
         if y + height > body.bottom() {
             // 列より高いカードは、下の枠を除いて入る分だけ描く (選んでいるカードが見えなくならないように)。
@@ -1420,7 +1419,9 @@ fn draw_kanban_column(
         } else {
             Block::new().borders(sides).border_style(theme.dim())
         };
-        let lines = card_lines(card, inner_width, today, theme);
+        let lines = built
+            .remove(&i)
+            .unwrap_or_else(|| card_lines(card, inner_width, today, theme));
         frame.render_widget(Paragraph::new(lines).block(border), Rect { y, height, ..body });
         y += height;
         shown += 1;

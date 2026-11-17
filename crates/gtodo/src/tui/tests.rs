@@ -1709,3 +1709,18 @@ fn cards_show_markdown_too() {
     assert!(rows.contains("┃請求書 を 経理 へ `送る`"), "{rows}");
     assert!(rows.contains("│参考 a.example/x と"), "{rows}");
 }
+
+#[test]
+fn gx_works_and_is_offered_for_read_only_tasks_too() {
+    let f = Fixture::new();
+    f.write(
+        "done.md",
+        "# Done\n\n## 2026-11\n\n- [x] 記録 https://example.com/report completed_at:2026-11-02 id:f00001\n",
+    );
+    let mut app = f.app();
+    let opened = record_opened(&mut app);
+    press(&mut app, "6");
+    assert!(screen(&mut app, 120, 12)[11].contains("gx リンクを開く"));
+    press(&mut app, "gx");
+    assert_eq!(*opened.borrow(), ["https://example.com/report"]);
+}

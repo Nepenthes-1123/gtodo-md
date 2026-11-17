@@ -61,8 +61,18 @@ pub fn render(content: &str, urls: Urls, code_marks: bool) -> Rendered {
     let mut link: Option<(String, Range<usize>, bool)> = None;
     // 画像の中 (書かれたままの文字を出したので、中身は飛ばす)。
     let mut image_depth = 0;
+    // `~` 1 つの組の中 (書かれたままの文字を出したので、中身は飛ばす)。
+    let mut tilde_depth = 0;
 
     for (event, range) in Parser::new_ext(&source, Options::ENABLE_STRIKETHROUGH).into_offset_iter() {
+        if tilde_depth > 0 {
+            match event {
+                Event::Start(Tag::Strikethrough) => tilde_depth += 1,
+                Event::End(TagEnd::Strikethrough) => tilde_depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
         if image_depth > 0 {
             match event {
                 Event::Start(Tag::Image { .. }) => image_depth += 1,
@@ -76,6 +86,13 @@ pub fn render(content: &str, urls: Urls, code_marks: bool) -> Rendered {
             Event::End(TagEnd::Strong) => style.bold = false,
             Event::Start(Tag::Emphasis) => style.italic = true,
             Event::End(TagEnd::Emphasis) => style.italic = false,
+            // `~~` だけを取り消し線にする。pulldown-cmark は `~` 1 つの組も取り消し線にするが、
+            // 「1~2時間、3~4日」のような範囲の書き方まで消えてしまうため、書かれたまま出す。
+            Event::Start(Tag::Strikethrough) if !source[range.clone()].starts_with("~~") => {
+                tilde_depth = 1;
+                let range = shift(range);
+                push(&mut out, content[range.clone()].to_string(), style, range, true);
+            }
             Event::Start(Tag::Strikethrough) => style.strike = true,
             Event::End(TagEnd::Strikethrough) => style.strike = false,
             Event::Start(Tag::Link {
@@ -306,6 +323,19 @@ mod tests {
         let r = render("`code` だけ", Urls::Short, true);
         assert_eq!(r.segments[0].text, "`code`", "code marks are kept without colour");
         assert!(r.segments[0].style.code);
+    }
+
+    #[test]
+    fn only_double_tildes_strike_through() {
+        assert_eq!(
+            text("作業 1~2時間、確認 3~4日", Urls::Short),
+            "作業 1~2時間、確認 3~4日"
+        );
+        let r = render("~~取り消し~~ と ~範囲~", Urls::Short, false);
+        assert!(r.segments[0].style.strike);
+        assert_eq!(r.segments[0].text, "取り消し");
+        assert_eq!(r.segments.last().unwrap().text, "~範囲~");
+        assert!(!r.segments.last().unwrap().style.strike);
     }
 
     #[test]
