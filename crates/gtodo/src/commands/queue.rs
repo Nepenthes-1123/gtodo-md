@@ -73,7 +73,8 @@ fn line(out: &mut String, e: &Entry, marker: &str, suffix: &str) -> Result<()> {
     Ok(())
 }
 
-fn date_label(date: NaiveDate, today: NaiveDate) -> String {
+/// 日付の見出し (Neovim 版の Queue と同じ文言)。TUI の Queue も使う。
+pub fn date_label(date: NaiveDate, today: NaiveDate) -> String {
     let md = format!(
         "{}/{} {}",
         date.month(),

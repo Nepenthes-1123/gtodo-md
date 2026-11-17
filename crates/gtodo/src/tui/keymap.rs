@@ -107,6 +107,13 @@ pub enum Action {
     Sort,
     Add,
     Edit,
+    OpenQueue,
+    /// Queue の期日別と待ち先別を切り替える。
+    QueueMode,
+    /// Queue で選んでいるタスクを一覧で開く。
+    Open,
+    /// Queue などから一覧へ戻る。`Esc` に固定で、割り当てを変えられない (案内に出すためだけにある)。
+    Back,
     Help,
     Quit,
 }
@@ -153,6 +160,9 @@ impl Default for Keymap {
             (vec![Key::char('o')], Sort),
             (vec![Key::char('a')], Add),
             (vec![Key::char('e')], Edit),
+            (vec![Key::char('Q')], OpenQueue),
+            (vec![Key::plain(KeyCode::Tab)], QueueMode),
+            (vec![Key::plain(KeyCode::Enter)], Open),
             (vec![Key::char('?')], Help),
             // Esc は終了に割り当てない。戻る・取り消すだけにする (lazygit・lazydocker と同じ)。
             // vim を使う人は癖で押すため、一覧で押して終了すると困る。

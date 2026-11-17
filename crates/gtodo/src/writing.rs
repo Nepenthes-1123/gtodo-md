@@ -101,6 +101,9 @@ fn prepare(
     Ok(())
 }
 
+/// 期日が来たのに inbox.md に残したタスクの警告の書き出し (TUI が同じ知らせを重ねて出さないために使う)。
+pub const INBOX_DUE: &str = "due tasks in inbox.md";
+
 /// 期日が来たタスクを Today へ移したことと、移さなかった inbox のタスクを知らせる。
 pub fn report_dues(ws: &Workspace, dues: &DueOutcome, warn: &mut impl FnMut(String), mut note: impl FnMut(String)) {
     if dues.moved > 0 {
@@ -116,6 +119,6 @@ pub fn report_dues(ws: &Workspace, dues: &DueOutcome, warn: &mut impl FnMut(Stri
             .iter()
             .map(|t| format!("\n  {} (due: {})", t.content, t.due))
             .collect();
-        warn(format!("due tasks in inbox.md:{}", tasks.concat()));
+        warn(format!("{INBOX_DUE}:{}", tasks.concat()));
     }
 }
