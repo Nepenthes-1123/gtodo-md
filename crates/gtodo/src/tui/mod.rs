@@ -4,6 +4,7 @@ mod app;
 mod draw;
 mod form;
 mod input;
+mod kanban;
 mod keymap;
 mod queue;
 mod search;

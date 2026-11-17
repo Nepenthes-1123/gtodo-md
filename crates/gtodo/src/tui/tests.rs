@@ -15,6 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Level, Mode, Screen};
 use super::draw::{self, Theme};
+use super::kanban;
 use super::keymap::Keymap;
 
 const TODAY: &str = "2026-11-16";
@@ -171,7 +172,7 @@ fn hints_follow_the_selected_task_and_tab() {
     // 完了したタスクは移せないので、移動の案内を出さない。
     assert_eq!(
         footer(&mut app),
-        "x 未完了に戻す  c キャンセル  e 編集  a 追加  o 並べ替え  Q Queue  ? ヘルプ  q 終了"
+        "x 未完了に戻す  c キャンセル  e 編集  a 追加  o 並べ替え  Q Queue  K カンバン  ? ヘルプ  q 終了"
     );
 
     press(&mut app, "4");
@@ -182,11 +183,14 @@ fn hints_follow_the_selected_task_and_tab() {
 
     // 空のタブでは、タスクの操作を出さない。
     press(&mut app, "3");
-    assert_eq!(footer(&mut app), "a 追加  o 並べ替え  Q Queue  ? ヘルプ  q 終了");
+    assert_eq!(
+        footer(&mut app),
+        "a 追加  o 並べ替え  Q Queue  K カンバン  ? ヘルプ  q 終了"
+    );
 
     // done.md は見るだけ。
     press(&mut app, "6");
-    assert_eq!(footer(&mut app), "a 追加  Q Queue  ? ヘルプ  q 終了");
+    assert_eq!(footer(&mut app), "a 追加  Q Queue  K カンバン  ? ヘルプ  q 終了");
 }
 
 #[test]
@@ -1391,4 +1395,149 @@ fn the_search_follows_changes_by_other_programs() {
         ["新しい資料", "受信した資料", "会議の資料を作る", "先月の資料"]
     );
     assert_eq!(app.selected().unwrap().row.task.content, "受信した資料");
+}
+
+fn column_contents(app: &App, column: usize) -> Vec<String> {
+    app.kanban.columns[column]
+        .iter()
+        .map(|c| c.row.task.content.clone())
+        .collect()
+}
+
+#[test]
+fn k_opens_the_kanban_with_the_neovim_columns() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "Kll");
+    assert_eq!(app.screen, Screen::Kanban);
+    assert_eq!(
+        screen(&mut app, 60, 12),
+        [
+            " Kanban   ◀ Someday (0)   Waiting (1) · Done (2) ▶",
+            "────────────────────────────────────────────────────────────",
+            "          Next (2)                      Today (2)",
+            "┌───────────────────────────┐ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+            "│次1                        │ ┃(A) 今日1                  ┃",
+            "└───────────────────────────┘ ┃due:2026-11-16 (今日) +work┃",
+            "┌───────────────────────────┐ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
+            "│次2                        │ ┌───────────────────────────┐",
+            "└───────────────────────────┘ │今日2                      │",
+            "                              └───────────────────────────┘",
+            "",
+            "x 完了にする  a 追加  Enter 一覧で開く  h/l 列  ? ヘルプ",
+        ]
+    );
+    // 5 列。Done は todo.md の完了済みと done.md のものを新しい順に。
+    assert_eq!(column_contents(&app, 0), Vec::<String>::new());
+    assert_eq!(column_contents(&app, 3), ["待ち1"]);
+    assert_eq!(column_contents(&app, kanban::DONE), ["新しい完了", "古い完了"]);
+    // 端の列から先へは進まない。
+    press(&mut app, "llll");
+    assert_eq!(app.kanban.focus, kanban::DONE);
+    press(&mut app, "hhhhhh");
+    assert_eq!(app.kanban.focus, 0);
+}
+
+#[test]
+fn completing_a_card_moves_it_to_done_and_keeps_the_cursor_in_the_column() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "Kll");
+    // 確認なしで完了にする (一覧と同じ。押す前に最下段に結果が出ている)。
+    press(&mut app, "x");
+    assert!(f.read("todo.md").contains("- [x] (A) 今日1"));
+    assert_eq!(column_contents(&app, 2), ["今日2"]);
+    assert_eq!(column_contents(&app, kanban::DONE)[0], "今日1");
+    assert_eq!(app.kanban.focus, 2);
+    assert_eq!(app.selected().unwrap().row.task.content, "今日2");
+
+    // Done の列の、日次の整理を待っているカードは未完了に戻せる。done.md のカードは見るだけ。
+    // 他の列で選んでいたカードは、上にカードが加わっても選んだまま。
+    press(&mut app, "ll");
+    assert_eq!(app.selected().unwrap().row.task.content, "新しい完了");
+    press(&mut app, "gg");
+    assert_eq!(app.selected().unwrap().row.task.content, "今日1");
+    press(&mut app, "x");
+    assert!(f.read("todo.md").contains("- [ ] (A) 今日1"));
+    assert_eq!(column_contents(&app, 2), ["今日1", "今日2"]);
+    assert_eq!(app.selected().unwrap().row.task.content, "新しい完了");
+    press(&mut app, "x");
+    assert_eq!(last_message(&app), "tasks in done.md cannot be changed");
+    press(&mut app, "d");
+    assert_eq!(last_message(&app), "tasks in done.md cannot be changed");
+}
+
+#[test]
+fn cards_move_between_columns_and_the_cursor_stays() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "Kl");
+    assert_eq!(app.selected().unwrap().row.task.content, "次1");
+    press(&mut app, "d");
+    assert_eq!(column_contents(&app, 1), ["次2"]);
+    assert!(column_contents(&app, 2).contains(&"次1".to_string()));
+    assert_eq!(app.selected().unwrap().row.task.content, "次2");
+    // w は待ち先を尋ねる。
+    press(&mut app, "w");
+    press(&mut app, "carol");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(f.read("todo.md").contains("- [ ] 次2 wait:carol id:dddddd"));
+    assert_eq!(column_contents(&app, 1), Vec::<String>::new());
+    assert!(app.selected().is_none());
+    let rows = screen(&mut app, 110, 8);
+    assert!(rows[3].contains("(no tasks)"), "{}", rows[3]);
+}
+
+#[test]
+fn enter_opens_a_card_in_its_tab_and_esc_returns() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "Klll");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!((app.screen, app.current), (Screen::List, 3));
+    assert_eq!(selected_content(&app), "待ち1");
+    // 開き直すと、前に選んでいた列のまま。
+    press(&mut app, "K");
+    assert_eq!(app.kanban.focus, 3);
+    press(&mut app, "l");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!((app.screen, app.current), (Screen::List, 5));
+    assert_eq!(selected_content(&app), "新しい完了");
+    press(&mut app, "K");
+    press_code(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::List);
+}
+
+#[test]
+fn adding_from_a_column_puts_the_task_in_its_section() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "Kl");
+    press(&mut app, "a");
+    press(&mut app, "カンバンから");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(last_message(&app), "added to Next: カンバンから");
+    assert!(column_contents(&app, 1).contains(&"カンバンから".to_string()));
+    // Done の列からは inbox へ。
+    press(&mut app, "lll");
+    press(&mut app, "a");
+    let Mode::Form(form) = &app.mode else {
+        panic!("no form");
+    };
+    assert_eq!(form.destination(), gtodo_core::ops::Destination::Inbox);
+}
+
+#[test]
+fn the_kanban_follows_changes_by_other_programs() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "Kll");
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [ ] 新しい id:999999\n- [ ] (A) 今日1 id:aaaaaa\n\n## Next\n\n## Waiting\n\n## Someday\n",
+    );
+    app.tick();
+    assert_eq!(column_contents(&app, 2), ["新しい", "今日1"]);
+    assert_eq!(app.selected().unwrap().row.task.content, "今日1");
+    assert_eq!(column_contents(&app, 1), Vec::<String>::new());
 }
