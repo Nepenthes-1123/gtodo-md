@@ -2,6 +2,7 @@
 
 mod app;
 mod draw;
+mod form;
 mod input;
 mod keymap;
 

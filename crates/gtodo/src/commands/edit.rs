@@ -2,12 +2,11 @@ use std::fmt::Write;
 
 use anyhow::{Result, bail};
 use chrono::NaiveDate;
+use gtodo_core::input;
 use gtodo_core::logic::due::DueOutcome;
 use gtodo_core::ops::{self, Changes};
 use gtodo_core::store::FileKind;
-use gtodo_core::task::Task;
 
-use crate::commands::task_input;
 use crate::workspace::Workspace;
 use crate::writing;
 
@@ -51,7 +50,8 @@ pub fn run(
     Ok(())
 }
 
-fn check_dues_and_sort(ws: &Workspace, sort: bool) -> Result<DueOutcome> {
+/// 編集した後の期日のチェックと並べ替え (TUI のフォームも使う)。
+pub fn check_dues_and_sort(ws: &Workspace, sort: bool) -> Result<DueOutcome> {
     let dues = ops::check_dues(&ws.data_dir, &ws.names, ws.today, ws.auto_move_inbox_to_today)?;
     if sort || dues.todo_changed {
         ops::sort_todo(&ws.data_dir, &ws.names, ws.today)?;
@@ -60,60 +60,21 @@ fn check_dues_and_sort(ws: &Workspace, sort: bool) -> Result<DueOutcome> {
 }
 
 fn changes(text: &str, fields: Fields, today: NaiveDate) -> Result<Changes> {
-    let mut changes = Changes::default();
-    if !text.trim().is_empty() {
-        let task = task_input::parse_text(text, today, "editing")?;
-        // Neovim 版の編集でも作成日は変えられない。
-        if task.created.is_some() {
-            bail!("created: cannot be changed");
-        }
-        if !task.content.is_empty() {
-            changes.content = Some(task.content);
-        }
-        changes.priority = task.priority.map(Some);
-        changes.project = task.project.map(Some);
-        changes.context = task.context.map(Some);
-        changes.due = task.due.map(Some);
-        changes.wait = task.wait.map(Some);
-    }
-
-    // `+` だけの値は消す指定ではなく空の名前として扱い、`add` と同じく書けない値としてはじく。
-    let unless_empty = |value: String, prefix: char| {
-        (!value.is_empty()).then(|| value.strip_prefix(prefix).unwrap_or(&value).to_string())
+    let fields = input::Fields {
+        due: fields.due,
+        project: fields.project,
+        context: fields.context,
+        priority: fields.priority,
+        wait: None,
     };
-    if let Some(due) = fields.due {
-        changes.due = Some(match due.as_str() {
-            "" => None,
-            due => Some(task_input::parse_due(due, today)?),
-        });
-    }
-    if let Some(project) = fields.project {
-        changes.project = Some(unless_empty(project, '+'));
-    }
-    if let Some(context) = fields.context {
-        changes.context = Some(unless_empty(context, '@'));
-    }
-    if let Some(priority) = fields.priority {
-        let mut chars = priority.chars();
-        changes.priority = Some(match (chars.next(), chars.next()) {
-            (None, _) => None,
-            (Some(p), None) => Some(p),
-            _ => bail!("--priority takes one letter (A-Z)"),
-        });
-    }
-    if let Some(Some(due)) = &changes.due {
-        task_input::check_due(due, today)?;
-    }
+    let changes = match input::changes(text, &fields, today) {
+        // CLI ではどのオプションの値かを示す。
+        Err(input::InputError::InvalidPriority) => bail!("--priority takes one letter (A-Z)"),
+        other => other?,
+    };
     if changes.is_empty() {
         bail!("nothing to change: give the new text or an option such as --due");
     }
-
-    let mut probe = Task {
-        content: "x".into(),
-        ..Task::default()
-    };
-    changes.apply(&mut probe);
-    task_input::check_round_trip(&probe, today)?;
     Ok(changes)
 }
 
@@ -125,101 +86,28 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 2, 3).unwrap()
     }
 
-    fn text(text: &str) -> Result<Changes> {
-        changes(text, Fields::default(), today())
+    #[test]
+    fn nothing_to_change_is_an_error() {
+        for text in ["", "  "] {
+            let err = changes(text, Fields::default(), today()).unwrap_err();
+            assert!(err.to_string().contains("nothing to change"), "{err}");
+        }
     }
 
     #[test]
-    fn only_what_the_text_mentions_is_changed() {
-        assert_eq!(
-            text("(A) 新しい本文 +work due:tomorrow").unwrap(),
-            Changes {
-                content: Some("新しい本文".into()),
-                priority: Some(Some('A')),
-                project: Some(Some("work".into())),
-                due: Some(Some("2026-02-04".into())),
-                ..Changes::default()
-            }
-        );
-        assert_eq!(
-            text("@15 wait:bob").unwrap(),
-            Changes {
-                context: Some(Some("15".into())),
-                wait: Some(Some("bob".into())),
-                ..Changes::default()
-            },
-            "text with tags only keeps the description"
-        );
-    }
-
-    #[test]
-    fn options_override_the_text_and_empty_options_remove_values() {
+    fn options_are_passed_as_fields() {
         let fields = Fields {
             due: Some(String::new()),
-            project: Some(String::new()),
-            context: Some("@office".into()),
-            priority: Some(String::new()),
-        };
-        assert_eq!(
-            changes("(A) 本文 +home due:today", fields, today()).unwrap(),
-            Changes {
-                content: Some("本文".into()),
-                priority: Some(None),
-                project: Some(None),
-                context: Some(Some("office".into())),
-                due: Some(None),
-                ..Changes::default()
-            }
-        );
-    }
-
-    #[test]
-    fn a_due_option_replaces_an_unreadable_due_in_the_text() {
-        let fields = Fields {
-            due: Some("today".into()),
+            priority: Some("B".into()),
             ..Fields::default()
         };
         assert_eq!(
-            changes("x due:someday", fields, today()).unwrap().due,
-            Some(Some("2026-02-03".into()))
+            changes("", fields, today()).unwrap(),
+            Changes {
+                due: Some(None),
+                priority: Some(Some('B')),
+                ..Changes::default()
+            }
         );
-    }
-
-    #[test]
-    fn nothing_to_change_is_an_error() {
-        assert!(text("").is_err());
-        assert!(text("  ").is_err());
-    }
-
-    #[test]
-    fn values_that_cannot_be_written_are_rejected() {
-        for t in ["x id:abcdef", "x created:2026-01-01", "x due:someday", "two\nlines"] {
-            assert!(text(t).is_err(), "{t:?}");
-        }
-        let field = |f: Fields| changes("", f, today());
-        for f in [
-            Fields {
-                project: Some("two words".into()),
-                ..Fields::default()
-            },
-            Fields {
-                priority: Some("a".into()),
-                ..Fields::default()
-            },
-            Fields {
-                priority: Some("AB".into()),
-                ..Fields::default()
-            },
-            Fields {
-                project: Some("+".into()),
-                ..Fields::default()
-            },
-            Fields {
-                due: Some("2026-02-30".into()),
-                ..Fields::default()
-            },
-        ] {
-            assert!(field(f).is_err());
-        }
     }
 }

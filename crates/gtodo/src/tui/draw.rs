@@ -3,6 +3,7 @@
 //! 色は飾りに留め、意味は記号・太字・下線でも分かるようにする (`NO_COLOR` や色の少ない端末のため)。
 
 use chrono::NaiveDate;
+use gtodo_core::ops::Destination;
 use gtodo_core::sections::SectionKey;
 use gtodo_core::task::{Status, Task};
 use ratatui::Frame;
@@ -13,6 +14,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{App, Level, Mode, Row, TABS, Tab};
+use super::form::{DESTINATIONS, Field, Form, preview_line};
 use super::keymap::{Action, Key, sequence_label};
 use crate::render::{context_tag, project_tag};
 
@@ -78,6 +80,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
         let x = footer_area.x + (WAIT_PROMPT.width() + input.cursor_width()) as u16;
         let y = footer_area.y + footer_area.height.saturating_sub(1);
         frame.set_cursor_position((x.min(area.right().saturating_sub(1)), y));
+    }
+    if let Mode::Form(form) = &app.mode {
+        let form_area = Rect {
+            height: area.height.saturating_sub(footer_area.height),
+            ..area
+        };
+        draw_form(frame, form, app, theme, form_area);
     }
     if app.mode == Mode::Help {
         // フッターは隠さない (スクロールの案内を出すため)。
@@ -315,6 +324,20 @@ fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
                 theme,
             )]
         }
+        Mode::Form(form) => {
+            let mut hints = vec![
+                ("Tab/↓".to_string(), "次の項目".to_string()),
+                ("S-Tab/↑".to_string(), "前の項目".to_string()),
+            ];
+            match form.focus {
+                Field::Destination => hints.push(("←/→".to_string(), "追加先を選ぶ".to_string())),
+                Field::Project | Field::Context => hints.push(("Ctrl-n/p".to_string(), "候補".to_string())),
+                _ => {}
+            }
+            hints.push(("Enter".to_string(), "確定".to_string()));
+            hints.push(("Esc".to_string(), "取り消す".to_string()));
+            vec![hint_line(&hints, theme)]
+        }
         Mode::Normal if !app.pending.is_empty() => {
             let mut hints: Vec<(String, String)> = app
                 .keymap
@@ -372,7 +395,9 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
             Status::Done => add(Action::ToggleDone, "未完了に戻す".to_string()),
         }
         add(Action::Cancel, "キャンセル".to_string());
+        add(Action::Edit, "編集".to_string());
     }
+    add(Action::Add, "追加".to_string());
     if tab.writable() {
         add(Action::Sort, "並べ替え".to_string());
     }
@@ -383,14 +408,16 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
 
 /// 幅に収まるまで、重要でない案内から外す。`?` (ヘルプ) は外さない (外したキーもヘルプで分かるように)。
 fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(String, String)> {
-    const DROP_ORDER: [Action; 8] = [
+    const DROP_ORDER: [Action; 10] = [
         Action::Quit,
         Action::Sort,
         Action::Cancel,
+        Action::Edit,
         Action::MoveSomeday,
         Action::MoveWaiting,
         Action::MoveNext,
         Action::MoveToday,
+        Action::Add,
         Action::ToggleDone,
     ];
     let line_width = |hints: &[(Action, String, String)]| -> usize {
@@ -432,6 +459,8 @@ fn description(app: &App, action: Action) -> String {
         Action::ToggleDone => "完了と未完了を切り替える".to_string(),
         Action::Cancel => "キャンセルする (cancelled.md へ移す。確認あり)".to_string(),
         Action::Sort => "期日が来たタスクを移し、並べ替える".to_string(),
+        Action::Add => "タスクを追加する (追加先の初期値は開いているタブ)".to_string(),
+        Action::Edit => "タスクを編集する".to_string(),
         Action::Help => "このヘルプ".to_string(),
         Action::Quit => "終了 (Ctrl-c でも)".to_string(),
     }
@@ -487,6 +516,8 @@ fn all_actions() -> Vec<Action> {
         Action::MoveWaiting,
         Action::MoveSomeday,
         Action::Cancel,
+        Action::Add,
+        Action::Edit,
         Action::Sort,
         Action::Help,
         Action::Quit,
@@ -528,6 +559,204 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {
     );
 }
 
+/// フォームの項目名の幅 (「プロジェクト」「コンテキスト」)。
+const FORM_LABEL_WIDTH: usize = 12;
+
+fn field_label(field: Field) -> &'static str {
+    match field {
+        Field::Text => "本文",
+        Field::Due => "期日",
+        Field::Project => "プロジェクト",
+        Field::Context => "コンテキスト",
+        Field::Priority => "優先度",
+        Field::Destination => "追加先",
+        Field::Wait => "待ち先",
+    }
+}
+
+fn destination_label(destination: Destination, app: &App) -> &str {
+    match destination {
+        Destination::Inbox => "Inbox",
+        Destination::Section(key) => app.ws.names.name(key),
+    }
+}
+
+/// 入力欄に見せる部分と、その中のカーソルの位置。入りきらなければ、カーソルが見えるよう先頭を隠す。
+fn visible_input(text: &str, cursor_width: usize, width: usize) -> (String, usize) {
+    let width = width.max(1);
+    let mut skipped = 0;
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        if cursor_width - skipped < width {
+            break;
+        }
+        skipped += c.width().unwrap_or(0);
+        start = i + c.len_utf8();
+    }
+    (truncate_plain(&text[start..], width), cursor_width - skipped)
+}
+
+/// 表示幅 `width` ごとに区切る。
+fn wrap_plain(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut parts = vec![String::new()];
+    let mut used = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width {
+            parts.push(String::new());
+            used = 0;
+        }
+        parts.last_mut().expect("never empty").push(c);
+        used += w;
+    }
+    parts
+}
+
+/// `width` を超えた分を切り捨てる (`…` は付けない。入力欄の末尾にカーソルを置けるように)。
+fn truncate_plain(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out
+}
+
+fn draw_form(frame: &mut Frame, form: &Form, app: &App, theme: Theme, area: Rect) {
+    let width = area.width.saturating_sub(4).clamp(area.width.min(40), 100);
+    let inner_width = usize::from(width.saturating_sub(2));
+    // ガター (2)・項目名・空白 (2)
+    let value_x = 2 + FORM_LABEL_WIDTH + 2;
+    let value_width = inner_width.saturating_sub(value_x);
+
+    let mut lines = vec![Line::raw("")];
+    let mut cursor = None;
+    for field in form.fields() {
+        let focused = form.focus == field;
+        let label = field_label(field);
+        let mut spans = vec![
+            if focused {
+                Span::styled(GUTTER, theme.accent())
+            } else {
+                Span::raw(" ")
+            },
+            Span::raw(" "),
+            Span::styled(
+                format!(
+                    "{label}{}  ",
+                    " ".repeat(FORM_LABEL_WIDTH.saturating_sub(label.width()))
+                ),
+                if focused { theme.key() } else { theme.dim() },
+            ),
+        ];
+        if field == Field::Destination {
+            // 選んでいるものは前後の空白を括弧にする (色が無くても分かり、幅も変わらない)。
+            for d in DESTINATIONS {
+                let name = destination_label(d, app);
+                if d == form.destination() {
+                    spans.push(Span::styled(
+                        format!("[{name}]"),
+                        theme.key().add_modifier(Modifier::UNDERLINED),
+                    ));
+                } else {
+                    spans.push(Span::raw(format!(" {name} ")));
+                }
+            }
+        } else if let Some(input) = form.input(field) {
+            let prefix = match field {
+                Field::Project => "+",
+                Field::Context => "@",
+                _ => "",
+            };
+            spans.push(Span::styled(prefix, theme.dim()));
+            let room = value_width.saturating_sub(prefix.width());
+            let (shown, at) = visible_input(input.text(), input.cursor_width(), room);
+            let shown_width = shown.width();
+            spans.push(Span::raw(shown));
+            if focused {
+                cursor = Some((value_x + prefix.width() + at, lines.len()));
+            }
+            if field == Field::Due
+                && let Some(due) = form.due()
+            {
+                let hint = match due {
+                    Ok(date) => Span::styled(format!("  → {}", due_label(&date, app.today()).0), theme.dim()),
+                    Err(_) => Span::styled(
+                        "  読めない日付".to_string(),
+                        theme.fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                };
+                if shown_width + hint.width() <= room {
+                    spans.push(hint);
+                }
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("  書き込む行", theme.dim()));
+    match form.preview() {
+        // 確定前に全体を確かめられるよう、切らずに折り返す。
+        Ok(task) => {
+            for part in wrap_plain(&preview_line(&task), inner_width.saturating_sub(4)) {
+                lines.push(Line::raw(format!("  {part}")));
+            }
+        }
+        Err(e) => lines.push(Line::styled(
+            truncate(&format!("  error: {e}"), inner_width),
+            theme.fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+    }
+    let (candidates, chosen) = form.candidates();
+    if !candidates.is_empty() {
+        let prefix = if form.focus == Field::Project { "+" } else { "@" };
+        let mut spans = vec![Span::styled("  候補 ", theme.dim())];
+        let mut used = 7;
+        for (i, c) in candidates.iter().enumerate() {
+            let text = format!(" {prefix}{c} ");
+            if used + text.width() > inner_width {
+                spans.push(Span::styled("…", theme.dim()));
+                break;
+            }
+            used += text.width();
+            spans.push(if chosen == Some(i) {
+                Span::styled(text, theme.key().add_modifier(Modifier::REVERSED))
+            } else {
+                Span::raw(text)
+            });
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(spans));
+    }
+
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let title = if form.is_add() { " 追加 " } else { " 編集 " };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(title).border_style(theme.accent())),
+        popup,
+    );
+    if let Some((x, y)) = cursor
+        && y + 1 < usize::from(height)
+    {
+        let x = (popup.x + 1 + x as u16).min(popup.right().saturating_sub(2));
+        frame.set_cursor_position((x, popup.y + 1 + y as u16));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,6 +785,22 @@ mod tests {
             ("due:2026-11-20 (4日後)".into(), Urgency::Later)
         );
         assert_eq!(due_label("someday", today), ("due:someday".into(), Urgency::Later));
+    }
+
+    #[test]
+    fn a_long_input_scrolls_to_keep_the_cursor_visible() {
+        assert_eq!(visible_input("abc", 3, 10), ("abc".to_string(), 3));
+        assert_eq!(visible_input("abcdefgh", 8, 5), ("efgh".to_string(), 4));
+        assert_eq!(visible_input("日本語です", 10, 6), ("です".to_string(), 4));
+        // カーソルが先頭寄りなら、末尾を切るだけ。
+        assert_eq!(visible_input("abcdefgh", 2, 5), ("abcde".to_string(), 2));
+    }
+
+    #[test]
+    fn wrap_splits_by_display_width() {
+        assert_eq!(wrap_plain("abcdef", 4), ["abcd", "ef"]);
+        assert_eq!(wrap_plain("日本語", 4), ["日本", "語"]);
+        assert_eq!(wrap_plain("", 4), [""]);
     }
 
     #[test]
