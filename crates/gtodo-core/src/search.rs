@@ -21,42 +21,50 @@ pub enum SearchError {
     EmptyTag(String),
 }
 
-/// 比べるための形 (NFKC と小文字) と、元の文字列への対応。
+/// 比べるための形 (NFKC と小文字) にして `out` に足す。まとまりごとに、`out` での開始位置と
+/// 元の文字列での範囲を `segment` に渡す。
 ///
 /// 元の文字列を「基底の文字と、それに続く結合する文字」のまとまりごとに正規化する。
 /// 半角カナの濁点 (`ﾞ`) のように、正規化すると前の文字と合わさるものを分けないため。
 /// まとまりごとに正規化しても、文字列全体を正規化したものとほぼ同じになる
 /// (違うのは、結合文字を挟まずに合わさる、ハングルの字母などの並び)。
+fn fold_into(s: &str, out: &mut String, mut segment: impl FnMut(usize, Range<usize>)) {
+    let mut flush = |out: &mut String, range: Range<usize>| {
+        segment(out.len(), range.clone());
+        let part = &s[range];
+        // 結合する文字の付かない ASCII は、正規化しても変わらない (数万件を読むので速くする)。
+        if let [b] = part.as_bytes() {
+            out.push(char::from(b.to_ascii_lowercase()));
+        } else {
+            out.extend(part.nfkc().flat_map(char::to_lowercase));
+        }
+    };
+    let mut start = 0;
+    for (i, c) in s.char_indices().skip(1) {
+        if c.is_ascii() || !combines(c) {
+            flush(out, start..i);
+            start = i;
+        }
+    }
+    if start < s.len() {
+        flush(out, start..s.len());
+    }
+}
+
+/// 比べるための形と、元の文字列への対応 (当たった場所を強調するときにだけ作る)。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Folded {
+struct Folded {
     text: String,
     /// まとまりごとの (`text` での開始位置, 元の文字列での範囲)。
     spans: Vec<(usize, Range<usize>)>,
 }
 
 impl Folded {
-    pub fn new(s: &str) -> Folded {
-        let mut folded = Folded::default();
-        let mut start = 0;
-        for (i, c) in s.char_indices().skip(1) {
-            if !combines(c) {
-                folded.push(&s[start..i], start..i);
-                start = i;
-            }
-        }
-        if start < s.len() {
-            folded.push(&s[start..], start..s.len());
-        }
-        folded
-    }
-
-    fn push(&mut self, segment: &str, range: Range<usize>) {
-        self.spans.push((self.text.len(), range));
-        self.text.extend(segment.nfkc().flat_map(char::to_lowercase));
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.text
+    fn new(s: &str) -> Folded {
+        let mut text = String::new();
+        let mut spans = Vec::new();
+        fold_into(s, &mut text, |at, range| spans.push((at, range)));
+        Folded { text, spans }
     }
 
     /// `needle` (正規化したもの) が現れる元の文字列の範囲。重なる範囲はまとめる。
@@ -92,9 +100,11 @@ fn combines(c: char) -> bool {
     first.is_some_and(|d| canonical_combining_class(d) != 0)
 }
 
-/// 正規化した文字列 (比べる相手の値用)。
+/// 正規化した文字列。
 fn fold(s: &str) -> String {
-    Folded::new(s).text
+    let mut out = String::with_capacity(s.len());
+    fold_into(s, &mut out, |_, _| {});
+    out
 }
 
 /// タグの条件。
@@ -176,14 +186,10 @@ impl Query {
         if self.status.is_some_and(|s| s != task.status) {
             return None;
         }
-        let mut hit = Hit::default();
-        for word in &self.words {
-            let found = task.content.find_all(word);
-            if found.is_empty() {
-                return None;
-            }
-            hit.content.extend(found);
+        if !self.words.iter().all(|w| task.content.contains(w.as_str())) {
+            return None;
         }
+        let mut hit = Hit::default();
         for (terms, value, flag) in [
             (&self.projects, task.project.as_deref(), &mut hit.project),
             (&self.contexts, task.context.as_deref(), &mut hit.context),
@@ -194,9 +200,21 @@ impl Query {
             }
             *flag = !terms.is_empty();
         }
-        hit.content.sort_by_key(|r| (r.start, r.end));
-        hit.content.dedup_by(|b, a| {
-            // 重なる範囲はまとめる (並べてあるので、後ろの方が始まりは同じか後)。
+        Some(hit)
+    }
+
+    /// 本文 `content` の中で、検索の語が当たった範囲 (重なる範囲はまとめる)。強調して見せるのに使う。
+    ///
+    /// 元の文字列への対応は大きいので、読み込んだときには作らず、画面に出す行についてだけ求める。
+    pub fn highlight(&self, content: &str) -> Vec<Range<usize>> {
+        if self.words.is_empty() {
+            return Vec::new();
+        }
+        let folded = Folded::new(content);
+        let mut ranges: Vec<Range<usize>> = self.words.iter().flat_map(|w| folded.find_all(w)).collect();
+        ranges.sort_by_key(|r| (r.start, r.end));
+        ranges.dedup_by(|b, a| {
+            // 並べてあるので、後ろの方 (b) の始まりは前の方 (a) と同じか後。
             if b.start <= a.end {
                 a.end = a.end.max(b.end);
                 true
@@ -204,14 +222,15 @@ impl Query {
                 false
             }
         });
-        Some(hit)
+        ranges
     }
 }
 
 /// 検索のために正規化しておいたタスク。読み込んだときに 1 回だけ作る。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Indexed {
-    content: Folded,
+    /// 正規化した本文 (元の文字列への対応は持たない。[`Query::highlight`] を参照)。
+    content: String,
     /// タグの値は正規化したものを持つ (`@` は除く)。
     project: Option<String>,
     context: Option<String>,
@@ -223,7 +242,7 @@ impl Indexed {
     pub fn new(task: &Task) -> Indexed {
         let value = |v: &Option<String>| v.as_deref().filter(|v| !v.is_empty()).map(fold);
         Indexed {
-            content: Folded::new(&task.content),
+            content: fold(&task.content),
             project: value(&task.project),
             context: value(&task.context).map(|c| c.trim_start_matches('@').to_string()),
             wait: value(&task.wait),
@@ -232,11 +251,9 @@ impl Indexed {
     }
 }
 
-/// 当たった場所。強調して見せるのに使う。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// 当たったタグ。強調して見せるのに使う (本文の範囲は [`Query::highlight`])。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Hit {
-    /// 本文 (元の文字列) の中で当たった範囲。
-    pub content: Vec<Range<usize>>,
     pub project: bool,
     pub context: bool,
     pub wait: bool,
@@ -256,9 +273,14 @@ mod tests {
 
     fn hit(query: &str, line: &str) -> Option<Vec<String>> {
         let t = Task::parse(line).unwrap();
-        live(query)
-            .matches(&Indexed::new(&t))
-            .map(|h| h.content.iter().map(|r| t.content[r.clone()].to_string()).collect())
+        let q = live(query);
+        q.matches(&Indexed::new(&t))?;
+        Some(
+            q.highlight(&t.content)
+                .iter()
+                .map(|r| t.content[r.clone()].to_string())
+                .collect(),
+        )
     }
 
     #[test]
@@ -357,10 +379,10 @@ mod tests {
 
     #[test]
     fn folding_keeps_the_way_back_to_the_original() {
-        let f = Folded::new("ｱｲｳｴｵﾞ");
-        assert_eq!(f.as_str(), "アイウエオ\u{3099}");
+        assert_eq!(fold("ｱｲｳｴｵﾞ"), "アイウエオ\u{3099}");
+        assert_eq!(fold("ABCé\u{301}"), "abcé\u{301}".nfkc().collect::<String>());
         let f = Folded::new("Ⅻ月");
-        assert_eq!(f.as_str(), "xii月");
+        assert_eq!(f.text, "xii月");
         assert_eq!(f.find_all("ii"), vec![Range { start: 0, end: 3 }]);
     }
 }
