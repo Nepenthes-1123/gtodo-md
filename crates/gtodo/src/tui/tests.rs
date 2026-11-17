@@ -1724,3 +1724,30 @@ fn gx_works_and_is_offered_for_read_only_tasks_too() {
     press(&mut app, "gx");
     assert_eq!(*opened.borrow(), ["https://example.com/report"]);
 }
+
+#[test]
+fn keys_from_tui_toml_are_used_and_shown() {
+    let f = Fixture::new();
+    let keymap = Keymap::from_toml("[keys]\ntoggle_done = \"<Space>\"\ndown = [\"<C-n>\"]\ncancel = []\n")
+        .unwrap()
+        .keymap;
+    let today = Rc::clone(&f.today);
+    let mut app = App::new(f.path(), Box::new(move || today.get()), keymap, Vec::new()).unwrap();
+    // 案内とヘルプは、設定したキーから作る。外した動作は出さない。
+    let footer = screen(&mut app, 120, 12).pop().unwrap();
+    assert!(footer.starts_with("Space 完了にする"), "{footer}");
+    assert!(!footer.contains("キャンセル"), "{footer}");
+    press(&mut app, "?");
+    let help = screen(&mut app, 100, 40).join("\n");
+    assert!(help.contains("Ctrl-n") && help.contains("Space"), "{help}");
+    press_code(&mut app, KeyCode::Esc);
+    // 既定の j は効かず、Ctrl-n で下へ。
+    press(&mut app, "j");
+    assert_eq!(selected_content(&app), "今日1");
+    press_ctrl(&mut app, 'n');
+    assert_eq!(selected_content(&app), "今日2");
+    press(&mut app, " ");
+    assert!(f.read("todo.md").contains("- [x] 今日2"));
+    press(&mut app, "c");
+    assert_eq!(app.mode, Mode::Normal, "c is unbound");
+}

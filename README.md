@@ -50,7 +50,7 @@ Neovim 版で開いているファイルを書き換えた場合、Neovim 側の
 
 ## TUI
 
-`gtodo` を引数なしで実行すると (`gtodo tui` でも) TUI が開きます。今はセクションごとの一覧、タスクの操作、追加と編集、Queue、検索、カンバン、本文の markdown の表示が使えます (キーの設定ファイルと `$EDITOR` は開発中)。
+`gtodo` を引数なしで実行すると (`gtodo tui` でも) TUI が開きます。今はセクションごとの一覧、タスクの操作、追加と編集、Queue、検索、カンバン、本文の markdown の表示が使えます (`$EDITOR` で開く機能は開発中)。キーは `tui.toml` で変えられます (下記の「TUI のキー」)。
 
 | キー | 動作 |
 | --- | --- |
@@ -98,7 +98,7 @@ Queue の中でも `x`・`d`/`n`/`w`/`s`・`c`・`e` でタスクを操作でき
 
 設定は Neovim 版と共有するファイルに書きます。どちらのツールで使っても同じ結果になるよう、2 つのファイルに分けています。
 Neovim 版 (gtodo-md.nvim) も同じファイルを読みます。`gtodo.json` に書いた項目は Neovim 版の `setup()` より優先され、`data_dir` は `setup()` に書いた場所が優先されます (`GTODO_DATA_DIR`・`config.json` と食い違えば Neovim 版が警告します。共有設定が無いときの既定の場所とは比べません)。
-キーマップや見た目など、ツールごとの設定はここには含めません。
+キーマップや見た目など、ツールごとの設定はここには含めません (TUI のキーは下記の `tui.toml`)。
 
 ### データディレクトリの場所 (`config.json`)
 
@@ -139,6 +139,41 @@ CLI も Neovim 版もこのファイルを作らないので、設定を変え�
 - `auto_move_inbox_to_today`: 期日が来た Inbox のタスクを Today へ移すか。
 
 知らないキーは警告して無視します (バージョンの違うツール同士で同じファイルを読むため)。
+
+### TUI のキー (`tui.toml`)
+
+TUI のキーの割り当てを変えるファイルです。TUI だけの設定なので、Neovim 版とは共有しません。`config.json` と同じディレクトリ (`$XDG_CONFIG_HOME/gtodo-md/tui.toml`、Windows は `%APPDATA%\gtodo-md\tui.toml`。`GTODO_CONFIG` を指定していればその隣) に置きます。無ければ既定のキーを使います。
+
+```toml
+[keys]
+down = ["j", "<Down>", "<C-n>"]   # 複数のキーは配列で
+toggle_done = "<Space>"          # 1 つなら文字列で
+cancel = []                      # 空にすると割り当てを外す
+```
+
+書いた動作だけ、既定のキーを置き換えます。キーは vim と同じ書き方です: 1 文字はそのまま (`x`・`G`・`?`)、特別なキーは `<Down>`・`<Enter>`・`<Tab>`・`<S-Tab>`・`<Space>`・`<Home>`・`<PageDown>`・`<F1>` など、修飾は `<C-d>` (Ctrl)・`<A-x>` (Alt)、`<` は `<lt>`。並べると続けて押すキーになります (`gg`・`g<Down>`)。
+`Esc` (取り消す・一覧へ戻る) と `Ctrl-c` (終了) は割り当てられません。入力欄の中のキーも変えられません。
+
+同じキーを 2 つの動作に割り当てるとエラーになります。続けて押すキーは待ち時間を設けずに読むので、あるキーが別のキー列の途中になる割り当て (`g` と `gg` など) もエラーです。どちらも TUI を起動したときに、どこが誤りかを知らせて止まります。知らない名前は警告して無視します。
+
+| 名前 | 既定のキー | 動作 |
+| --- | --- | --- |
+| `down` / `up` | `j` `<Down>` / `k` `<Up>` | 下へ / 上へ |
+| `top` / `bottom` | `gg` `<Home>` / `G` `<End>` | 先頭へ / 末尾へ |
+| `half_page_down` / `half_page_up` | `<C-d>` / `<C-u>` | 半ページ下へ / 上へ |
+| `page_down` / `page_up` | `<C-f>` `<PageDown>` / `<C-b>` `<PageUp>` | 1 ページ下へ / 上へ |
+| `next_tab` / `prev_tab` | `gt` `l` `<Right>` / `gT` `h` `<Left>` | 次のタブ / 前のタブ (カンバンでは列) |
+| `tab_1` 〜 `tab_7` | `1` 〜 `7` | 番号のタブへ |
+| `toggle_done` | `x` | 完了と未完了を切り替える |
+| `move_today` / `move_next` / `move_waiting` / `move_someday` | `d` / `n` / `w` / `s` | 各セクションへ移す |
+| `cancel` | `c` | キャンセルする |
+| `add` / `edit` | `a` / `e` | 追加する / 編集する |
+| `sort` | `o` | 期日のチェックと並べ替え |
+| `queue` / `kanban` / `search` | `Q` / `K` / `/` | Queue・カンバン・検索を開く |
+| `open_link` | `gx` | リンクを開く |
+| `switch_view` | `<Tab>` | 表示を切り替える (Queue は期日別と待ち先別、検索は状態) |
+| `open` | `<Enter>` | Queue・検索・カンバンで選んでいるタスクを一覧で開く |
+| `help` / `quit` | `?` / `q` | ヘルプ / 終了 |
 
 ## 開発
 

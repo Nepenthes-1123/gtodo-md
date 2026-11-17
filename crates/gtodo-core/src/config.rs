@@ -85,6 +85,15 @@ pub fn resolve_data_dir(
     default_data_dir(env, platform, warn)
 }
 
+/// TUI の設定 (`tui.toml`) のパス。`config.json` と同じディレクトリに置く (`GTODO_CONFIG` で
+/// `config.json` の場所を指定していれば、その隣)。既定の場所を決められなければ `None`。
+///
+/// TUI だけの設定なので、Neovim 版と共有する `config.json` には入れない。
+pub fn tui_config_path(env: &impl Env, platform: Platform) -> Option<PathBuf> {
+    let (config, _) = config_path(env, platform)?;
+    Some(config.with_file_name("tui.toml"))
+}
+
 /// `config.json` のパスと、明示的に指定されたものか。
 fn config_path(env: &impl Env, platform: Platform) -> Option<(PathBuf, bool)> {
     if let Some(path) = env.var("GTODO_CONFIG") {
@@ -266,6 +275,35 @@ mod tests {
     use super::*;
 
     struct FakeEnv(HashMap<&'static str, String>);
+
+    #[test]
+    fn tui_toml_lives_next_to_config_json() {
+        let unix = env(&[("HOME", "/home/u")]);
+        assert_eq!(
+            tui_config_path(&unix, Platform::Unix),
+            Some(PathBuf::from("/home/u/.config/gtodo-md/tui.toml"))
+        );
+        let xdg = env(&[("HOME", "/home/u"), ("XDG_CONFIG_HOME", "/cfg")]);
+        assert_eq!(
+            tui_config_path(&xdg, Platform::Unix),
+            Some(PathBuf::from("/cfg/gtodo-md/tui.toml"))
+        );
+        let explicit = env(&[("GTODO_CONFIG", "/tmp/x/config.json")]);
+        assert_eq!(
+            tui_config_path(&explicit, Platform::Unix),
+            Some(PathBuf::from("/tmp/x/tui.toml"))
+        );
+        let windows = env(&[("APPDATA", r"C:\Users\u\AppData\Roaming")]);
+        assert_eq!(
+            tui_config_path(&windows, Platform::Windows),
+            Some(
+                PathBuf::from(r"C:\Users\u\AppData\Roaming")
+                    .join("gtodo-md")
+                    .join("tui.toml")
+            )
+        );
+        assert_eq!(tui_config_path(&env(&[]), Platform::Unix), None);
+    }
 
     impl Env for FakeEnv {
         fn var(&self, key: &str) -> Option<OsString> {

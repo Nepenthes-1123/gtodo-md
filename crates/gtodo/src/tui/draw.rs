@@ -668,39 +668,7 @@ pub fn help_entries(app: &App) -> Vec<(String, String)> {
 }
 
 fn all_actions() -> Vec<Action> {
-    let mut actions = vec![
-        Action::Down,
-        Action::Up,
-        Action::Top,
-        Action::Bottom,
-        Action::HalfPageDown,
-        Action::HalfPageUp,
-        Action::PageDown,
-        Action::PageUp,
-        Action::NextTab,
-        Action::PrevTab,
-    ];
-    actions.extend((0..TABS.len()).map(Action::GoTab));
-    actions.extend([
-        Action::ToggleDone,
-        Action::MoveToday,
-        Action::MoveNext,
-        Action::MoveWaiting,
-        Action::MoveSomeday,
-        Action::Cancel,
-        Action::Add,
-        Action::Edit,
-        Action::Sort,
-        Action::OpenQueue,
-        Action::OpenKanban,
-        Action::Search,
-        Action::OpenLink,
-        Action::SwitchView,
-        Action::Open,
-        Action::Help,
-        Action::Quit,
-    ]);
-    actions
+    Action::configurable()
 }
 
 fn draw_help(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {
