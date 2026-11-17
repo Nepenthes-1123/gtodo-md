@@ -212,6 +212,9 @@ pub fn move_template(data_dir: &DataDir, name: &str, restore: bool) -> Result<()
 ///
 /// 先に `dst` を排他的に作って場所を押さえてから、`src` をその上に rename する。確かめてから動かすと、
 /// その間に他のプロセスが作った `dst` を置き換えて消してしまうため。
+///
+/// 中身を書くのではなくファイルを動かすだけなので、`atomic.rs` (読んだ時点との照合と一時ファイルからの
+/// 置き換え) は通さない。rename 自体がアトミックで、行き先は排他的に押さえてある。
 fn move_no_replace(src: &Path, dst: &Path) -> Result<(), TemplateError> {
     match std::fs::OpenOptions::new().write(true).create_new(true).open(dst) {
         Ok(_) => {}

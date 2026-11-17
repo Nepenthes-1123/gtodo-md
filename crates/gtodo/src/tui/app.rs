@@ -1294,6 +1294,12 @@ impl App {
             Ok(file) => file,
             Err(e) => return self.message(Level::Error, e.to_string()),
         };
+        if template::tasks(&file.lines, self.today, &HashMap::new()).is_empty() {
+            return self.message(
+                Level::Warning,
+                format!("template {name} has no task lines (E to edit it)"),
+            );
+        }
         let placeholders = template::placeholder_names(&file.lines);
         let input = LineInput::new(if placeholders.is_empty() { "today" } else { "" });
         self.mode = Mode::InsertTemplate(Box::new(InsertTemplate {
@@ -1519,6 +1525,11 @@ impl App {
         let name = text.trim().to_string();
         if let Err(e) = template::check_name(&name) {
             return self.message(Level::Error, e.to_string());
+        }
+        if template::archived_path(&self.ws.data_dir, &name).exists() {
+            // 直せるように、入力は残す。
+            let text = format!("template {name:?} is archived; restore it or choose a different name");
+            return self.message(Level::Error, text);
         }
         self.mode = Mode::Normal;
         self.messages.clear();

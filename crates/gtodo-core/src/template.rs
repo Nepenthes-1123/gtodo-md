@@ -150,7 +150,9 @@ pub fn resolve_placeholders(line: &str, values: &HashMap<String, String>) -> Str
             }
             Some(_) => {
                 // 前後の空白ごと消し、空白 1 つにする (Lua 版の `%s*{{name}}%s*` → " ")。
-                out.push_str(line[last..start].trim_end_matches(crate::lua_compat::is_space));
+                out.push_str(&line[last..start]);
+                // 隣の空のプレースホルダーが置いた空白とも 1 つにまとめる (Lua 版は名前ごとに置き換えるため 1 つになる)。
+                out.truncate(out.trim_end_matches(crate::lua_compat::is_space).len());
                 out.push(' ');
                 last = end + line[end..].len() - line[end..].trim_start_matches(crate::lua_compat::is_space).len();
                 continue;
@@ -271,6 +273,10 @@ mod tests {
             "- [ ] 準備 for "
         );
         assert_eq!(resolve_placeholders("- [ ] a {{context}}", &values(&[])), "- [ ] a ");
+        assert_eq!(
+            resolve_placeholders("- [ ] a {{project}} {{context}} b", &values(&[])),
+            "- [ ] a b"
+        );
     }
 
     #[test]

@@ -2315,6 +2315,14 @@ fn templates_are_created_edited_archived_and_restored() {
     for _ in 0..3 {
         press_code(&mut app, KeyCode::Backspace);
     }
+    // アーカイブした名前では作らない (入力は残す)。
+    press(&mut app, "old");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(last_message(&app).contains("is archived"));
+    assert!(matches!(app.mode, Mode::NewName { .. }));
+    for _ in 0..3 {
+        press_code(&mut app, KeyCode::Backspace);
+    }
     press(&mut app, "daily");
     press_code(&mut app, KeyCode::Enter);
     assert!(app.editor_requested());
@@ -2327,6 +2335,14 @@ fn templates_are_created_edited_archived_and_restored() {
     assert_eq!(app.templates.selected().unwrap().name, "daily");
     assert_eq!(app.templates.selected().unwrap().tasks, 1);
 
+    // タスク行の無いテンプレートは、尋ねる前に知らせる。
+    f.write("templates/empty.md", &template_seed());
+    app.tick();
+    app.templates.cursor = app.templates.rows.iter().position(|r| r.name == "empty").unwrap();
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(last_message(&app).contains("has no task lines"));
+    app.templates.cursor = app.templates.rows.iter().position(|r| r.name == "daily").unwrap();
     // X でアーカイブし、Tab でアーカイブしたものを見て、X で戻す。
     press(&mut app, "X");
     assert_eq!(last_message(&app), "archived daily");
@@ -2342,4 +2358,8 @@ fn templates_are_created_edited_archived_and_restored() {
     press(&mut app, "X");
     assert_eq!(last_message(&app), "restored daily");
     assert!(f.path().join("templates/daily.md").exists());
+}
+
+fn template_seed() -> String {
+    gtodo_core::template::seed()
 }
