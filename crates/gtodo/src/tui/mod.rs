@@ -55,7 +55,12 @@ pub fn run(data_dir: PathBuf, warnings: Vec<String>, keys: Option<PathBuf>) -> R
     let _ = execute!(io::stdout(), EnableBracketedPaste);
     let result = event_loop(&mut terminal, &mut app, theme);
     let _ = execute!(io::stdout(), DisableBracketedPaste);
-    ratatui::try_restore()?;
+    let restored = ratatui::try_restore();
+    // 画面の知らせは消えるので、書き戻せなかった編集のコピーは端末を戻してからもう一度知らせる。
+    for copy in app.finish() {
+        eprintln!("gtodo: an edited copy that was not saved is kept at {}", copy.display());
+    }
+    restored?;
     result
 }
 

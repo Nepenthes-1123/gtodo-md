@@ -1980,5 +1980,49 @@ fn an_edit_is_not_saved_over_changes_made_while_editing() {
     // 場所は切り詰められないよう、別の行に出す。
     let kept = Path::new(message.lines().last().unwrap());
     assert!(fs::read_to_string(kept).unwrap().contains("次1 TUI"));
+    // 終わった後にも知らせるため、覚えておく。
+    assert_eq!(app.finish(), [kept.to_path_buf()]);
     fs::remove_dir_all(kept.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn quitting_while_asked_to_fix_an_edit_keeps_the_copy() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    fake_editor(&mut app, |_, text| text.replace("## Next", "## Nxt"));
+    edit_file(&mut app);
+    assert!(matches!(app.mode, Mode::FixEdit { .. }));
+    // Ctrl-c はどこでも終了する。編集した内容は消さずに残す。
+    press_ctrl(&mut app, 'c');
+    assert!(app.should_quit());
+    let kept = app.finish();
+    assert_eq!(kept.len(), 1);
+    assert!(fs::read_to_string(&kept[0]).unwrap().contains("## Nxt"));
+    fs::remove_dir_all(kept[0].parent().unwrap()).unwrap();
+}
+
+#[test]
+fn edit_file_on_the_kanban_and_in_search_opens_the_file_of_the_column_or_task() {
+    let f = Fixture::new();
+    fs::write(f.dir.path().join("done.md"), "# Done\n").unwrap();
+    let mut app = f.app();
+    let opened = fake_editor(&mut app, |_, text| text.to_string());
+    let last = |opened: &Opened| {
+        let (path, line, _) = opened.borrow().last().unwrap().clone();
+        (path.file_name().unwrap().to_string_lossy().into_owned(), line)
+    };
+    // 空の Done の列では done.md。
+    press(&mut app, "K");
+    for _ in 0..kanban::COLUMNS {
+        press(&mut app, "l");
+    }
+    assert!(app.selected().is_none());
+    edit_file(&mut app);
+    assert_eq!(last(&opened), ("done.md".into(), None));
+    // 検索では選んでいるタスクのファイル。
+    press_code(&mut app, KeyCode::Esc);
+    press(&mut app, "/受信");
+    press_code(&mut app, KeyCode::Enter);
+    edit_file(&mut app);
+    assert_eq!(last(&opened), ("inbox.md".into(), Some(3)));
 }

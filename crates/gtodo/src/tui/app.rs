@@ -288,6 +288,8 @@ pub struct App {
     edit: Option<EditSession>,
     /// [`App::run_editor`] でエディタを開く。端末を明け渡す必要があるので、呼ぶのは `mod.rs`。
     editor_requested: bool,
+    /// 書き戻せずに残した編集のコピー。終了した後にも標準エラーへ知らせる (画面の知らせは消えるため)。
+    kept_copies: Vec<PathBuf>,
     /// 今日の日付を返す (テストでは日付を差し替える)。
     clock: Box<dyn Fn() -> NaiveDate>,
     today: NaiveDate,
@@ -354,6 +356,7 @@ impl App {
             editor_name,
             edit: None,
             editor_requested: false,
+            kept_copies: Vec::new(),
             clock,
             today,
             opened_date: today,
@@ -392,6 +395,16 @@ impl App {
 
     pub fn should_quit(&self) -> bool {
         self.quit
+    }
+
+    /// 書き戻せずに残した編集のコピー。終わるときに呼ぶ。編集の途中 (検証に通らず尋ねている間に
+    /// `Ctrl-c` で終えたときなど) のものもコピーを残して返す (編集した内容を黙って消さないため)。
+    pub fn finish(&mut self) -> Vec<PathBuf> {
+        if let Some(session) = self.edit.take() {
+            let name = session.file.file_name();
+            self.kept_copies.push(session.dir.keep().join(name));
+        }
+        std::mem::take(&mut self.kept_copies)
     }
 
     pub fn tab(&self) -> Tab {
@@ -1031,11 +1044,13 @@ impl App {
                     kept.display()
                 );
                 self.message(Level::Error, text);
+                self.kept_copies.push(kept);
             }
             None => {
                 let kept = session.dir.keep().join(name);
                 let text = format!("{name} was not saved. Your copy:\n{}", kept.display());
                 self.message(Level::Warning, text);
+                self.kept_copies.push(kept);
             }
         }
     }
