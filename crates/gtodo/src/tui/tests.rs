@@ -1541,3 +1541,51 @@ fn the_kanban_follows_changes_by_other_programs() {
     assert_eq!(app.selected().unwrap().row.task.content, "今日1");
     assert_eq!(column_contents(&app, 1), Vec::<String>::new());
 }
+
+#[test]
+fn a_long_column_scrolls_to_keep_the_selected_card_visible() {
+    let f = Fixture::new();
+    let cards: String = (1..=30).map(|i| format!("- [ ] 次{i} id:{i:06x}\n")).collect();
+    f.write(
+        "todo.md",
+        &format!("# Todo\n\n## Today\n\n## Next\n\n{cards}\n## Waiting\n\n## Someday\n"),
+    );
+    let mut app = f.app();
+    press(&mut app, "Kl");
+    // 高さ 14: 1 行目・区切り・列の見出し・最下段を除いた 10 行に、3 行のカードが 3 枚入る。
+    let rows = screen(&mut app, 40, 14).join("\n");
+    assert!(
+        rows.contains("次1") && rows.contains("次3") && !rows.contains("次4"),
+        "{rows}"
+    );
+    press(&mut app, "G");
+    let rows = screen(&mut app, 40, 14).join("\n");
+    assert!(
+        rows.contains("┃次30") && rows.contains("次28") && !rows.contains("次27"),
+        "{rows}"
+    );
+    // 上へ戻ると、選んでいるカードが一番上になるところまでだけ戻す。
+    press(&mut app, "kkk");
+    let rows = screen(&mut app, 40, 14).join("\n");
+    assert!(
+        rows.contains("┃次27") && rows.contains("次29") && !rows.contains("次30"),
+        "{rows}"
+    );
+    // 半ページ (見えている枚数の半分) ずつ動く。
+    press_ctrl(&mut app, 'u');
+    assert_eq!(app.selected().unwrap().row.task.content, "次26");
+    press(&mut app, "gg");
+    let rows = screen(&mut app, 40, 14).join("\n");
+    assert!(rows.contains("┃次1 "), "{rows}");
+}
+
+#[test]
+fn a_card_taller_than_the_column_is_drawn_as_far_as_it_fits() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    press(&mut app, "Kll");
+    // 本文と期日の行がある「今日1」は 4 行。列には 2 行しか入らない。
+    let rows = screen(&mut app, 40, 6);
+    assert_eq!(rows[3], "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+    assert_eq!(rows[4], "┃(A) 今日1                             ┃");
+}

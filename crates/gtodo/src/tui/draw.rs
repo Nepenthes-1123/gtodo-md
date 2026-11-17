@@ -252,11 +252,10 @@ fn layout_row(
 fn tail_spans(task: &Task, tab: Tab, today: NaiveDate, base: Style, theme: Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let value = |v: &Option<String>| v.as_deref().filter(|v| !v.is_empty()).map(str::to_string);
-    if let Some(p) = project_tag(task) {
-        spans.push(Span::styled(format!(" {p}"), base.patch(theme.fg(Color::Magenta))));
-    }
-    if let Some(c) = context_tag(task) {
-        spans.push(Span::styled(format!(" {c}"), base.patch(theme.fg(Color::Green))));
+    let tags = Tags::of(task, today, base, theme);
+    for tag in [tags.project, tags.context].into_iter().flatten() {
+        spans.push(Span::raw(" "));
+        spans.push(tag);
     }
     match tab {
         Tab::Done => {
@@ -270,25 +269,46 @@ fn tail_spans(task: &Task, tab: Tab, today: NaiveDate, base: Style, theme: Theme
             }
         }
         _ => {
-            if let Some(due) = value(&task.due) {
-                let (text, urgency) = due_label(&due, today);
-                let style = if task.status == Status::Done {
-                    base
-                } else {
-                    match urgency {
-                        Urgency::Overdue => theme.fg(Color::Red).add_modifier(Modifier::BOLD),
-                        Urgency::Today => theme.fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                        Urgency::Later => Style::new(),
-                    }
-                };
-                spans.push(Span::styled(format!("  {text}"), style));
-            }
-            if let Some(w) = value(&task.wait) {
-                spans.push(Span::styled(format!("  wait:{w}"), base.patch(theme.fg(Color::Blue))));
+            for tag in [tags.due, tags.wait].into_iter().flatten() {
+                spans.push(Span::raw("  "));
+                spans.push(tag);
             }
         }
     }
     spans
+}
+
+/// タスクのタグの表示 (一覧の行とカンバンのカードで共有する。並べる順は呼び出し元が決める)。
+struct Tags {
+    project: Option<Span<'static>>,
+    context: Option<Span<'static>>,
+    /// 期日と残りの日数 (期限切れ・今日は強調する。完了したタスクでは強調しない)。
+    due: Option<Span<'static>>,
+    wait: Option<Span<'static>>,
+}
+
+impl Tags {
+    fn of(task: &Task, today: NaiveDate, base: Style, theme: Theme) -> Tags {
+        fn value(v: &Option<String>) -> Option<&str> {
+            v.as_deref().filter(|v| !v.is_empty())
+        }
+        let due = value(&task.due).map(|due| {
+            let (text, urgency) = due_label(due, today);
+            let style = match (task.status, urgency) {
+                (Status::Done, _) => base,
+                (_, Urgency::Overdue) => theme.fg(Color::Red).add_modifier(Modifier::BOLD),
+                (_, Urgency::Today) => theme.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                (_, Urgency::Later) => base,
+            };
+            Span::styled(text, style)
+        });
+        Tags {
+            project: project_tag(task).map(|p| Span::styled(p, base.patch(theme.fg(Color::Magenta)))),
+            context: context_tag(task).map(|c| Span::styled(c, base.patch(theme.fg(Color::Green)))),
+            due,
+            wait: value(&task.wait).map(|w| Span::styled(format!("wait:{w}"), base.patch(theme.fg(Color::Blue)))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1253,17 +1273,24 @@ fn draw_kanban_column(
     let mut y = body.y;
     let mut shown = 0;
     for (i, card) in cards.iter().enumerate().skip(offset) {
-        let height = height(card);
+        let mut height = height(card);
+        let mut sides = Borders::ALL;
         if y + height > body.bottom() {
-            break;
+            // 列より高いカードは、下の枠を除いて入る分だけ描く (選んでいるカードが見えなくならないように)。
+            if shown > 0 || y >= body.bottom() {
+                break;
+            }
+            height = body.bottom() - y;
+            sides = Borders::TOP | Borders::LEFT | Borders::RIGHT;
         }
         let selected = focused && i == cursor;
         let border = if selected {
-            Block::bordered()
+            Block::new()
+                .borders(sides)
                 .border_type(ratatui::widgets::BorderType::Thick)
                 .border_style(theme.accent())
         } else {
-            Block::bordered().border_style(theme.dim())
+            Block::new().borders(sides).border_style(theme.dim())
         };
         let lines = card_lines(card, inner_width, today, theme);
         frame.render_widget(Paragraph::new(lines).block(border), Rect { y, height, ..body });
@@ -1284,28 +1311,11 @@ fn card_lines(card: &kanban::Card, width: usize, today: NaiveDate, theme: Theme)
         .map(|l| Line::styled(l, base))
         .collect();
 
-    let mut tags: Vec<Span> = Vec::new();
     let value = |v: &Option<String>| v.as_deref().filter(|v| !v.is_empty()).map(str::to_string);
-    if task.status == Status::Open
-        && let Some(due) = value(&task.due)
-    {
-        let (text, urgency) = due_label(&due, today);
-        let style = match urgency {
-            Urgency::Overdue => theme.fg(Color::Red).add_modifier(Modifier::BOLD),
-            Urgency::Today => theme.fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            Urgency::Later => Style::new(),
-        };
-        tags.push(Span::styled(text, style));
-    }
-    if let Some(w) = value(&task.wait) {
-        tags.push(Span::styled(format!("wait:{w}"), base.patch(theme.fg(Color::Blue))));
-    }
-    if let Some(p) = project_tag(task) {
-        tags.push(Span::styled(p, base.patch(theme.fg(Color::Magenta))));
-    }
-    if let Some(c) = context_tag(task) {
-        tags.push(Span::styled(c, base.patch(theme.fg(Color::Green))));
-    }
+    // 期日・待ち先・タグの順 (ROADMAP の決定事項)。完了したカードの期日は出さない (完了日を出す)。
+    let t = Tags::of(task, today, base, theme);
+    let due = t.due.filter(|_| task.status == Status::Open);
+    let mut tags: Vec<Span> = [due, t.wait, t.project, t.context].into_iter().flatten().collect();
     if let Some(d) = value(&task.done) {
         tags.push(Span::styled(format!("done:{d}"), theme.dim()));
     } else if let Some(d) = value(&task.completed_at) {
