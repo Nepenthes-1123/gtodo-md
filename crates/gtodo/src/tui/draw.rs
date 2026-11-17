@@ -423,10 +423,14 @@ fn message_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
 /// Neovim 版の入力欄と同じ問いかけ。
 const WAIT_PROMPT: &str = "Waiting for (empty to skip/remove): ";
 
+/// Neovim 版の分割と同じ問いかけ。
+const SPLIT_PROMPT: &str = "Project tag (empty for plain split): ";
+
 /// 最下段の入力欄の問いかけと入力 (入力欄にいるときだけ)。
 fn input_prompt(mode: &Mode) -> Option<(String, &LineInput)> {
     match mode {
         Mode::WaitInput { input, .. } => Some((WAIT_PROMPT.to_string(), input)),
+        Mode::SplitProject { input, .. } => Some((SPLIT_PROMPT.to_string(), input)),
         Mode::NewName {
             kind: NewKind::Project,
             input,
@@ -477,6 +481,13 @@ fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
                 ]),
             ]
         }
+        Mode::SplitProject { row, input } => vec![
+            Line::styled(format!("→ split: {}", row.task.content), theme.dim()),
+            Line::from(vec![
+                Span::styled(SPLIT_PROMPT, theme.key()),
+                Span::raw(input.text().to_string()),
+            ]),
+        ],
         Mode::InsertTemplate(insert) => {
             let prompt = input_prompt(&app.mode).map(|(p, _)| p).unwrap_or_default();
             vec![
@@ -768,6 +779,10 @@ fn description(app: &App, action: Action) -> String {
             "タスクを追加する (追加先の初期値は開いているタブ)。プロジェクト・テンプレート画面では新しく作る".to_string()
         }
         Action::Edit => "タスクを編集する".to_string(),
+        Action::Split => {
+            "タスクを分割する (プロジェクトを尋ねてから、サブタスクを $EDITOR で書く。書かなかった項目は元のタスクから引き継ぐ)"
+                .to_string()
+        }
         Action::OpenQueue => "Queue を開く (期日・待ち先ごとの一覧)".to_string(),
         Action::OpenKanban => "カンバンを開く (h/l などのタブのキーで列を移る)".to_string(),
         Action::OpenLink => "リンクを開く (複数あれば選ぶ)".to_string(),

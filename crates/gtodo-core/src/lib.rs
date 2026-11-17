@@ -21,6 +21,7 @@ pub mod project;
 pub mod search;
 pub mod sections;
 pub mod settings;
+pub mod split;
 pub mod state;
 pub mod store;
 pub mod task;

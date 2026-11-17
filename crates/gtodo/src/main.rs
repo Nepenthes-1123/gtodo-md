@@ -151,6 +151,18 @@ enum Command {
         #[command(subcommand)]
         command: TemplateCommand,
     },
+    /// Replace a task with subtasks that inherit what they do not say (+project, @context, due:, wait:, ...)
+    Split {
+        /// Key shown by `gtodo list`: an ID (or its first 4+ characters) or a ~ temporary key
+        task: String,
+        /// Project for the subtasks (promotes the task to a project; its file is created if missing); "" removes it.
+        /// Without this, the subtasks keep the task's project
+        #[arg(long, short)]
+        project: Option<String>,
+        /// Subtasks, one argument each; +project, @context, due:, wait: and a leading (A) are read as in task lines
+        #[arg(required = true)]
+        subtasks: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -248,5 +260,10 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
         Command::Stats { json } => commands::stats::run(&ws, json, out),
         Command::Project { command } => commands::project::run(&ws, command, &mut warn, out),
         Command::Template { command } => commands::template::run(&ws, command, &mut warn, out),
+        Command::Split {
+            task,
+            project,
+            subtasks,
+        } => commands::split::run(&ws, &task, project, &subtasks, &mut warn, out),
     }
 }

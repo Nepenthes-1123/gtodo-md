@@ -16,6 +16,7 @@ use crate::logic::{completion, due, history, sort};
 use crate::lua_compat;
 use crate::project;
 use crate::sections::{SectionKey, SectionNames};
+use crate::split;
 use crate::store::{self, DataDir, FileKind, RawFile, ReadError, Stamp};
 use crate::task::{self, Status, Task};
 use crate::template;
@@ -36,6 +37,12 @@ pub enum OpError {
     NotCompleted(String),
     #[error("{0} is completed; completed tasks cannot be moved")]
     MoveCompleted(String),
+    #[error("{0} is completed; completed tasks cannot be split")]
+    SplitCompleted(String),
+    #[error("no subtasks were given, so nothing was split")]
+    NoSubtasks,
+    #[error(transparent)]
+    Project(#[from] ProjectError),
     /// 書き換えた行を読み直すと別のタスクになる (本文の先頭の `(C)` が、優先度を消すと優先度として読まれるなど)。
     #[error("the edited task would be read back differently, so it was not written: {0}")]
     Unwritable(String),
@@ -771,6 +778,103 @@ pub fn edit_task(
     Ok(Edited { task, file: at.file })
 }
 
+/// 分割でサブタスクに付けるプロジェクト。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitProject {
+    /// 元のタスクのプロジェクトのまま。
+    Keep,
+    /// このプロジェクトにする (プロジェクトへの昇格)。[`project::check_tag`] で確かめる。
+    Set(String),
+    /// プロジェクトを外す。
+    Remove,
+}
+
+/// 分割した結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Split {
+    pub file: FileKind,
+    /// 書いたサブタスク (ID 付き)。
+    pub tasks: Vec<Task>,
+    /// プロジェクトファイルが無かったので作ったときのパス。
+    pub created_project: Option<PathBuf>,
+}
+
+/// `key` のタスクを、`subtasks` (書かれていない項目は元のタスクから引き継ぐ) で置き換える (Lua 版の分割)。
+/// 元のタスクは消え、同じ位置にサブタスクが並ぶ。サブタスクにプロジェクトが付き、そのファイルが無ければ作る
+/// (Lua 版と同じ。作れない名前のプロジェクトを元のタスクから引き継いだときは作らない)。
+///
+/// Lua 版と同じく、その行だけを書き換える (並べ替えは呼び出し元が期日のチェックと合わせて行う)。
+pub fn split_task(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    key: &str,
+    project: &SplitProject,
+    subtasks: Vec<Task>,
+) -> Result<Split, OpError> {
+    if subtasks.is_empty() {
+        return Err(OpError::NoSubtasks);
+    }
+    let project = match project {
+        SplitProject::Set(tag) => Some(Some(project::check_tag(tag).map_err(ProjectError::from)?)),
+        SplitProject::Remove => Some(None),
+        SplitProject::Keep => None,
+    };
+    let mut inbox = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+    let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let at = locate(data_dir, names, today, &inbox.doc, &todo.doc, key)?;
+    // サブタスクの ID は、どの文書とも、互いにも重ならないものを先に決める。
+    let mut ids: Vec<String> = Vec::new();
+    while ids.len() < subtasks.len() {
+        let id = unused_id(&[&inbox.doc, &todo.doc]);
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let file = match at.file {
+        FileKind::Inbox => &mut inbox,
+        _ => &mut todo,
+    };
+    let Item::Task(item) = &file.items_mut(at.section)[at.index] else {
+        unreachable!("key::find only returns tasks");
+    };
+    let parent = item.task.clone();
+    let lnum = item.lnum;
+    if parent.status == Status::Done {
+        return Err(OpError::SplitCompleted(key.to_string()));
+    }
+    let project = project.unwrap_or_else(|| parent.project.clone());
+    let mut tasks = Vec::new();
+    let mut lines = Vec::new();
+    for (child, id) in subtasks.into_iter().zip(ids) {
+        let mut task = split::inherit(&parent, child, project.as_deref());
+        task.id = Some(id);
+        let line = task.clone().serialize();
+        if Task::parse_at(&line, today).as_ref() != Some(&task) {
+            return Err(OpError::Unwritable(line));
+        }
+        lines.push(line);
+        tasks.push(task);
+    }
+    file.lines.splice(lnum - 1..lnum, lines);
+    file.write_lines()?;
+
+    let created_project = match project.as_deref().map(project::check_tag) {
+        Some(Ok(tag)) if !project::path(data_dir, &tag).exists() => match create_project(data_dir, &tag, today) {
+            Ok(path) => Some(path),
+            // 確かめた後に他のプロセスが作った。
+            Err(ProjectError::Exists(_)) => None,
+            Err(e) => return Err(e.into()),
+        },
+        _ => None,
+    };
+    Ok(Split {
+        file: at.file,
+        tasks,
+        created_project,
+    })
+}
+
 /// todo.md の各セクションのタスクを並べ替える。
 pub fn sort_todo(data_dir: &DataDir, names: &SectionNames, today: NaiveDate) -> Result<(), OpError> {
     let mut todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
@@ -1130,6 +1234,73 @@ mod tests {
                 "# Inbox\n\n- [ ] 受信 due:2026-02-01 id:aaaaaa\n- [ ] 準備 +site id:{}\n- [ ] 連絡 id:{}\n",
                 ids[0], ids[1]
             )
+        );
+    }
+
+    #[test]
+    fn a_split_task_is_replaced_in_place_by_its_subtasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let names = SectionNames::default();
+        fs::write(data_dir.path(FileKind::Inbox), "# Inbox\n").unwrap();
+        let todo = "# Todo\n\n## Today\n\n- [ ] 前\n- [ ] (A) 発表 @office due:2026-03-01 id:bbbbbb\n- [x] 済み id:cccccc\n\n## Next\n\n## Waiting\n\n## Someday\n";
+        fs::write(data_dir.path(FileKind::Todo), todo).unwrap();
+        let subtasks = ["- [ ] 資料", "- [ ] 練習 @home"]
+            .map(|l| Task::parse_at(l, today()).unwrap())
+            .to_vec();
+        let split = split_task(
+            &data_dir,
+            &names,
+            today(),
+            "bbbbbb",
+            &SplitProject::Set("+talk".into()),
+            subtasks,
+        )
+        .unwrap();
+        assert_eq!(split.file, FileKind::Todo);
+        let ids: Vec<&str> = split.tasks.iter().map(|t| t.id.as_deref().unwrap()).collect();
+        assert_ne!(ids[0], ids[1]);
+        assert!(!ids.contains(&"bbbbbb"));
+        assert_eq!(
+            fs::read_to_string(data_dir.path(FileKind::Todo)).unwrap(),
+            todo.replace(
+                "- [ ] (A) 発表 @office due:2026-03-01 id:bbbbbb\n",
+                &format!(
+                    "- [ ] 資料 +talk @office due:2026-03-01 id:{}\n- [ ] 練習 +talk @home due:2026-03-01 id:{}\n",
+                    ids[0], ids[1]
+                )
+            ),
+            "only the line is replaced"
+        );
+        // プロジェクトのファイルが無ければ作る。
+        assert_eq!(split.created_project, Some(dir.path().join("projects/talk.md")));
+        assert!(dir.path().join("projects/talk.md").exists());
+
+        let one = || vec![Task::parse_at("- [ ] x", today()).unwrap()];
+        assert!(matches!(
+            split_task(&data_dir, &names, today(), "cccccc", &SplitProject::Keep, one()),
+            Err(OpError::SplitCompleted(_))
+        ));
+        assert!(matches!(
+            split_task(
+                &data_dir,
+                &names,
+                today(),
+                ids[0],
+                &SplitProject::Set("a b".into()),
+                one()
+            ),
+            Err(OpError::Project(ProjectError::Tag(_)))
+        ));
+        assert!(matches!(
+            split_task(&data_dir, &names, today(), ids[0], &SplitProject::Keep, Vec::new()),
+            Err(OpError::NoSubtasks)
+        ));
+        // プロジェクトを外せる。
+        let split = split_task(&data_dir, &names, today(), ids[0], &SplitProject::Remove, one()).unwrap();
+        assert_eq!(
+            (split.tasks[0].project.as_deref(), &split.created_project),
+            (None, &None)
         );
     }
 

@@ -8,5 +8,6 @@ pub mod project;
 pub mod queue;
 pub mod search;
 pub mod sort;
+pub mod split;
 pub mod stats;
 pub mod template;

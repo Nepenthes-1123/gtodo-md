@@ -2363,3 +2363,74 @@ fn templates_are_created_edited_archived_and_restored() {
 fn template_seed() -> String {
     gtodo_core::template::seed()
 }
+
+#[test]
+fn p_splits_a_task_into_subtasks_written_in_the_editor() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    let opened = fake_editor(&mut app, |_, text| {
+        text.replace("- [ ] \n", "- [ ] ワイヤー\n- [ ] 実装 @pc due:2026-11-20\n")
+    });
+    // 初期値は元のタスクのプロジェクト。
+    press(&mut app, "p");
+    assert_eq!(
+        screen(&mut app, 80, 12).pop().unwrap(),
+        "Project tag (empty for plain split): work"
+    );
+    for _ in 0..4 {
+        press_code(&mut app, KeyCode::Backspace);
+    }
+    press(&mut app, "launch");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(app.editor_requested());
+    app.run_editor();
+    let (copy, line, text) = opened.borrow()[0].clone();
+    assert!(text.starts_with("<!-- 分割するタスク: 今日1 -->"), "{text}");
+    assert_eq!(text.lines().nth(line.unwrap() - 1), Some("- [ ] "));
+    assert!(!copy.exists(), "the file is removed once used");
+    let todo = f.read("todo.md");
+    assert!(!todo.contains("今日1"), "{todo}");
+    // 優先度は引き継がず、書かなかった項目 (コンテキスト・期日) は引き継ぐ。
+    assert!(
+        todo.contains("- [ ] ワイヤー +launch @office due:2026-11-16 id:"),
+        "{todo}"
+    );
+    assert!(todo.contains("- [ ] 実装 +launch @pc due:2026-11-20 id:"), "{todo}");
+    assert!(app.messages.iter().any(|m| m.text == "split into 2 task(s)"));
+    assert!(app.messages.iter().any(|m| m.text == "created projects/launch.md"));
+    assert!(f.path().join("projects/launch.md").exists());
+}
+
+#[test]
+fn split_asks_again_when_a_line_is_not_a_task_and_does_nothing_when_nothing_is_written() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    let before = f.read("todo.md");
+    fake_editor(&mut app, |n, text| match n {
+        0 => text.replace("- [ ] \n", "メモ\n"),
+        1 => text.replace("メモ\n", "- [ ] 書き直した\n"),
+        _ => text.to_string(),
+    });
+    press(&mut app, "j");
+    press(&mut app, "p");
+    press_code(&mut app, KeyCode::Enter);
+    app.run_editor();
+    assert!(matches!(&app.mode, Mode::FixEdit { name, .. } if name == "the subtasks"));
+    assert_eq!(f.read("todo.md"), before);
+    press(&mut app, "y");
+    app.run_editor();
+    assert!(f.read("todo.md").contains("- [ ] 書き直した id:"));
+    assert!(!f.read("todo.md").contains("今日2"));
+    // 何も書かなければ分割しない。
+    let before = f.read("todo.md");
+    press(&mut app, "p");
+    press_code(&mut app, KeyCode::Enter);
+    app.run_editor();
+    assert_eq!(last_message(&app), "no subtasks were written, so nothing was split");
+    assert_eq!(f.read("todo.md"), before);
+    // 完了したタスクは分割しない。
+    press(&mut app, "x");
+    press(&mut app, "p");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(last_message(&app), "completed tasks cannot be split");
+}
