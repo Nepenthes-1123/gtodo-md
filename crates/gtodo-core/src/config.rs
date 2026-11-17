@@ -283,10 +283,12 @@ mod tests {
             tui_config_path(&unix, Platform::Unix),
             Some(PathBuf::from("/home/u/.config/gtodo-md/tui.toml"))
         );
-        let xdg = env(&[("HOME", "/home/u"), ("XDG_CONFIG_HOME", "/cfg")]);
+        // 相対パスの XDG_CONFIG_HOME は無視されるので、ホスト OS で絶対パスになるものを使う。
+        let cfg = std::env::temp_dir().join("cfg");
+        let xdg = env(&[("HOME", "/home/u"), ("XDG_CONFIG_HOME", cfg.to_str().unwrap())]);
         assert_eq!(
             tui_config_path(&xdg, Platform::Unix),
-            Some(PathBuf::from("/cfg/gtodo-md/tui.toml"))
+            Some(cfg.join("gtodo-md").join("tui.toml"))
         );
         let explicit = env(&[("GTODO_CONFIG", "/tmp/x/config.json")]);
         assert_eq!(
