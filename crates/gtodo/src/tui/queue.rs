@@ -1,5 +1,7 @@
 //! Queue ビューの行。見出しと並びは Neovim 版の Queue と同じ (core の `view::due_queue`・`wait_queue`)。
 
+use std::rc::Rc;
+
 use chrono::NaiveDate;
 use gtodo_core::document::Document;
 use gtodo_core::key::task_key;
@@ -52,19 +54,11 @@ pub enum Line {
 pub fn build(wait: bool, inbox: &Document, todo: &Document, names: &SectionNames, today: NaiveDate) -> Vec<Line> {
     let all = || entries(FileKind::Inbox, inbox).chain(entries(FileKind::Todo, todo));
     let item = |e: &Entry, suffix: String, overdue: bool, far: bool| {
-        let section = match e.file {
-            FileKind::Todo => e.section.and_then(|s| names.key_of(s)),
-            _ => None,
-        };
-        let place = match (e.file, e.section) {
-            (FileKind::Inbox, None) => "Inbox".to_string(),
-            (_, Some(name)) => name.to_string(),
-            (file, None) => file.file_name().to_string(),
-        };
+        let (section, place) = locate(e.file, e.section, names);
         Line::Item(Box::new(Item {
             row: Row {
                 key: task_key(e.task(), &e.item.line),
-                task: e.task().clone(),
+                task: Rc::new(e.task().clone()),
             },
             file: e.file,
             section,
@@ -125,6 +119,22 @@ pub fn build(wait: bool, inbox: &Document, todo: &Document, names: &SectionNames
         }));
     }
     lines
+}
+
+/// タスクがどこにあるか。todo.md の管理対象のセクションならそのキーと、右端に出す名前
+/// (Inbox・セクション名・Done、見出しの無いところならファイル名)。Queue と検索で共有する。
+pub fn locate(file: FileKind, section: Option<&str>, names: &SectionNames) -> (Option<SectionKey>, String) {
+    let key = match file {
+        FileKind::Todo => section.and_then(|s| names.key_of(s)),
+        _ => None,
+    };
+    let place = match (file, section) {
+        (FileKind::Inbox, None) => "Inbox".to_string(),
+        (FileKind::Done, _) => "Done".to_string(),
+        (_, Some(name)) => name.to_string(),
+        (file, None) => file.file_name().to_string(),
+    };
+    (key, place)
 }
 
 /// 期日が来ている (今日か過去の) inbox.md の未完了のタスクの数。

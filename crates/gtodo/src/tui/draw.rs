@@ -196,18 +196,53 @@ pub fn row_line(row: &Row, selected: bool, tab: Tab, today: NaiveDate, width: us
     }
     let tail = tail_spans(task, tab, today, base, theme);
 
-    let used: usize = head.iter().chain(&tail).map(Span::width).sum();
-    let room = width.saturating_sub(used).max(MIN_CONTENT_WIDTH);
-    let content = truncate(&task.content, room);
     let content_style = if selected {
         base.add_modifier(Modifier::BOLD)
     } else {
         base
     };
+    let content = Content {
+        text: &task.content,
+        ranges: &[],
+        style: content_style,
+        mark: content_style,
+        min_width: MIN_CONTENT_WIDTH,
+    };
+    layout_row(head, content, tail, None, width)
+}
 
+/// 行の本文 (幅に合わせて切り詰める部分)。
+struct Content<'a> {
+    text: &'a str,
+    /// 強調する範囲 (検索で当たった部分)。
+    ranges: &'a [std::ops::Range<usize>],
+    style: Style,
+    mark: Style,
+    /// 狭くても残す幅。
+    min_width: usize,
+}
+
+/// 一覧・Queue・検索の行を組み立てる。本文が入りきらなければ `…` で切り、タグなどは残す。
+/// `place` があれば右端にそろえて出す (本文との間は 2 文字以上空ける)。
+fn layout_row(
+    head: Vec<Span<'static>>,
+    content: Content,
+    tail: Vec<Span<'static>>,
+    place: Option<Span<'static>>,
+    width: usize,
+) -> Line<'static> {
+    let place_room = place.as_ref().map_or(0, |p| p.width() + 2);
+    let fixed: usize = head.iter().chain(&tail).map(Span::width).sum::<usize>() + place_room;
+    let room = width.saturating_sub(fixed).max(content.min_width);
+    let (body, body_width) = highlighted(content.text, content.ranges, room, content.style, content.mark);
     let mut spans = head;
-    spans.push(Span::styled(content, content_style));
+    spans.extend(body);
     spans.extend(tail);
+    if let Some(place) = place {
+        let used = fixed - place_room + body_width + place.width();
+        spans.push(Span::raw(" ".repeat(width.saturating_sub(used).max(2))));
+        spans.push(place);
+    }
     Line::from(spans)
 }
 
@@ -910,22 +945,20 @@ fn queue_item_line(item: &queue::Item, selected: bool, width: usize, theme: Them
     }
     let place = Span::styled(item.place.clone(), theme.dim());
 
-    // 本文と右端の場所の間は 2 文字以上空ける。
-    let fixed: usize = head.iter().chain(&tail).map(Span::width).sum::<usize>() + place.width() + 2;
-    // 狭くても右端の場所を残すため、一覧より本文を短くしてよい。
-    let content = truncate(&task.content, width.saturating_sub(fixed).max(MIN_QUEUE_CONTENT_WIDTH));
     let content_style = if selected {
         base.add_modifier(Modifier::BOLD)
     } else {
         base
     };
-    let used = fixed - 2 + content.width();
-    let mut spans = head;
-    spans.push(Span::styled(content, content_style));
-    spans.extend(tail);
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(used).max(2))));
-    spans.push(place);
-    Line::from(spans)
+    // 狭くても右端の場所を残すため、一覧より本文を短くしてよい。
+    let content = Content {
+        text: &task.content,
+        ranges: &[],
+        style: content_style,
+        mark: content_style,
+        min_width: MIN_QUEUE_CONTENT_WIDTH,
+    };
+    layout_row(head, content, tail, Some(place), width)
 }
 
 /// 検索の入力欄と状態の行。入力欄のカーソルの位置を返す。
@@ -1037,21 +1070,19 @@ fn search_row_line(
     }
     let place = Span::styled(entry.place.clone(), theme.dim());
 
-    let fixed: usize = head.iter().chain(&tail).map(Span::width).sum::<usize>() + place.width() + 2;
-    let room = width.saturating_sub(fixed).max(MIN_QUEUE_CONTENT_WIDTH);
     let content_style = if selected {
         base.add_modifier(Modifier::BOLD)
     } else {
         base
     };
-    let (content, content_width) = highlighted(&task.content, ranges, room, content_style, mark);
-    let used = fixed - 2 + content_width;
-    let mut spans = head;
-    spans.extend(content);
-    spans.extend(tail);
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(used).max(2))));
-    spans.push(place);
-    Line::from(spans)
+    let content = Content {
+        text: &task.content,
+        ranges,
+        style: content_style,
+        mark,
+        min_width: MIN_QUEUE_CONTENT_WIDTH,
+    };
+    layout_row(head, content, tail, Some(place), width)
 }
 
 /// `ranges` の部分を `mark` で強調した `text`。幅 `width` を超えれば `…` で切る。
@@ -1139,6 +1170,33 @@ mod tests {
         assert_eq!(wrap_plain("abcdef", 4), ["abcd", "ef"]);
         assert_eq!(wrap_plain("日本語", 4), ["日本", "語"]);
         assert_eq!(wrap_plain("", 4), [""]);
+    }
+
+    #[test]
+    fn highlights_are_cut_with_the_content_and_the_ellipsis_is_not_marked() {
+        use std::ops::Range;
+
+        let (base, mark) = (Style::new(), Style::new().add_modifier(Modifier::UNDERLINED));
+        let text = "会議の資料を作る";
+        // 「資料」は 6〜12 バイト目。幅 9 では「会議の資…」になる。
+        let (spans, width) = highlighted(text, &[Range { start: 9, end: 15 }], 9, base, mark);
+        let parts: Vec<(String, bool)> = spans.iter().map(|s| (s.content.to_string(), s.style == mark)).collect();
+        assert_eq!(
+            parts,
+            [
+                ("会議の".to_string(), false),
+                ("資".to_string(), true),
+                ("…".to_string(), false)
+            ]
+        );
+        assert_eq!(width, 9);
+        // 当たった部分が切った先だけにあれば、強調は出ない。
+        let (spans, _) = highlighted(text, &[Range { start: 18, end: 24 }], 9, base, mark);
+        assert!(spans.iter().all(|s| s.style == base));
+        // 入りきれば切らない。
+        let (spans, width) = highlighted("abc", &[Range { start: 1, end: 2 }], 10, base, mark);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(width, 3);
     }
 
     #[test]

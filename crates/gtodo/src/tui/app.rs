@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,7 +21,7 @@ use gtodo_core::ops::{self, Destination, Moved, Wait};
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::{DataDir, FileKind, Stamp};
 use gtodo_core::task::{Status, Task};
-use gtodo_core::view::entries;
+use gtodo_core::view::{SEARCH_FILES, entries};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::form::{Form, Outcome, Submit};
@@ -85,7 +86,8 @@ impl Tab {
 pub struct Row {
     /// 操作のときにタスクを探すキー (ID、無ければ行の内容から作った一時キー)。
     pub key: String,
-    pub task: Task,
+    /// 一覧のタブと検索で同じタスクを共有する (数万件を二重に持たないため)。
+    pub task: Rc<Task>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -791,7 +793,7 @@ impl App {
         let Some(row) = self.target() else { return };
         self.mode = Mode::ConfirmCancel {
             key: row.key,
-            content: row.task.content,
+            content: row.task.content.clone(),
         };
     }
 
@@ -1035,7 +1037,7 @@ impl App {
             if reparse || now[i] != self.stamps[i] {
                 self.load(*kind);
                 queue_changed |= matches!(kind, FileKind::Inbox | FileKind::Todo);
-                search_changed |= search::FILES.contains(kind);
+                search_changed |= SEARCH_FILES.contains(kind);
             }
         }
         if search_changed {
@@ -1066,20 +1068,27 @@ impl App {
                 Document::default()
             }
         };
+        // 検索のための正規化は、読み込んだときに 1 回だけ行う (打つたびには行わない)。
+        // 一覧のタブの行は検索の対象から作り、タスクを共有する。
+        let index = SEARCH_FILES
+            .contains(&kind)
+            .then(|| search::index(kind, &doc, &self.ws.names));
         for (i, tab) in TABS.iter().enumerate() {
             if tab.file() != kind {
                 continue;
             }
             let view = &mut self.tabs[i];
             let selected = view.selected().map(|r| r.key.clone());
-            view.rows = rows(*tab, &doc, &self.ws.names);
+            view.rows = match &index {
+                Some(entries) => rows_from(*tab, entries),
+                None => rows(*tab, &doc),
+            };
             if !selected.is_some_and(|k| view.select_key(&k)) {
                 view.clamp();
             }
         }
-        // 検索のための正規化は、読み込んだときに 1 回だけ行う (打つたびには行わない)。
-        if search::FILES.contains(&kind) {
-            self.search.set_part(kind, search::index(kind, &doc, &self.ws.names));
+        if let Some(entries) = index {
+            self.search.set_part(kind, entries);
         }
         match kind {
             FileKind::Inbox => self.inbox_doc = doc,
@@ -1107,26 +1116,26 @@ fn stamp(path: &std::path::Path) -> Option<Stamp> {
     Stamp::of(path).ok().flatten()
 }
 
-/// タブに出すタスク。Done・Cancelled は新しいものから (ファイルの末尾が新しい)。
-fn rows(tab: Tab, doc: &Document, names: &SectionNames) -> Vec<Row> {
-    let row = |e: gtodo_core::view::Entry| Row {
-        key: task_key(e.task(), &e.item.line),
-        task: e.task().clone(),
-    };
-    let file = tab.file();
-    match tab {
-        Tab::Inbox => entries(file, doc).map(row).collect(),
-        Tab::Section(key) => {
-            let name = names.name(key);
-            entries(file, doc)
-                .filter(|e| e.section == Some(name))
-                .map(row)
-                .collect()
-        }
-        Tab::Done | Tab::Cancelled => {
-            let mut rows: Vec<Row> = entries(file, doc).map(row).collect();
-            rows.reverse();
-            rows
-        }
-    }
+/// 検索の対象でないファイル (cancelled.md) のタブに出すタスク。新しいものから (ファイルの末尾が新しい)。
+fn rows(tab: Tab, doc: &Document) -> Vec<Row> {
+    let mut rows: Vec<Row> = entries(tab.file(), doc)
+        .map(|e| Row {
+            key: task_key(e.task(), &e.item.line),
+            task: Rc::new(e.task().clone()),
+        })
+        .collect();
+    rows.reverse();
+    rows
+}
+
+/// 検索の対象から、タブに出す行を作る (検索の対象は、一覧と同じ順に並べてある)。
+fn rows_from(tab: Tab, entries: &[search::Entry]) -> Vec<Row> {
+    entries
+        .iter()
+        .filter(|e| match tab {
+            Tab::Section(key) => e.section == Some(key),
+            _ => true,
+        })
+        .map(|e| e.row.clone())
+        .collect()
 }

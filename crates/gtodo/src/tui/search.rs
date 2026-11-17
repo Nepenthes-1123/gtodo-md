@@ -2,16 +2,19 @@
 //!
 //! 正規化は読み込んだときに 1 回だけ行い ([`index`])、打つたびの絞り込みでは比べるだけにする。
 
+use std::rc::Rc;
+
 use gtodo_core::document::Document;
 use gtodo_core::key::task_key;
 use gtodo_core::search::{Hit, Indexed, Query};
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::FileKind;
 use gtodo_core::task::Status;
-use gtodo_core::view::entries;
+use gtodo_core::view::{SEARCH_FILES, entries};
 
 use super::app::Row;
 use super::input::LineInput;
+use super::queue::locate;
 
 /// 検索の対象のタスク。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,20 +45,11 @@ fn group(file: FileKind, section: Option<SectionKey>) -> u8 {
 pub fn index(file: FileKind, doc: &Document, names: &SectionNames) -> Vec<Entry> {
     let mut list: Vec<Entry> = entries(file, doc)
         .map(|e| {
-            let section = match file {
-                FileKind::Todo => e.section.and_then(|s| names.key_of(s)),
-                _ => None,
-            };
-            let place = match (file, e.section) {
-                (FileKind::Inbox, None) => "Inbox".to_string(),
-                (FileKind::Done, _) => "Done".to_string(),
-                (_, Some(name)) => name.to_string(),
-                (f, None) => f.file_name().to_string(),
-            };
+            let (section, place) = locate(file, e.section, names);
             Entry {
                 row: Row {
                     key: task_key(e.task(), &e.item.line),
-                    task: e.task().clone(),
+                    task: Rc::new(e.task().clone()),
                 },
                 file,
                 section,
@@ -109,10 +103,7 @@ impl StatusFilter {
     }
 }
 
-/// 検索の対象のファイル (この順に並べる)。
-pub const FILES: [FileKind; 3] = [FileKind::Inbox, FileKind::Todo, FileKind::Done];
-
-/// 当たったタスク。`part` は [`FILES`] の位置、`index` はそのファイルの中の位置。
+/// 当たったタスク。`part` は [`SEARCH_FILES`] (CLI の検索と同じ対象) の位置、`index` はそのファイルの中の位置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
     part: usize,
@@ -149,7 +140,7 @@ impl SearchView {
 
     /// 読み直したファイルの対象を入れ替える。絞り込み直すのは呼び出し元 ([`SearchView::run`])。
     pub fn set_part(&mut self, file: FileKind, entries: Vec<Entry>) {
-        let Some(i) = FILES.iter().position(|f| *f == file) else {
+        let Some(i) = SEARCH_FILES.iter().position(|f| *f == file) else {
             return;
         };
         if self.keep.is_none() {
