@@ -209,10 +209,31 @@ fn search_combines_terms_and_status_with_and_and_skips_cancelled() {
 }
 
 #[test]
-fn search_rejects_terms_other_than_project_or_context() {
-    let out = sample().run(&["search", "word"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("+project or @context"));
+fn search_finds_words_in_the_description_and_wait() {
+    let f = sample();
+    // 本文の一部・大文字小文字と全角半角を区別しない (TUI の検索と同じ規則)。
+    assert_eq!(contents(&f.json(&["search", "今日", "--json"])), ["今日1"]);
+    assert_eq!(
+        contents(&f.json(&["search", "＋ＷＯＲＫ", "@Office", "--json"])),
+        ["今日1"]
+    );
+    assert_eq!(contents(&f.json(&["search", "wait:bob", "--json"])), ["待ち1"]);
+    // タグは完全一致 (CLI ではすべての語が確定している)。
+    assert_eq!(contents(&f.json(&["search", "+wo", "--json"])), Vec::<&str>::new());
+    // キャンセル済みのタスクやタグ・日付の文字は探さない。
+    assert_eq!(contents(&f.json(&["search", "id", "--json"])), Vec::<&str>::new());
+}
+
+#[test]
+fn search_rejects_tags_without_a_name() {
+    for term in ["+", "@", "wait:"] {
+        let out = sample().run(&["search", term]);
+        assert!(!out.status.success(), "{term}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("has no name after it"),
+            "{term}"
+        );
+    }
 }
 
 #[test]

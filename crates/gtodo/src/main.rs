@@ -110,9 +110,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Search inbox.md, todo.md and done.md by +project and @context (all terms must match)
+    /// Search inbox.md, todo.md and done.md (all terms must match)
     Search {
-        /// +project or @context
+        /// A word in the description (part of it matches; case and full/half width are ignored), +project, @context or wait:who
         #[arg(value_name = "TERM")]
         terms: Vec<String>,
         /// Only open tasks

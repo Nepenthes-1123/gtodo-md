@@ -17,6 +17,7 @@ pub mod lock;
 pub mod logic;
 mod lua_compat;
 pub mod ops;
+pub mod search;
 pub mod sections;
 pub mod settings;
 pub mod state;
