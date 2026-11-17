@@ -24,7 +24,7 @@ use gtodo_core::ops::{self, Destination, EditedError, Moved, Wait};
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::{self, DataDir, FileKind, RawFile, Stamp};
 use gtodo_core::task::{Status, Task};
-use gtodo_core::view::{SEARCH_FILES, entries};
+use gtodo_core::view::{self, SEARCH_FILES, entries};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::editor::Editor;
@@ -166,6 +166,9 @@ pub struct Message {
     pub text: String,
 }
 
+/// Waiting のタスクの期日が何日後までなら知らせるか (Neovim 版の `waiting_warning_days` の既定)。
+const WAITING_WARNING_DAYS: u64 = 2;
+
 /// 操作のときにロックが空くまで待つ時間。待つ間は画面が止まるため、CLI (2 秒) より短くする。
 /// Neovim 版の自動処理がロックを持つのは数ミリ秒で、取れなければもう一度押せばよい。
 const LOCK_WAIT: Duration = Duration::from_millis(300);
@@ -305,6 +308,8 @@ pub struct App {
     seen_warnings: HashSet<String>,
     /// 期日が来ても inbox.md に残っているタスクを知らせた (日次の整理が警告した場合を含む) 日。
     inbox_noticed: Option<NaiveDate>,
+    /// 期日の近い Waiting のタスクとして知らせたタスク (本文と期日) と、その日。同じタスクを何度も知らせないため。
+    waiting_noticed: (Option<NaiveDate>, HashSet<String>),
     /// Queue を開いていない間に inbox.md・todo.md が変わり、作り直しが要る。
     queue_stale: bool,
     /// 検索を開いていない間に対象のファイルが変わり、絞り込み直しが要る。
@@ -366,6 +371,7 @@ impl App {
             rollover_pending: true,
             seen_warnings: HashSet::new(),
             inbox_noticed: None,
+            waiting_noticed: (None, HashSet::new()),
             queue_stale: true,
             search_stale: true,
             kanban_stale: true,
@@ -378,6 +384,7 @@ impl App {
         app.reload();
         app.try_rollover();
         app.notice_inbox_due();
+        app.notice_waiting_due();
         Ok(app)
     }
 
@@ -435,6 +442,41 @@ impl App {
         }
         self.reload();
         self.notice_inbox_due();
+        self.notice_waiting_due();
+    }
+
+    /// 期日が近い (2 日後まで。過ぎたものを含む) Waiting のタスクを知らせる (Neovim 版の警告と同じ条件と文言)。
+    /// 起動したとき・日付が変わったときと、まだ知らせていないタスクが加わったときに、該当するものをすべて出す。
+    ///
+    /// Neovim 版は 1 時間ごとに知らせ直すが、TUI の知らせは次のキー操作まで残るので、新しく該当したときだけにする。
+    fn notice_waiting_due(&mut self) {
+        let (day, noticed) = &mut self.waiting_noticed;
+        if *day != Some(self.today) {
+            *day = Some(self.today);
+            noticed.clear();
+        }
+        let soon = view::waiting_due_soon(&self.todo_doc, &self.ws.names, self.today, WAITING_WARNING_DAYS);
+        // タスクのキーではなく本文と期日で覚える。ID の無いタスクは、Neovim 版が ID を付けるとキーが変わり、
+        // 同じタスクを知らせ直してしまうため。期日を変えたときは知らせ直す。
+        let keys: Vec<String> = soon
+            .iter()
+            .map(|e| format!("{}\0{}", e.task().content, e.task().due.as_deref().unwrap_or_default()))
+            .collect();
+        if keys.iter().all(|k| noticed.contains(k)) {
+            return;
+        }
+        noticed.extend(keys);
+        let lines: Vec<String> = soon
+            .iter()
+            .map(|e| {
+                format!(
+                    "- {} (due: {})",
+                    e.task().content,
+                    e.task().due.as_deref().unwrap_or_default()
+                )
+            })
+            .collect();
+        self.message(Level::Warning, format!("Waiting tasks due soon:\n{}", lines.join("\n")));
     }
 
     /// `auto_move_inbox_to_today` が偽のとき、期日が来ても inbox.md に残っているタスクを知らせる。
