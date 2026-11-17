@@ -347,6 +347,8 @@ const READ_ONLY_COMMANDS: &[&[&str]] = &[
     &["project", "list", "--archived", "--json"],
     &["project", "show", "work"],
     &["project", "show", "+work", "--json"],
+    &["template", "list"],
+    &["template", "list", "--archived", "--json"],
 ];
 
 /// 読むだけのコマンドが書き込むと、Neovim 側の未保存の編集が破棄されるため、一切書かないこと。
@@ -1177,4 +1179,62 @@ fn project_names_that_cannot_be_file_names_are_refused() {
     let out = f.run(&["project", "show", "nothing"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no project file (projects/nothing.md) and no tasks"));
+}
+
+#[test]
+fn templates_are_created_inserted_into_the_inbox_and_archived() {
+    let f = sample();
+    let created = f.stdout(&["template", "new", "weekly"]);
+    assert!(created.trim_end().ends_with("weekly.md"), "{created}");
+    let path = f.data_dir().join("templates/weekly.md");
+    let seed = fs::read_to_string(&path).unwrap();
+    assert!(seed.starts_with("<!--\n記法メモ:"), "{seed}");
+    fs::write(
+        &path,
+        format!("{seed}- [ ] 振り返り {{{{project}}}} due:+2d id:aaaaaa\n- [ ] {{{{who}}}} に連絡 {{{{context}}}}\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        f.stdout(&["template", "list"]),
+        "weekly  2 task(s)  {{project}}  {{who}}  {{context}}\n"
+    );
+
+    // プレースホルダーはすべて渡す (空なら省く)。
+    let out = f.run(&["template", "insert", "weekly", "--set", "project=site"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--set who=... --set context=..."));
+    let before = fs::read_to_string(f.data_dir().join("inbox.md")).unwrap();
+    let out = f.stdout(&[
+        "template",
+        "insert",
+        "weekly",
+        "--base",
+        "2026-12-01",
+        "--set",
+        "project=+site",
+        "--set",
+        "who=田中",
+        "--set",
+        "context=",
+    ]);
+    assert!(out.starts_with("added 2 task(s) from weekly to inbox.md: "), "{out}");
+    let inbox = fs::read_to_string(f.data_dir().join("inbox.md")).unwrap();
+    let added: Vec<&str> = inbox.lines().skip(before.lines().count()).collect();
+    assert_eq!(added.len(), 2, "{inbox}");
+    assert!(
+        added[0].starts_with("- [ ] 振り返り +site due:2026-12-03 id:"),
+        "{inbox}"
+    );
+    assert!(!added[0].contains("aaaaaa"), "the template's ID is not copied");
+    assert!(added[1].starts_with("- [ ] 田中 に連絡 id:"), "{inbox}");
+
+    assert_eq!(f.stdout(&["template", "archive", "weekly"]), "archived weekly\n");
+    assert_eq!(f.stdout(&["template", "list"]), "No templates.\n");
+    assert!(
+        f.stdout(&["template", "list", "--archived"])
+            .starts_with("weekly  2 task(s)")
+    );
+    assert!(!f.run(&["template", "insert", "weekly"]).status.success());
+    assert_eq!(f.stdout(&["template", "restore", "weekly"]), "restored weekly\n");
+    assert!(!f.run(&["template", "new", "a/b"]).status.success());
 }

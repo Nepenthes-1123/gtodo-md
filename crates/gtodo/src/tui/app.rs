@@ -5,7 +5,7 @@
 //! メモリ上のタスクは表示のためだけに持ち、書き戻さない。操作はロックを取ってからファイルを
 //! 読み直し、タスクのキーで探して書く (CLI と同じ `ops`)。表示が古くても他のツールの変更を潰さない。
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -20,11 +20,12 @@ use gtodo_core::input;
 use gtodo_core::key::task_key;
 use gtodo_core::lock::Lock;
 use gtodo_core::logic::due::DueOutcome;
-use gtodo_core::ops::{self, Destination, EditTarget, EditedError, Moved, ProjectError, Wait};
+use gtodo_core::ops::{self, Destination, EditTarget, EditedError, Moved, ProjectError, TemplateError, Wait};
 use gtodo_core::project;
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::store::{self, DataDir, FileKind, RawFile, Stamp};
 use gtodo_core::task::{Status, Task};
+use gtodo_core::template;
 use gtodo_core::view::{self, SEARCH_FILES, entries};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
@@ -37,6 +38,7 @@ use super::markdown;
 use super::projects::{self, ProjectsView};
 use super::queue;
 use super::search::{self, SearchView};
+use super::templates::{self, TemplatesView};
 use crate::commands::{add, edit};
 use crate::render::context_name;
 use crate::workspace::Workspace;
@@ -146,10 +148,13 @@ pub enum Mode {
     },
     /// 追加・編集のフォーム。
     Form(Box<Form>),
-    /// 新しいプロジェクトの名前を尋ねている。
-    NewProject {
+    /// 新しいプロジェクト・テンプレートの名前を尋ねている。
+    NewName {
+        kind: NewKind,
         input: LineInput,
     },
+    /// テンプレートを挿入する前に、プレースホルダーの値と基準日を 1 つずつ尋ねている。
+    InsertTemplate(Box<InsertTemplate>),
     /// 開くリンクを選んでいる (リンクが複数あるとき)。
     ChooseLink {
         links: Vec<String>,
@@ -161,6 +166,32 @@ pub enum Mode {
         name: String,
         problems: Vec<String>,
     },
+}
+
+/// 名前を尋ねて作るもの。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewKind {
+    Project,
+    Template,
+}
+
+/// テンプレートの挿入で尋ねていること。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertTemplate {
+    pub name: String,
+    lines: Vec<String>,
+    /// 尋ねるプレースホルダー (現れた順)。
+    pub placeholders: Vec<String>,
+    /// 答えた値 (`placeholders` の前から順に)。すべて答えたら基準日を尋ねる。
+    values: Vec<String>,
+    pub input: LineInput,
+}
+
+impl InsertTemplate {
+    /// 今尋ねているプレースホルダー。`None` なら基準日を尋ねている。
+    pub fn asking(&self) -> Option<&str> {
+        self.placeholders.get(self.values.len()).map(String::as_str)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +243,7 @@ pub enum Screen {
     Search,
     Kanban,
     Projects,
+    Templates,
 }
 
 /// Queue の状態。
@@ -284,6 +316,7 @@ pub struct App {
     pub search: SearchView,
     pub kanban: KanbanView,
     pub projects: ProjectsView,
+    pub templates: TemplatesView,
     pub mode: Mode,
     /// 押しかけのキー列 (`g` の後など)。
     pub pending: Vec<Key>,
@@ -365,6 +398,7 @@ impl App {
             search: SearchView::default(),
             kanban: KanbanView::default(),
             projects: ProjectsView::default(),
+            templates: TemplatesView::default(),
             mode: Mode::Normal,
             pending: Vec::new(),
             messages: Vec::new(),
@@ -464,6 +498,9 @@ impl App {
         {
             self.refresh_projects();
         }
+        if self.screen == Screen::Templates && self.templates.signature != projects::signature(&self.templates_dir()) {
+            self.refresh_templates();
+        }
     }
 
     /// 期日が近い (2 日後まで。過ぎたものを含む) Waiting のタスクを知らせる (Neovim 版の警告と同じ条件と文言)。
@@ -547,7 +584,8 @@ impl App {
             Mode::Form(_) => return self.handle_form(key),
             Mode::ChooseLink { .. } => return self.handle_choose_link(key),
             Mode::FixEdit { .. } => return self.handle_fix_edit(key),
-            Mode::NewProject { .. } => return self.handle_new_project(key),
+            Mode::NewName { .. } => return self.handle_new_name(key),
+            Mode::InsertTemplate(_) => return self.handle_insert_template(key),
         }
         if self.screen == Screen::Search && self.search.typing {
             return self.handle_search_input(key);
@@ -570,7 +608,8 @@ impl App {
 
     pub fn handle_paste(&mut self, text: &str) {
         match &mut self.mode {
-            Mode::WaitInput { input, .. } | Mode::NewProject { input } => input.paste(text),
+            Mode::WaitInput { input, .. } | Mode::NewName { input, .. } => input.paste(text),
+            Mode::InsertTemplate(insert) => insert.input.paste(text),
             Mode::Form(form) => form.paste(text),
             Mode::Normal if self.screen == Screen::Search && self.search.typing => {
                 self.search.input.paste(text);
@@ -647,17 +686,34 @@ impl App {
                     self.projects.offset = 0;
                     self.refresh_projects();
                 }
+                Screen::Templates => {
+                    self.templates.archived = !self.templates.archived;
+                    self.templates.cursor = 0;
+                    self.templates.offset = 0;
+                    self.refresh_templates();
+                }
                 Screen::List | Screen::Kanban => {}
             },
             Action::Search => self.open_search(),
             Action::OpenLink => self.open_link(),
             Action::Open if self.screen == Screen::Projects => self.search_project(),
+            Action::Open if self.screen == Screen::Templates => self.start_insert_template(),
             Action::Open => self.open_in_list(),
             Action::OpenProjects => self.open_projects(),
+            Action::OpenTemplates => self.open_templates(),
+            Action::Archive if self.screen == Screen::Templates => self.archive_template(),
             Action::Archive => self.archive_project(),
             Action::EditFile if self.screen == Screen::Projects => self.edit_project(),
+            Action::EditFile if self.screen == Screen::Templates => self.edit_template(),
             Action::Add if self.screen == Screen::Projects => {
-                self.mode = Mode::NewProject {
+                self.mode = Mode::NewName {
+                    kind: NewKind::Project,
+                    input: LineInput::new(""),
+                };
+            }
+            Action::Add if self.screen == Screen::Templates => {
+                self.mode = Mode::NewName {
+                    kind: NewKind::Template,
                     input: LineInput::new(""),
                 };
             }
@@ -687,6 +743,7 @@ impl App {
                 (self.kanban.columns[focus].len(), &mut self.kanban.cursors[focus])
             }
             Screen::Projects => (self.projects.rows.len(), &mut self.projects.cursor),
+            Screen::Templates => (self.templates.rows.len(), &mut self.templates.cursor),
         };
         if len == 0 {
             return;
@@ -723,8 +780,8 @@ impl App {
                 file: card.file,
                 section: card.section,
             }),
-            // 並んでいるのはタスクではなくプロジェクト。
-            Screen::Projects => None,
+            // 並んでいるのはタスクではなくプロジェクト・テンプレート。
+            Screen::Projects | Screen::Templates => None,
         }
     }
 
@@ -874,7 +931,7 @@ impl App {
         // Queue から開いたときは inbox へ入れる (どのセクションとも決まっていないため)。
         let tab = match self.screen {
             Screen::List => self.tab(),
-            Screen::Queue | Screen::Search | Screen::Projects => Tab::Inbox,
+            Screen::Queue | Screen::Search | Screen::Projects | Screen::Templates => Tab::Inbox,
             // 選んでいる列のセクションへ入れる (Done の列からは inbox へ)。
             Screen::Kanban => kanban::SECTION_COLUMNS
                 .get(self.kanban.focus)
@@ -1021,6 +1078,10 @@ impl App {
                 EditTarget::Data(_) => Ok(()),
                 EditTarget::Project(tag) => match ops::create_project(&ws.data_dir, tag, ws.today) {
                     Ok(_) | Err(ProjectError::Exists(_)) => Ok(()),
+                    Err(e) => Err(e.into()),
+                },
+                EditTarget::Template(name) => match ops::create_template(&ws.data_dir, name) {
+                    Ok(_) | Err(TemplateError::Exists(_)) => Ok(()),
                     Err(e) => Err(e.into()),
                 },
             });
@@ -1175,6 +1236,145 @@ impl App {
         }
     }
 
+    fn templates_dir(&self) -> PathBuf {
+        let dir = self.ws.data_dir.root().join(template::DIR);
+        if self.templates.archived {
+            dir.join(template::ARCHIVE_DIR)
+        } else {
+            dir
+        }
+    }
+
+    /// テンプレート画面を開く。
+    fn open_templates(&mut self) {
+        if self.screen != Screen::Templates {
+            self.templates.cursor = 0;
+            self.templates.offset = 0;
+        }
+        self.screen = Screen::Templates;
+        self.refresh_templates();
+    }
+
+    /// テンプレートの一覧を読み直す。選んでいたテンプレートは選んだまま。
+    fn refresh_templates(&mut self) {
+        let mut warnings = Vec::new();
+        let dir = self.templates_dir();
+        let keep = self.templates.selected().map(|r| r.name.clone());
+        self.templates.rows = templates::rows(&dir, self.today, &mut warnings);
+        self.templates.signature = projects::signature(&dir);
+        if !keep.is_some_and(|name| self.templates.select_name(&name)) {
+            self.templates.cursor = self.templates.cursor.min(self.templates.rows.len().saturating_sub(1));
+        }
+        for w in warnings {
+            self.config_warning(w);
+        }
+    }
+
+    /// 選んでいるテンプレート (使えるものの表示のときだけ)。アーカイブしたものなら、理由を知らせて `None`。
+    fn usable_template(&mut self) -> Option<String> {
+        let name = self.templates.selected()?.name.clone();
+        if self.templates.archived {
+            let text = format!("{name} is archived; restore it (X) to use or edit it");
+            self.message(Level::Warning, text);
+            return None;
+        }
+        Some(name)
+    }
+
+    fn edit_template(&mut self) {
+        if let Some(name) = self.usable_template() {
+            self.edit_file(EditTarget::Template(name), None);
+        }
+    }
+
+    /// 選んでいるテンプレートの挿入を始める。プレースホルダーがあれば値を、無ければ基準日を尋ねる。
+    fn start_insert_template(&mut self) {
+        let Some(name) = self.usable_template() else { return };
+        let file = match store::read_file(&template::path(&self.ws.data_dir, &name)) {
+            Ok(file) => file,
+            Err(e) => return self.message(Level::Error, e.to_string()),
+        };
+        let placeholders = template::placeholder_names(&file.lines);
+        let input = LineInput::new(if placeholders.is_empty() { "today" } else { "" });
+        self.mode = Mode::InsertTemplate(Box::new(InsertTemplate {
+            name,
+            lines: file.lines,
+            placeholders,
+            values: Vec::new(),
+            input,
+        }));
+    }
+
+    /// テンプレートの挿入で尋ねている間のキー。`Enter` で次へ進み、最後 (基準日) で挿入する。`Esc` で取り消す。
+    fn handle_insert_template(&mut self, key: Key) {
+        let Mode::InsertTemplate(insert) = &mut self.mode else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Enter => match insert.asking().map(str::to_string) {
+                Some(name) => match template::check_value(&name, insert.input.text()) {
+                    Ok(value) => {
+                        insert.values.push(value);
+                        let next = if insert.asking().is_some() { "" } else { "today" };
+                        insert.input = LineInput::new(next);
+                    }
+                    // 直せるように、入力は残す。
+                    Err(e) => self.message(Level::Error, e.to_string()),
+                },
+                None => {
+                    let base = match template::parse_base(insert.input.text(), self.today) {
+                        Ok(base) => base,
+                        Err(e) => return self.message(Level::Error, e.to_string()),
+                    };
+                    let Mode::InsertTemplate(insert) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                        return;
+                    };
+                    self.insert_template(*insert, base);
+                }
+            },
+            _ => {
+                insert.input.handle(key);
+            }
+        }
+    }
+
+    fn insert_template(&mut self, insert: InsertTemplate, base: NaiveDate) {
+        let values: HashMap<String, String> = insert.placeholders.into_iter().zip(insert.values).collect();
+        let tasks = template::tasks(&insert.lines, base, &values);
+        let name = insert.name;
+        if tasks.is_empty() {
+            return self.message(Level::Warning, format!("template {name} has no task lines"));
+        }
+        self.messages.clear();
+        let added = self.write(true, |ws| {
+            let ids = ops::insert_tasks(&ws.data_dir, &ws.names, ws.today, tasks)?;
+            // gtodo add と同じく、期日が来ていればこの場で Today へ移す。失敗しても挿入は済んでいる。
+            Ok((ids, add::check_dues_and_sort(ws)))
+        });
+        let Some((ids, dues)) = added else { return };
+        self.message(
+            Level::Info,
+            format!("added {} task(s) from {name} to inbox.md", ids.len()),
+        );
+        self.report_after_write(Some(dues), "added");
+    }
+
+    /// 選んでいるテンプレートをアーカイブする (アーカイブしたものの表示では復元する)。
+    fn archive_template(&mut self) {
+        let Some(name) = self.templates.selected().map(|r| r.name.clone()) else {
+            return;
+        };
+        let restore = self.templates.archived;
+        self.messages.clear();
+        let moved = self.write(false, |ws| Ok(ops::move_template(&ws.data_dir, &name, restore)?));
+        if moved.is_some() {
+            let done = if restore { "restored" } else { "archived" };
+            self.message(Level::Info, format!("{done} {name}"));
+        }
+        self.refresh_templates();
+    }
+
     fn projects_dir(&self) -> PathBuf {
         self.ws.data_dir.root().join(project::DIR)
     }
@@ -1269,40 +1469,70 @@ impl App {
         }
     }
 
-    /// 新しいプロジェクトの名前の入力。`Enter` で作って `$EDITOR` で開き、`Esc` で取り消す。
-    fn handle_new_project(&mut self, key: Key) {
-        let Mode::NewProject { input } = &mut self.mode else {
+    /// 新しいプロジェクト・テンプレートの名前の入力。`Enter` で作って `$EDITOR` で開き、`Esc` で取り消す。
+    fn handle_new_name(&mut self, key: Key) {
+        let Mode::NewName { kind, input } = &mut self.mode else {
             return;
         };
+        let kind = *kind;
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Enter => {
-                let tag = match project::check_tag(input.text()) {
-                    Ok(tag) => tag,
-                    // 直せるように、入力は残す。
-                    Err(e) => return self.message(Level::Error, e.to_string()),
-                };
-                self.mode = Mode::Normal;
-                self.messages.clear();
-                if project::path(&self.ws.data_dir, &tag).exists() {
-                    // すでにあるなら、作らずにそれを選ぶ。
-                    self.message(Level::Info, format!("{}/{tag}.md already exists", project::DIR));
-                    self.open_projects_at(&tag);
-                    return;
-                }
-                let created = self.write(false, |ws| Ok(ops::create_project(&ws.data_dir, &tag, ws.today)?));
-                if created.is_some() {
-                    self.message(Level::Info, format!("created {}/{tag}.md", project::DIR));
-                    self.projects.archived = false;
-                    self.refresh_projects();
-                    self.projects.select_tag(&tag);
-                    self.edit_file(EditTarget::Project(tag), None);
+                let text = input.text().to_string();
+                match kind {
+                    NewKind::Project => self.create_project(&text),
+                    NewKind::Template => self.create_template(&text),
                 }
             }
             _ => {
                 input.handle(key);
             }
         }
+    }
+
+    fn create_project(&mut self, text: &str) {
+        let tag = match project::check_tag(text) {
+            Ok(tag) => tag,
+            // 直せるように、入力は残す。
+            Err(e) => return self.message(Level::Error, e.to_string()),
+        };
+        self.mode = Mode::Normal;
+        self.messages.clear();
+        if project::path(&self.ws.data_dir, &tag).exists() {
+            // すでにあるなら、作らずにそれを選ぶ。
+            self.message(Level::Info, format!("{}/{tag}.md already exists", project::DIR));
+            self.open_projects_at(&tag);
+            return;
+        }
+        let created = self.write(false, |ws| Ok(ops::create_project(&ws.data_dir, &tag, ws.today)?));
+        if created.is_some() {
+            self.message(Level::Info, format!("created {}/{tag}.md", project::DIR));
+            self.projects.archived = false;
+            self.refresh_projects();
+            self.projects.select_tag(&tag);
+            self.edit_file(EditTarget::Project(tag), None);
+        }
+    }
+
+    /// テンプレートを作って開く。すでにあれば、作らずにそれを開く (Neovim 版の新しいテンプレートと同じ)。
+    fn create_template(&mut self, text: &str) {
+        let name = text.trim().to_string();
+        if let Err(e) = template::check_name(&name) {
+            return self.message(Level::Error, e.to_string());
+        }
+        self.mode = Mode::Normal;
+        self.messages.clear();
+        if !template::path(&self.ws.data_dir, &name).exists() {
+            let created = self.write(false, |ws| Ok(ops::create_template(&ws.data_dir, &name)?));
+            if created.is_none() {
+                return;
+            }
+            self.message(Level::Info, format!("created {}/{name}.md", template::DIR));
+        }
+        self.templates.archived = false;
+        self.refresh_templates();
+        self.templates.select_name(&name);
+        self.edit_file(EditTarget::Template(name), None);
     }
 
     /// 選んでいるプロジェクトをアーカイブする (アーカイブしたものの表示では復元する)。
@@ -1502,7 +1732,7 @@ impl App {
             Screen::Queue => self.queue.select_key(key),
             Screen::Search => self.search.select_key(key),
             Screen::Kanban => self.kanban.select_key(key),
-            Screen::Projects => false,
+            Screen::Projects | Screen::Templates => false,
         };
     }
 

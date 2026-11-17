@@ -82,7 +82,7 @@ CLI (`gtodo`)
 
 - [x] Waiting タスクの期限警告 (TUI)
 - [x] プロジェクトファイル (`projects/<tag>.md`): 作成・一覧と進捗・アーカイブと復元・手で編集したときの検証 (CLI の `gtodo project`、TUI のプロジェクト画面)
-- [ ] テンプレート (`templates/<name>.md`): 作成・編集・挿入・アーカイブと復元 (CLI の `gtodo template`、TUI のテンプレート画面)
+- [x] テンプレート (`templates/<name>.md`): 作成・編集・挿入・アーカイブと復元 (CLI の `gtodo template`、TUI のテンプレート画面)
 - [ ] タスクの分割・プロジェクトへの昇格 (CLI の `gtodo split`、TUI の `p`)
 
 ## 決定事項
@@ -276,6 +276,8 @@ CLI (`gtodo`)
   - 挿入するのはタスク行だけ。`id:`・`completed_at:`・`done:`・`cancelled:`・`created:` は引き継がない (ID は書くときに新しく付く)。`due:+3d` などの相対的な期日は、挿入するときに選ぶ基準日 (既定は今日) から決める。
   - `{{project}}`・`{{context}}` は、尋ねた値をタグ (`+value`・`@value`) として入れ、空ならタグごと消す。それ以外の `{{name}}` は値をそのまま埋める。
   - inbox.md へ足した後は、`gtodo add` と同じく期日が来たタスクを Today へ移す (`auto_move_inbox_to_today` に従う)。Neovim 版の挿入は移さないが、次に Neovim 版が期日を確かめたときに移るので結果は同じになる。CLI と TUI では `add` とそろえる。
+  - `{{project}}`・`{{context}}` に入れる値は、前後の空白とタグの頭の `+`・`@` を除き、空白を含むものは断る (Lua 版は除かずに `++site` になり、空白を含む値は後ろが本文へ混ざって別のタスクになる)。
+  - Lua 版は行をそのまま inbox.md の末尾へ足すが、ここでは `gtodo add` と同じく文書として書く (ID はほかのタスクと重ならないものを先に決める)。
   - テンプレートは Neovim 版でも保存時の検証が無いので、TUI の `E` で編集したときも、編集している間に変わっていないかだけを確かめる。
 - **CLI の `gtodo template`。** `list` (`--archived`)・`new <name>` (雛形を作ってパスを出す)・`insert <name> [--base DATE] [--set NAME=VALUE]...`・`archive <name>`・`restore <name>`。`insert` では、テンプレートにあるプレースホルダーの値をすべて `--set` で渡す (省くと尋ねられないのでエラー。空にするときは `--set project=`)。
 - **TUI のテンプレート画面 (`T`)。** テンプレートを並べ、`Enter` で挿入する (プレースホルダーの値と基準日を最下段で 1 つずつ尋ねる)。`E` で編集、`a` で新しいテンプレート (名前を尋ねて作り、`$EDITOR` で開く)、`X` でアーカイブ (`Tab` で切り替えたアーカイブの表示では復元)。

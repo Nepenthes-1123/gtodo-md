@@ -9,3 +9,4 @@ pub mod queue;
 pub mod search;
 pub mod sort;
 pub mod stats;
+pub mod template;
