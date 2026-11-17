@@ -37,6 +37,14 @@ pub fn with_lock<T>(
         &mut |msg| eprintln!("gtodo: {msg}"),
         command,
     )
+    .map(|(value, _)| value)
+}
+
+/// [`run_locked`] の準備でしたこと。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Prepared {
+    /// 日次ロールオーバーが、期日が来たのに inbox.md に残したタスクを警告した。
+    pub inbox_due_warned: bool,
 }
 
 /// 書き込めない設定なら理由を返す。ロックを取る前に確かめる。
@@ -54,7 +62,7 @@ pub fn ensure_writable(ws: &Workspace) -> Result<()> {
 ///
 /// ロックの取り方 (待つか、1 回だけ試すか) を呼び出し元が決めるために分けてある。TUI は
 /// 利用者の操作では待ち、定期的な確認では待たない。`note` には、警告ではない知らせ
-/// (完了タスクを done.md へ移したことなど) が渡される。
+/// (完了タスクを done.md へ移したことなど) が渡される。準備でしたことも返す。
 pub fn run_locked<T>(
     ws: &Workspace,
     lock: Lock,
@@ -62,8 +70,8 @@ pub fn run_locked<T>(
     warn: &mut impl FnMut(String),
     note: &mut impl FnMut(String),
     command: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    let result = prepare(ws, checks_dues, warn, note).and_then(|()| command());
+) -> Result<(T, Prepared)> {
+    let result = prepare(ws, checks_dues, warn, note).and_then(|prepared| Ok((command()?, prepared)));
     // コマンドの書き込みは済んでいるため、失敗として返すと実行し直されて二重に書かれうる。
     if let Err(e) = lock.release() {
         warn(e.to_string());
@@ -77,7 +85,8 @@ fn prepare(
     checks_dues: bool,
     warn: &mut impl FnMut(String),
     note: &mut impl FnMut(String),
-) -> Result<()> {
+) -> Result<Prepared> {
+    let mut prepared = Prepared::default();
     let root = ws.data_dir.root();
     ops::ensure_files(&ws.data_dir, &ws.names)?;
     for dir in [root.to_path_buf(), root.join("projects")] {
@@ -93,12 +102,13 @@ fn prepare(
         if checks_dues {
             dues.inbox_due.clear();
         }
+        prepared.inbox_due_warned = !dues.inbox_due.is_empty();
         report_dues(ws, &dues, warn, &mut *note);
         if let Some(e) = r.not_recorded {
             warn(format!("{e}; the daily rollover will run again next time"));
         }
     }
-    Ok(())
+    Ok(prepared)
 }
 
 /// 期日が来たタスクを Today へ移したことと、移さなかった inbox のタスクを知らせる。

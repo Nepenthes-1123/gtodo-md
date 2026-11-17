@@ -26,6 +26,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use super::form::{Form, Outcome, Submit};
 use super::input::{Edit, LineInput};
 use super::keymap::{Action, Fed, Key, Keymap, TAB_COUNT};
+use super::queue;
 use crate::commands::{add, edit};
 use crate::render::context_name;
 use crate::workspace::Workspace;
@@ -150,6 +151,67 @@ pub struct Message {
 /// Neovim 版の自動処理がロックを持つのは数ミリ秒で、取れなければもう一度押せばよい。
 const LOCK_WAIT: Duration = Duration::from_millis(300);
 
+/// 今の画面。Queue は一覧から開く全画面で、`Esc` で一覧へ戻る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    List,
+    Queue,
+}
+
+/// Queue の状態。
+#[derive(Debug, Clone, Default)]
+pub struct QueueView {
+    /// 待ち先別 (偽なら期日別)。
+    pub wait: bool,
+    pub lines: Vec<queue::Line>,
+    /// 選んでいるタスク (タスクの行だけを数えた位置)。
+    pub cursor: usize,
+    /// 表示している最初の行 (見出しも数える)。
+    pub offset: usize,
+}
+
+impl QueueView {
+    /// タスクの行と、その行の位置。
+    pub fn items(&self) -> impl Iterator<Item = (usize, &queue::Item)> {
+        self.lines.iter().enumerate().filter_map(|(i, l)| match l {
+            queue::Line::Item(item) => Some((i, item.as_ref())),
+            _ => None,
+        })
+    }
+
+    pub fn selected(&self) -> Option<&queue::Item> {
+        self.items().nth(self.cursor).map(|(_, item)| item)
+    }
+
+    pub fn len(&self) -> usize {
+        self.items().count()
+    }
+
+    fn select_key(&mut self, key: &str) -> bool {
+        let found = self.items().position(|(_, item)| item.row.key == key);
+        if let Some(i) = found {
+            self.cursor = i;
+        }
+        found.is_some()
+    }
+}
+
+/// 選んでいるタスクと、それがどこにあるか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selected<'a> {
+    pub row: &'a Row,
+    pub file: FileKind,
+    /// todo.md の管理対象のセクションにあれば、そのキー。
+    pub section: Option<SectionKey>,
+}
+
+impl Selected<'_> {
+    /// 操作できるか (done.md・cancelled.md は見るだけ)。
+    pub fn writable(&self) -> bool {
+        matches!(self.file, FileKind::Inbox | FileKind::Todo)
+    }
+}
+
 /// 見張るファイル。順番は [`App::stamps`] の添字。
 const WATCHED_DOCS: [FileKind; 4] = [FileKind::Inbox, FileKind::Todo, FileKind::Done, FileKind::Cancelled];
 const SETTINGS: usize = 4;
@@ -161,6 +223,8 @@ pub struct App {
     pub keymap: Keymap,
     pub tabs: Vec<TabView>,
     pub current: usize,
+    pub screen: Screen,
+    pub queue: QueueView,
     pub mode: Mode,
     /// 押しかけのキー列 (`g` の後など)。
     pub pending: Vec<Key>,
@@ -183,6 +247,13 @@ pub struct App {
     rollover_pending: bool,
     /// 表示した設定の警告。読み直すたびに同じ警告を出さないため。
     seen_warnings: HashSet<String>,
+    /// 期日が来ても inbox.md に残っているタスクを知らせた (日次の整理が警告した場合を含む) 日。
+    inbox_noticed: Option<NaiveDate>,
+    /// Queue を開いていない間に inbox.md・todo.md が変わり、作り直しが要る。
+    queue_stale: bool,
+    /// Queue を作るために持っておく、最後に読んだ inbox.md と todo.md。
+    inbox_doc: Document,
+    todo_doc: Document,
 }
 
 impl App {
@@ -208,6 +279,8 @@ impl App {
             keymap,
             tabs: vec![TabView::default(); TAB_COUNT],
             current: START_TAB,
+            screen: Screen::List,
+            queue: QueueView::default(),
             mode: Mode::Normal,
             pending: Vec::new(),
             messages: Vec::new(),
@@ -222,12 +295,17 @@ impl App {
             config_error: None,
             rollover_pending: true,
             seen_warnings: HashSet::new(),
+            inbox_noticed: None,
+            queue_stale: true,
+            inbox_doc: Document::default(),
+            todo_doc: Document::default(),
         };
         for w in warnings {
             app.config_warning(w);
         }
         app.reload();
         app.try_rollover();
+        app.notice_inbox_due();
         Ok(app)
     }
 
@@ -262,6 +340,27 @@ impl App {
             self.try_rollover();
         }
         self.reload();
+        self.notice_inbox_due();
+    }
+
+    /// `auto_move_inbox_to_today` が偽のとき、期日が来ても inbox.md に残っているタスクを知らせる。
+    /// 1 日に 1 回 (起動したときと日付が変わったとき)、その日の日次の整理が済んでから確かめる。
+    /// 日次の整理が同じタスクを警告していれば重ねない。
+    fn notice_inbox_due(&mut self) {
+        if self.ws.auto_move_inbox_to_today || self.rollover_pending || self.inbox_noticed == Some(self.today) {
+            return;
+        }
+        self.inbox_noticed = Some(self.today);
+        let count = queue::due_in_inbox(&self.inbox_doc, self.today);
+        if count > 0 {
+            let queue = self.keymap.label(Action::OpenQueue).unwrap_or_default();
+            self.message(
+                Level::Info,
+                format!(
+                    "{count} task(s) in inbox.md are due; they stay there because auto_move_inbox_to_today is off ({queue} to see them)"
+                ),
+            );
+        }
     }
 
     /// 日付が変わっていれば、新しい日付で設定を開き直す (日次ロールオーバーは次の確認か、
@@ -291,7 +390,11 @@ impl App {
             Mode::Form(_) => return self.handle_form(key),
         }
         if key.code == KeyCode::Esc && !key.ctrl && !key.alt {
-            // 押しかけのキーと知らせを取り消すだけで、終了しない (終了は q)。
+            // 押しかけのキーがあれば取り消し、無ければ Queue などから一覧へ戻る。知らせはどちらでも消す。
+            // 終了はしない (終了は q)。
+            if self.pending.is_empty() {
+                self.screen = Screen::List;
+            }
             self.pending.clear();
             self.messages.clear();
             return;
@@ -315,18 +418,48 @@ impl App {
         match action {
             Action::Down => self.move_cursor(1),
             Action::Up => self.move_cursor(-1),
-            Action::Top => self.view_mut().cursor = 0,
-            Action::Bottom => {
-                let view = self.view_mut();
-                view.cursor = view.rows.len().saturating_sub(1);
-            }
+            Action::Top => self.move_cursor(isize::MIN),
+            Action::Bottom => self.move_cursor(isize::MAX),
             Action::HalfPageDown => self.move_cursor((page / 2).max(1)),
             Action::HalfPageUp => self.move_cursor(-(page / 2).max(1)),
             Action::PageDown => self.move_cursor(page),
             Action::PageUp => self.move_cursor(-page),
-            Action::NextTab => self.current = (self.current + 1) % TAB_COUNT,
-            Action::PrevTab => self.current = (self.current + TAB_COUNT - 1) % TAB_COUNT,
-            Action::GoTab(i) => self.current = i.min(TAB_COUNT - 1),
+            // Queue から押したときは一覧へ戻ってタブを選ぶ。
+            Action::NextTab => {
+                self.current = (self.current + 1) % TAB_COUNT;
+                self.screen = Screen::List;
+            }
+            Action::PrevTab => {
+                self.current = (self.current + TAB_COUNT - 1) % TAB_COUNT;
+                self.screen = Screen::List;
+            }
+            Action::GoTab(i) => {
+                self.current = i.min(TAB_COUNT - 1);
+                self.screen = Screen::List;
+            }
+            Action::OpenQueue => {
+                // 開くたびに先頭 (期限切れ) から見せる。
+                if self.screen != Screen::Queue {
+                    self.queue.cursor = 0;
+                    self.queue.offset = 0;
+                    self.screen = Screen::Queue;
+                    if self.queue_stale {
+                        self.refresh_queue();
+                    }
+                }
+            }
+            Action::QueueMode => {
+                if self.screen == Screen::Queue {
+                    self.queue.wait = !self.queue.wait;
+                    self.queue.offset = 0;
+                    // 選んでいたタスクが切り替えた先にもあれば選んだまま、無ければ先頭。
+                    if !self.refresh_queue() {
+                        self.queue.cursor = 0;
+                    }
+                }
+            }
+            Action::Open => self.open_in_list(),
+            Action::Back => self.screen = Screen::List,
             Action::MoveToday => self.move_selected(SectionKey::Today, Wait::Keep),
             Action::MoveNext => self.move_selected(SectionKey::Next, Wait::Keep),
             Action::MoveSomeday => self.move_selected(SectionKey::Someday, Wait::Keep),
@@ -342,26 +475,86 @@ impl App {
     }
 
     fn move_cursor(&mut self, delta: isize) {
-        let view = self.view_mut();
-        if view.rows.is_empty() {
+        let (len, cursor) = match self.screen {
+            Screen::List => (self.view().rows.len(), &mut self.tabs[self.current].cursor),
+            Screen::Queue => (self.queue.len(), &mut self.queue.cursor),
+        };
+        if len == 0 {
             return;
         }
-        let last = view.rows.len() - 1;
-        view.cursor = view.cursor.saturating_add_signed(delta).min(last);
+        *cursor = cursor.saturating_add_signed(delta).min(len - 1);
+    }
+
+    /// 今の画面で選んでいるタスク。
+    pub fn selected(&self) -> Option<Selected<'_>> {
+        match self.screen {
+            Screen::List => {
+                let tab = self.tab();
+                self.view().selected().map(|row| Selected {
+                    row,
+                    file: tab.file(),
+                    section: match tab {
+                        Tab::Section(key) => Some(key),
+                        _ => None,
+                    },
+                })
+            }
+            Screen::Queue => self.queue.selected().map(|item| Selected {
+                row: &item.row,
+                file: item.file,
+                section: item.section,
+            }),
+        }
     }
 
     /// 操作の対象にできる選択中のタスク。できなければ理由を知らせて `None`。
     fn target(&mut self) -> Option<Row> {
-        let tab = self.tab();
-        let row = self.view().selected()?.clone();
-        if !tab.writable() {
-            self.message(
-                Level::Warning,
-                format!("tasks in {} cannot be changed", tab.file().file_name()),
-            );
+        let selected = self.selected()?;
+        if !selected.writable() {
+            let text = format!("tasks in {} cannot be changed", selected.file.file_name());
+            self.message(Level::Warning, text);
             return None;
         }
-        Some(row)
+        Some(selected.row.clone())
+    }
+
+    /// Queue で選んでいるタスクを、一覧のタブで選ぶ。
+    fn open_in_list(&mut self) {
+        if self.screen != Screen::Queue {
+            return;
+        }
+        let Some(item) = self.queue.selected() else { return };
+        let key = item.row.key.clone();
+        for i in 0..TAB_COUNT {
+            if self.tabs[i].select_key(&key) {
+                self.current = i;
+                self.screen = Screen::List;
+                return;
+            }
+        }
+        self.message(
+            Level::Warning,
+            "the task is under another heading in todo.md, which no tab shows".to_string(),
+        );
+    }
+
+    /// inbox.md か todo.md を読み直したとき・表示を切り替えたときに、Queue を作り直す。
+    /// 選んでいたタスクがまだあれば選んだままにして真を返す。無ければ同じ位置に留める。
+    fn refresh_queue(&mut self) -> bool {
+        let selected = self.queue.selected().map(|i| i.row.key.clone());
+        self.queue.lines = queue::build(
+            self.queue.wait,
+            &self.inbox_doc,
+            &self.todo_doc,
+            &self.ws.names,
+            self.today,
+        );
+        self.queue_stale = false;
+        let kept = selected.is_some_and(|k| self.queue.select_key(&k));
+        if !kept {
+            self.queue.cursor = self.queue.cursor.min(self.queue.len().saturating_sub(1));
+        }
+        kept
     }
 
     fn move_selected(&mut self, to: SectionKey, wait: Wait) {
@@ -453,13 +646,22 @@ impl App {
 
     fn open_add(&mut self) {
         let (projects, contexts) = self.tag_candidates();
-        self.mode = Mode::Form(Box::new(Form::add(self.tab(), projects, contexts, self.today)));
+        // Queue から開いたときは inbox へ入れる (どのセクションとも決まっていないため)。
+        let tab = match self.screen {
+            Screen::List => self.tab(),
+            Screen::Queue => Tab::Inbox,
+        };
+        self.mode = Mode::Form(Box::new(Form::add(tab, projects, contexts, self.today)));
     }
 
     fn open_edit(&mut self) {
         let Some(row) = self.target() else { return };
+        let tab = match self.selected().and_then(|s| s.section) {
+            Some(key) => Tab::Section(key),
+            None => Tab::Inbox,
+        };
         let (projects, contexts) = self.tag_candidates();
-        let form = Form::edit(row, self.tab(), projects, contexts, self.today);
+        let form = Form::edit(row, tab, projects, contexts, self.today);
         self.mode = Mode::Form(Box::new(form));
     }
 
@@ -519,7 +721,7 @@ impl App {
                 };
                 self.message(Level::Info, format!("added to {name}: {content}"));
                 self.report_after_write(dues, "added");
-                self.view_mut().select_key(&id);
+                self.select_key(&id);
             }
             Submit::Edit { key, changes } => {
                 let edited = self.write(true, |ws| {
@@ -601,7 +803,7 @@ impl App {
     }
 
     fn sort(&mut self) {
-        if !self.tab().writable() {
+        if self.screen == Screen::List && !self.tab().writable() {
             return;
         }
         let dues = self.write(true, |ws| {
@@ -625,8 +827,16 @@ impl App {
     /// 操作したタスクを選ぶ (完了にすると ID が付いてキーが変わるため、返ってきたタスクで探す)。
     fn select_task(&mut self, task: &Task) {
         if let Some(id) = task.id.as_deref() {
-            self.view_mut().select_key(id);
+            self.select_key(id);
         }
+    }
+
+    /// 今の画面でキーのタスクを選ぶ。
+    fn select_key(&mut self, key: &str) {
+        match self.screen {
+            Screen::List => self.view_mut().select_key(key),
+            Screen::Queue => self.queue.select_key(key),
+        };
     }
 
     /// ロックを取り、CLI の書き込むコマンドと同じ準備をしてから `op` を実行し、読み直す。
@@ -660,7 +870,10 @@ impl App {
         // 失敗しても読み直す (他で書き換えられていて見つからなかった場合に、今の内容を出すため)。
         self.reload();
         match result {
-            Ok(value) => Some(value),
+            Ok((value, prepared)) => {
+                self.note_prepared(prepared);
+                Some(value)
+            }
             Err(e) => {
                 self.message(Level::Error, format!("{e:#}"));
                 None
@@ -700,10 +913,18 @@ impl App {
         for w in warnings {
             self.message(Level::Warning, w);
         }
-        if let Err(e) = result {
-            self.message(Level::Error, format!("{e:#}"));
+        match result {
+            Ok(((), prepared)) => self.note_prepared(prepared),
+            Err(e) => self.message(Level::Error, format!("{e:#}")),
         }
         self.reload();
+    }
+
+    /// 書き込む前の準備で日次の整理が inbox.md のタスクを警告したら、その日はもう知らせない。
+    fn note_prepared(&mut self, prepared: writing::Prepared) {
+        if prepared.inbox_due_warned {
+            self.inbox_noticed = Some(self.today);
+        }
     }
 
     /// 変わったファイルだけを読み直す。gtodo.json か .state.json が変わったとき (と日付が
@@ -743,9 +964,21 @@ impl App {
                 self.config_warning(w);
             }
         }
+        let mut queue_changed = false;
         for (i, kind) in WATCHED_DOCS.iter().enumerate() {
             if reparse || now[i] != self.stamps[i] {
                 self.load(*kind);
+                queue_changed |= matches!(kind, FileKind::Inbox | FileKind::Todo);
+            }
+        }
+        // inbox.md と todo.md を読み終えてから作り直す。片方ずつ作り直すと、inbox.md から
+        // todo.md へ移したタスクが途中でどちらにも無くなり、選んでいたタスクを見失う。
+        if queue_changed || reparse {
+            // 開いていない間は作り直さない (開くときに作る)。
+            if self.screen == Screen::Queue {
+                self.refresh_queue();
+            } else {
+                self.queue_stale = true;
             }
         }
         self.stamps = now;
@@ -769,6 +1002,11 @@ impl App {
             if !selected.is_some_and(|k| view.select_key(&k)) {
                 view.clamp();
             }
+        }
+        match kind {
+            FileKind::Inbox => self.inbox_doc = doc,
+            FileKind::Todo => self.todo_doc = doc,
+            _ => {}
         }
     }
 

@@ -13,7 +13,7 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Level, Mode};
+use super::app::{App, Level, Mode, Screen};
 use super::draw::{self, Theme};
 use super::keymap::Keymap;
 
@@ -143,7 +143,7 @@ fn the_screen_shows_tabs_rows_and_hints() {
             "  [ ] 今日2",
             "",
             "",
-            "x 完了にする  n Next へ  w Waiting へ  s Someday へ  c キャンセル  e 編集  a 追加  ? ヘルプ",
+            "x 完了にする  n Next へ  w Waiting へ  s Someday へ  c キャンセル  e 編集  a 追加  Q Queue  ? ヘルプ",
         ]
     );
 }
@@ -171,22 +171,22 @@ fn hints_follow_the_selected_task_and_tab() {
     // 完了したタスクは移せないので、移動の案内を出さない。
     assert_eq!(
         footer(&mut app),
-        "x 未完了に戻す  c キャンセル  e 編集  a 追加  o 並べ替え  ? ヘルプ  q 終了"
+        "x 未完了に戻す  c キャンセル  e 編集  a 追加  o 並べ替え  Q Queue  ? ヘルプ  q 終了"
     );
 
     press(&mut app, "4");
     assert_eq!(
         footer(&mut app),
-        "x 完了にする  d Today へ  n Next へ  w 待ち先を変える  s Someday へ  c キャンセル  e 編集  a 追加  o 並べ替え  ? ヘルプ"
+        "x 完了にする  d Today へ  n Next へ  w 待ち先を変える  s Someday へ  c キャンセル  e 編集  a 追加  Q Queue  ? ヘルプ"
     );
 
     // 空のタブでは、タスクの操作を出さない。
     press(&mut app, "3");
-    assert_eq!(footer(&mut app), "a 追加  o 並べ替え  ? ヘルプ  q 終了");
+    assert_eq!(footer(&mut app), "a 追加  o 並べ替え  Q Queue  ? ヘルプ  q 終了");
 
     // done.md は見るだけ。
     press(&mut app, "6");
-    assert_eq!(footer(&mut app), "a 追加  ? ヘルプ  q 終了");
+    assert_eq!(footer(&mut app), "a 追加  Q Queue  ? ヘルプ  q 終了");
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn custom_section_names_are_used_in_tabs_and_hints() {
     );
     assert_eq!(
         rows[4],
-        "x 完了にする  n 次 へ  w 待ち へ  s いつか へ  c キャンセル  e 編集  a 追加  o 並べ替え  ? ヘルプ"
+        "x 完了にする  n 次 へ  w 待ち へ  s いつか へ  c キャンセル  e 編集  a 追加  Q Queue  ? ヘルプ"
     );
 }
 
@@ -510,7 +510,8 @@ fn help_lists_every_key_and_closes_on_any_key() {
         "Waiting へ移す (待ち先を入れる。Waiting にあれば待ち先を変える)",
         "キャンセルする (cancelled.md へ移す。確認あり)",
         "終了 (Ctrl-c でも)",
-        "押しかけのキー・入力・確認を取り消す (終了はしない)",
+        "押しかけのキー・入力・確認を取り消す。Queue からは一覧へ戻る (終了はしない)",
+        "Queue を開く (期日・待ち先ごとの一覧)",
     ] {
         assert!(rows.contains(expected), "{expected:?} not in\n{rows}");
     }
@@ -989,4 +990,260 @@ fn a_long_line_to_be_written_is_wrapped_not_cut() {
         preview,
         "- [ ] 請求書を送る https://example.com/invoice/2026/11/very/long/path +work @office due:2026-11-20 created:2026-11-16"
     );
+}
+
+/// Queue のテスト用のデータ (今日は 2026-11-16)。
+fn queue_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write(
+        "inbox.md",
+        "# Inbox\n\n- [ ] 受信 due:2026-11-16 id:111111\n- [ ] 期日なし id:222222\n",
+    );
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [ ] 遅れ +work due:2026-11-13 id:aaaaaa\n- [ ] 今日の作業 due:2026-11-16 id:bbbbbb\n\n\
+         ## Next\n\n- [ ] 来月 due:2026-12-20 id:cccccc\n\n## Waiting\n\n- [ ] 見積もり wait:bob due:2026-11-18 id:dddddd\n\n\
+         ## Someday\n\n## 買い物\n\n- [ ] 牛乳 due:2026-11-17 id:eeeeee\n",
+    );
+    f
+}
+
+#[test]
+fn q_opens_the_queue_with_the_neovim_headings() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    press(&mut app, "Q");
+    assert_eq!(
+        screen(&mut app, 60, 22),
+        [
+            " Queue (Due)  2026-11-16",
+            "────────────────────────────────────────────────────────────",
+            " 期限切れ",
+            "▌ ⚠ 遅れ +work (3日超過)                               Today",
+            "",
+            " 今日 (11/16 月)",
+            "  ▶ 受信                                               Inbox",
+            "  ▶ 今日の作業                                         Today",
+            "",
+            " 明日 (11/17 火)",
+            "  ▶ 牛乳                                              買い物",
+            "",
+            " 11/18 水 (2日後)",
+            "  ▶ 見積もり                                         Waiting",
+            "",
+            " 12/20 日 (34日後)",
+            "  ▶ 来月                                                Next",
+            "",
+            "",
+            "",
+            "",
+            "x 完了にする  Enter 一覧で開く  Tab 待ち先別  ? ヘルプ",
+        ]
+    );
+}
+
+#[test]
+fn the_queue_cursor_skips_headings_and_tab_switches_to_waits() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    press(&mut app, "Q");
+    let selected = |app: &App| app.selected().map(|s| s.row.task.content.clone()).unwrap_or_default();
+    assert_eq!(selected(&app), "遅れ");
+    press(&mut app, "j");
+    assert_eq!(selected(&app), "受信");
+    press(&mut app, "jj");
+    assert_eq!(selected(&app), "牛乳");
+    press(&mut app, "G");
+    assert_eq!(selected(&app), "来月");
+    press(&mut app, "gg");
+    assert_eq!(selected(&app), "遅れ");
+
+    press_code(&mut app, KeyCode::Tab);
+    let rows = screen(&mut app, 60, 8);
+    assert_eq!(rows[0], " Queue (Wait) 2026-11-16");
+    assert_eq!(rows[2], " bob 待ち");
+    assert_eq!(rows[3], "▌ ▶ 見積もり                                         Waiting");
+    // 選んでいたタスクが切り替えた先にもあれば、選んだまま。
+    press_code(&mut app, KeyCode::Tab);
+    assert_eq!(selected(&app), "見積もり");
+    press(&mut app, "gg");
+    press_code(&mut app, KeyCode::Tab);
+    assert_eq!(
+        selected(&app),
+        "見積もり",
+        "遅れ has no wait:, so the first task is selected"
+    );
+}
+
+#[test]
+fn the_queue_footer_follows_the_selected_task() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    press(&mut app, "Qj");
+    // inbox のタスクは、どのセクションへも移せる。
+    assert_eq!(
+        footer(&mut app),
+        "x 完了にする  d Today へ  n Next へ  w Waiting へ  s Someday へ  a 追加  Enter 一覧で開く  Tab 待ち先別  ? ヘルプ"
+    );
+}
+
+#[test]
+fn enter_opens_the_task_in_its_tab() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    press(&mut app, "Qjjjjj");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::List);
+    assert_eq!(app.current, 2);
+    assert_eq!(selected_content(&app), "来月");
+
+    // todo.md の他の見出しのタスクは、どのタブにも出ていない。
+    press(&mut app, "Qjjj");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Queue);
+    assert_eq!(app.messages.last().unwrap().level, Level::Warning);
+}
+
+#[test]
+fn tasks_can_be_changed_from_the_queue() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    press(&mut app, "Qj");
+    // inbox のタスクを Today へ。Queue に残り、右端の場所が変わる。
+    press(&mut app, "d");
+    assert!(!f.read("inbox.md").contains("受信"));
+    let item = app.queue.selected().unwrap();
+    assert_eq!((item.row.task.content.as_str(), item.place.as_str()), ("受信", "Today"));
+    // 完了にすると Queue から消え、次のタスクを選ぶ。
+    press(&mut app, "x");
+    assert!(f.read("todo.md").contains("- [x] 受信"));
+    assert!(app.queue.items().all(|(_, i)| i.row.task.content != "受信"));
+    assert_eq!(app.screen, Screen::Queue);
+
+    // Queue から追加すると inbox へ入れる。
+    press(&mut app, "a");
+    let Mode::Form(form) = &app.mode else {
+        panic!("no form");
+    };
+    assert_eq!(form.destination(), gtodo_core::ops::Destination::Inbox);
+}
+
+#[test]
+fn esc_goes_back_to_the_list_and_q_quits_from_the_queue() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    // 押しかけのキーがあれば、Esc はそれを取り消すだけ。
+    press(&mut app, "Qg");
+    press_code(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::Queue);
+    press_code(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::List);
+    assert!(!app.should_quit());
+    press(&mut app, "Q4");
+    assert_eq!((app.screen, app.current), (Screen::List, 3));
+    press(&mut app, "Qq");
+    assert!(app.should_quit());
+}
+
+#[test]
+fn the_queue_follows_changes_by_other_programs() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    press(&mut app, "Q");
+    f.write("inbox.md", "# Inbox\n\n- [ ] 新しく来た due:2026-11-15 id:333333\n");
+    app.tick();
+    let contents: Vec<&str> = app.queue.items().map(|(_, i)| i.row.task.content.as_str()).collect();
+    // 期限切れは超過した日数の多い順 (Neovim 版と同じ)。
+    assert_eq!(
+        contents,
+        ["遅れ", "新しく来た", "今日の作業", "牛乳", "見積もり", "来月"]
+    );
+}
+
+#[test]
+fn due_inbox_tasks_are_noted_when_they_are_not_moved_automatically() {
+    let f = queue_fixture();
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today": false}"#);
+    let mut app = f.app();
+    assert_eq!(
+        last_message(&app),
+        "1 task(s) in inbox.md are due; they stay there because auto_move_inbox_to_today is off (Q to see them)"
+    );
+    press(&mut app, "j");
+    assert!(app.messages.is_empty());
+    // 日付が変わったときにも出す (日次の整理が警告していれば重ねない)。
+    f.today.set(date("2026-11-17"));
+    app.tick();
+    let texts: Vec<&str> = app.messages.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(texts.iter().filter(|t| t.contains("inbox.md")).count(), 1, "{texts:?}");
+}
+
+#[test]
+fn no_note_when_due_inbox_tasks_move_automatically() {
+    let f = queue_fixture();
+    let app = f.app();
+    assert!(app.messages.iter().all(|m| !m.text.contains("auto_move")));
+}
+
+#[test]
+fn the_inbox_note_waits_for_the_rollover_and_is_not_repeated() {
+    let f = queue_fixture();
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today": false}"#);
+    let mut app = f.app();
+    press(&mut app, "j");
+    // 日付が変わったとき、Neovim 版がロックを持っていれば日次の整理を待つ。
+    f.write(".gtodo.lock", "12345 0");
+    f.today.set(date("2026-11-17"));
+    app.tick();
+    assert!(app.messages.iter().all(|m| !m.text.contains("inbox.md")));
+    fs::remove_file(f.path().join(".gtodo.lock")).unwrap();
+    app.tick();
+    app.tick();
+    let about_inbox = app.messages.iter().filter(|m| m.text.contains("inbox.md")).count();
+    assert_eq!(about_inbox, 1, "{:?}", app.messages);
+}
+
+#[test]
+fn the_inbox_note_is_given_once_even_if_an_operation_notices_the_new_day() {
+    let f = queue_fixture();
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today": false}"#);
+    let mut app = f.app();
+    press(&mut app, "j");
+    f.today.set(date("2026-11-17"));
+    // 次の確認より前に操作した。日次の整理はその準備で行われ、inbox.md のタスクを警告する。
+    press(&mut app, "x");
+    app.tick();
+    app.tick();
+    let about_inbox = app.messages.iter().filter(|m| m.text.contains("inbox.md")).count();
+    assert_eq!(about_inbox, 1, "{:?}", app.messages);
+}
+
+#[test]
+fn changes_made_while_the_queue_is_closed_show_when_it_opens() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    f.write("inbox.md", "# Inbox\n\n- [ ] 新しく来た due:2026-11-16 id:333333\n");
+    app.tick();
+    press(&mut app, "Q");
+    let contents: Vec<&str> = app.queue.items().map(|(_, i)| i.row.task.content.as_str()).collect();
+    assert_eq!(
+        contents,
+        ["遅れ", "新しく来た", "今日の作業", "牛乳", "見積もり", "来月"]
+    );
+}
+
+#[test]
+fn the_place_stays_visible_on_a_narrow_terminal() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    press(&mut app, "Q");
+    let rows = screen(&mut app, 32, 8);
+    assert_eq!(rows[3], "▌ ⚠ 遅れ +work (3日超過)   Today");
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n## Next\n\n## Waiting\n\n- [ ] とても長い本文のタスク +work @office due:2026-11-13 id:aaaaaa\n\n## Someday\n",
+    );
+    app.tick();
+    let rows = screen(&mut app, 40, 8);
+    assert!(rows[3].ends_with("Waiting"), "{}", rows[3]);
 }

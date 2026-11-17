@@ -13,9 +13,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::app::{App, Level, Mode, Row, TABS, Tab};
+use super::app::{App, Level, Mode, Row, Screen, TABS, Tab};
 use super::form::{DESTINATIONS, Field, Form, preview_line};
 use super::keymap::{Action, Key, sequence_label};
+use super::queue::{self, Heading};
 use crate::render::{context_tag, project_tag};
 
 /// 選んでいる行の左端の印。
@@ -24,6 +25,8 @@ pub const GUTTER: &str = "▌";
 const MAX_MESSAGE_LINES: usize = 6;
 /// 本文を切り詰めるときも残す幅。これより狭いときはタグの方を切る。
 const MIN_CONTENT_WIDTH: usize = 10;
+/// Queue で本文を切り詰めるときも残す幅 (右端の場所を優先する)。
+const MIN_QUEUE_CONTENT_WIDTH: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
@@ -71,8 +74,23 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
     ])
     .areas(area);
 
-    frame.render_widget(Paragraph::new(tab_line(app, theme)), tabs_area);
-    draw_list(frame, app, theme, list_area);
+    match app.screen {
+        Screen::List => {
+            frame.render_widget(Paragraph::new(tab_line(app, theme)), tabs_area);
+            draw_list(frame, app, theme, list_area);
+        }
+        Screen::Queue => {
+            let title = if app.queue.wait { "Queue (Wait)" } else { "Queue (Due) " };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {title} {}", app.today()),
+                    theme.accent().add_modifier(Modifier::BOLD),
+                )),
+                tabs_area,
+            );
+            draw_queue(frame, app, theme, list_area);
+        }
+    }
     frame.render_widget(Paragraph::new(messages), message_area);
     frame.render_widget(Paragraph::new(footer), footer_area);
 
@@ -371,10 +389,10 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
             hints.push((action, key, desc));
         }
     };
-    let tab = app.tab();
     let names = &app.ws.names;
-    if let Some(row) = app.view().selected().filter(|_| tab.writable()) {
-        match row.task.status {
+    let selected = app.selected();
+    if let Some(selected) = selected.as_ref().filter(|s| s.writable()) {
+        match selected.row.task.status {
             Status::Open => {
                 add(Action::ToggleDone, "完了にする".to_string());
                 for (action, key) in [
@@ -383,7 +401,7 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
                     (Action::MoveWaiting, SectionKey::Waiting),
                     (Action::MoveSomeday, SectionKey::Someday),
                 ] {
-                    if tab == Tab::Section(key) {
+                    if selected.section == Some(key) {
                         if key == SectionKey::Waiting {
                             add(action, "待ち先を変える".to_string());
                         }
@@ -398,9 +416,28 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
         add(Action::Edit, "編集".to_string());
     }
     add(Action::Add, "追加".to_string());
-    if tab.writable() {
-        add(Action::Sort, "並べ替え".to_string());
+    match app.screen {
+        Screen::List => {
+            if app.tab().writable() {
+                add(Action::Sort, "並べ替え".to_string());
+            }
+            add(Action::OpenQueue, "Queue".to_string());
+        }
+        Screen::Queue => {
+            if selected.is_some() {
+                add(Action::Open, "一覧で開く".to_string());
+            }
+            let mode = if app.queue.wait { "期日別" } else { "待ち先別" };
+            add(Action::QueueMode, mode.to_string());
+            add(Action::Sort, "並べ替え".to_string());
+            hints.push((Action::Back, "Esc".to_string(), "一覧へ".to_string()));
+        }
     }
+    let mut add = |action: Action, desc: String| {
+        if let Some(key) = app.keymap.label(action) {
+            hints.push((action, key, desc));
+        }
+    };
     add(Action::Help, "ヘルプ".to_string());
     add(Action::Quit, "終了".to_string());
     hints
@@ -408,16 +445,20 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
 
 /// 幅に収まるまで、重要でない案内から外す。`?` (ヘルプ) は外さない (外したキーもヘルプで分かるように)。
 fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(String, String)> {
-    const DROP_ORDER: [Action; 10] = [
+    const DROP_ORDER: [Action; 14] = [
         Action::Quit,
         Action::Sort,
+        Action::OpenQueue,
         Action::Cancel,
         Action::Edit,
+        Action::Back,
         Action::MoveSomeday,
         Action::MoveWaiting,
         Action::MoveNext,
         Action::MoveToday,
         Action::Add,
+        Action::Open,
+        Action::QueueMode,
         Action::ToggleDone,
     ];
     let line_width = |hints: &[(Action, String, String)]| -> usize {
@@ -461,6 +502,10 @@ fn description(app: &App, action: Action) -> String {
         Action::Sort => "期日が来たタスクを移し、並べ替える".to_string(),
         Action::Add => "タスクを追加する (追加先の初期値は開いているタブ)".to_string(),
         Action::Edit => "タスクを編集する".to_string(),
+        Action::OpenQueue => "Queue を開く (期日・待ち先ごとの一覧)".to_string(),
+        Action::QueueMode => "Queue: 期日別と待ち先別を切り替える".to_string(),
+        Action::Open => "Queue: 選んでいるタスクを一覧で開く".to_string(),
+        Action::Back => "一覧へ戻る".to_string(),
         Action::Help => "このヘルプ".to_string(),
         Action::Quit => "終了 (Ctrl-c でも)".to_string(),
     }
@@ -490,7 +535,7 @@ pub fn help_entries(app: &App) -> Vec<(String, String)> {
     // Esc は割り当てを変えられない (入力欄やヘルプでも同じ意味で使うため)。
     entries.push((
         "Esc".to_string(),
-        "押しかけのキー・入力・確認を取り消す (終了はしない)".to_string(),
+        "押しかけのキー・入力・確認を取り消す。Queue からは一覧へ戻る (終了はしない)".to_string(),
     ));
     entries
 }
@@ -519,6 +564,9 @@ fn all_actions() -> Vec<Action> {
         Action::Add,
         Action::Edit,
         Action::Sort,
+        Action::OpenQueue,
+        Action::QueueMode,
+        Action::Open,
         Action::Help,
         Action::Quit,
     ]);
@@ -755,6 +803,103 @@ fn draw_form(frame: &mut Frame, form: &Form, app: &App, theme: Theme, area: Rect
         let x = (popup.x + 1 + x as u16).min(popup.right().saturating_sub(2));
         frame.set_cursor_position((x, popup.y + 1 + y as u16));
     }
+}
+
+fn draw_queue(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {
+    let block = Block::new().borders(Borders::TOP).border_style(theme.dim());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let height = usize::from(inner.height);
+    app.page_height = height;
+
+    let q = &mut app.queue;
+    let cursor_line = q.items().nth(q.cursor).map(|(i, _)| i);
+    if let Some(line) = cursor_line {
+        // 上へ移ったときは、そのタスクの見出しまで見せる。
+        let mut top = line;
+        while top > 0 && !matches!(q.lines[top - 1], queue::Line::Item(_)) {
+            top -= 1;
+        }
+        if top < q.offset {
+            q.offset = top;
+        } else if height > 0 && line >= q.offset + height {
+            q.offset = line + 1 - height;
+        }
+    }
+    q.offset = q.offset.min(q.lines.len().saturating_sub(height.max(1)));
+
+    let selected_line = cursor_line;
+    let width = usize::from(inner.width);
+    let lines: Vec<Line> = q
+        .lines
+        .iter()
+        .enumerate()
+        .skip(q.offset)
+        .take(height)
+        .map(|(i, line)| match line {
+            queue::Line::Blank => Line::raw(""),
+            queue::Line::Heading(text, kind) => {
+                let style = match kind {
+                    Heading::Overdue => theme.fg(Color::Red).add_modifier(Modifier::BOLD),
+                    Heading::Today | Heading::Invalid | Heading::Person => {
+                        theme.fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    }
+                    Heading::Upcoming => theme.fg(Color::Blue).add_modifier(Modifier::BOLD),
+                    Heading::Far => theme.dim(),
+                };
+                Line::styled(format!(" {text}"), style)
+            }
+            queue::Line::Empty(text) => Line::styled(format!("  {text}"), theme.fg(Color::Green)),
+            queue::Line::Item(item) => queue_item_line(item, Some(i) == selected_line, width, theme),
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Queue のタスクの行。右端にどこにあるかを出す (inbox でまだ振り分けていないものが分かるように)。
+fn queue_item_line(item: &queue::Item, selected: bool, width: usize, theme: Theme) -> Line<'static> {
+    let task = &item.row.task;
+    let base = if item.overdue {
+        theme.fg(Color::Red)
+    } else if item.far {
+        theme.dim()
+    } else {
+        Style::new()
+    };
+    let head = vec![
+        if selected {
+            Span::styled(GUTTER, theme.accent())
+        } else {
+            Span::raw(" ")
+        },
+        Span::raw(" "),
+        Span::styled(if item.overdue { "⚠ " } else { "▶ " }, base),
+    ];
+    let mut tail = Vec::new();
+    for tag in [project_tag(task), context_tag(task)].into_iter().flatten() {
+        tail.push(Span::styled(format!(" {tag}"), base));
+    }
+    if !item.suffix.is_empty() {
+        tail.push(Span::styled(item.suffix.clone(), base));
+    }
+    let place = Span::styled(item.place.clone(), theme.dim());
+
+    // 本文と右端の場所の間は 2 文字以上空ける。
+    let fixed: usize = head.iter().chain(&tail).map(Span::width).sum::<usize>() + place.width() + 2;
+    // 狭くても右端の場所を残すため、一覧より本文を短くしてよい。
+    let content = truncate(&task.content, width.saturating_sub(fixed).max(MIN_QUEUE_CONTENT_WIDTH));
+    let content_style = if selected {
+        base.add_modifier(Modifier::BOLD)
+    } else {
+        base
+    };
+    let used = fixed - 2 + content.width();
+    let mut spans = head;
+    spans.push(Span::styled(content, content_style));
+    spans.extend(tail);
+    spans.push(Span::raw(" ".repeat(width.saturating_sub(used).max(2))));
+    spans.push(place);
+    Line::from(spans)
 }
 
 #[cfg(test)]
