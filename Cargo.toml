@@ -12,6 +12,8 @@ anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 gtodo-core = { path = "crates/gtodo-core" }
+open = "5"
+pulldown-cmark = { version = "0.13", default-features = false }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }

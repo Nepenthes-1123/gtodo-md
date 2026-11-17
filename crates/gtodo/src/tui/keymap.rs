@@ -109,6 +109,8 @@ pub enum Action {
     Edit,
     OpenQueue,
     OpenKanban,
+    /// 選んでいるタスクのリンクを開く。
+    OpenLink,
     Search,
     /// 表示を切り替える (Queue は期日別と待ち先別、検索は状態)。
     SwitchView,
@@ -164,6 +166,7 @@ impl Default for Keymap {
             (vec![Key::char('e')], Edit),
             (vec![Key::char('Q')], OpenQueue),
             (vec![Key::char('K')], OpenKanban),
+            (vec![Key::char('g'), Key::char('x')], OpenLink),
             (vec![Key::char('/')], Search),
             (vec![Key::plain(KeyCode::Tab)], SwitchView),
             (vec![Key::plain(KeyCode::Enter)], Open),
@@ -312,6 +315,6 @@ mod tests {
         let map = Keymap::default();
         let pending = [Key::char('g')];
         let labels: Vec<String> = map.continuations(&pending).map(|(k, _)| sequence_label(k)).collect();
-        assert_eq!(labels, ["gg", "gt", "gT"]);
+        assert_eq!(labels, ["gg", "gt", "gT", "gx"]);
     }
 }

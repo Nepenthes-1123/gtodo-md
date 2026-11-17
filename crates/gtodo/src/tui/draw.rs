@@ -19,6 +19,7 @@ use super::app::{App, Level, Mode, Row, Screen, TABS, Tab};
 use super::form::{DESTINATIONS, Field, Form, preview_line};
 use super::kanban;
 use super::keymap::{Action, Key, sequence_label};
+use super::markdown::{self, Inline, Urls};
 use super::queue::{self, Heading};
 use super::search::{self, StatusFilter};
 use crate::render::{context_tag, project_tag};
@@ -70,13 +71,23 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
     let area = frame.area();
     let messages = message_lines(app, theme, area.width as usize);
     let footer = footer_lines(app, theme, area.width as usize);
-    let [tabs_area, list_area, message_area, footer_area] = Layout::vertical([
+    let detail = detail_lines(app, theme, area);
+    // 詳細欄は上に区切りの線を引く。
+    let detail_height = if detail.is_empty() { 0 } else { detail.len() as u16 + 1 };
+    let [tabs_area, list_area, detail_area, message_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(detail_height),
         Constraint::Length(messages.len() as u16),
         Constraint::Length(footer.len() as u16),
     ])
     .areas(area);
+    if !detail.is_empty() {
+        frame.render_widget(
+            Paragraph::new(detail).block(Block::new().borders(Borders::TOP).border_style(theme.dim())),
+            detail_area,
+        );
+    }
 
     match app.screen {
         Screen::List => {
@@ -117,6 +128,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
             ..area
         };
         draw_form(frame, form, app, theme, form_area);
+    }
+    if let Mode::ChooseLink { links, cursor } = &app.mode {
+        draw_link_choice(frame, links, *cursor, theme, area);
     }
     if app.mode == Mode::Help {
         // フッターは隠さない (スクロールの案内を出すため)。
@@ -209,6 +223,7 @@ pub fn row_line(row: &Row, selected: bool, tab: Tab, today: NaiveDate, width: us
         style: content_style,
         mark: content_style,
         min_width: MIN_CONTENT_WIDTH,
+        theme,
     };
     layout_row(head, content, tail, None, width)
 }
@@ -222,6 +237,7 @@ struct Content<'a> {
     mark: Style,
     /// 狭くても残す幅。
     min_width: usize,
+    theme: Theme,
 }
 
 /// 一覧・Queue・検索の行を組み立てる。本文が入りきらなければ `…` で切り、タグなどは残す。
@@ -236,7 +252,15 @@ fn layout_row(
     let place_room = place.as_ref().map_or(0, |p| p.width() + 2);
     let fixed: usize = head.iter().chain(&tail).map(Span::width).sum::<usize>() + place_room;
     let room = width.saturating_sub(fixed).max(content.min_width);
-    let (body, body_width) = highlighted(content.text, content.ranges, room, content.style, content.mark);
+    let pieces = content_pieces(
+        content.text,
+        content.ranges,
+        content.style,
+        content.mark,
+        content.theme,
+        Urls::Short,
+    );
+    let (body, body_width) = fit(pieces, room, content.style);
     let mut spans = head;
     spans.extend(body);
     spans.extend(tail);
@@ -395,6 +419,11 @@ fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             Line::styled(format!("→ cancelled.md: {content}"), theme.dim()),
             Line::from(Span::styled("Cancel this task? [y/N]", theme.key())),
         ],
+        Mode::ChooseLink { .. } => {
+            let hints = [("1〜9/Enter", "開く"), ("↑/↓", "選ぶ"), ("Esc", "取り消す")]
+                .map(|(k, d)| (k.to_string(), d.to_string()));
+            vec![hint_line(&hints, theme)]
+        }
         Mode::Help => {
             let scroll = [Action::Down, Action::Up]
                 .iter()
@@ -486,6 +515,9 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
         }
         add(Action::Cancel, "キャンセル".to_string());
         add(Action::Edit, "編集".to_string());
+        if !markdown::links(&selected.row.task.content).is_empty() {
+            add(Action::OpenLink, "リンクを開く".to_string());
+        }
     }
     add(Action::Add, "追加".to_string());
     match app.screen {
@@ -542,12 +574,13 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
 
 /// 幅に収まるまで、重要でない案内から外す。`?` (ヘルプ) は外さない (外したキーもヘルプで分かるように)。
 fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(String, String)> {
-    const DROP_ORDER: [Action; 17] = [
+    const DROP_ORDER: [Action; 18] = [
         Action::Quit,
         Action::Sort,
         Action::OpenKanban,
         Action::OpenQueue,
         Action::Search,
+        Action::OpenLink,
         Action::Cancel,
         Action::Edit,
         Action::Back,
@@ -604,6 +637,7 @@ fn description(app: &App, action: Action) -> String {
         Action::Edit => "タスクを編集する".to_string(),
         Action::OpenQueue => "Queue を開く (期日・待ち先ごとの一覧)".to_string(),
         Action::OpenKanban => "カンバンを開く (h/l などのタブのキーで列を移る)".to_string(),
+        Action::OpenLink => "リンクを開く (複数あれば選ぶ)".to_string(),
         Action::Search => "検索 (本文の語・+project・@context・wait:。結果の中では入力欄へ戻る)".to_string(),
         Action::SwitchView => "表示を切り替える (Queue は期日別と待ち先別、検索はすべて・未完了・完了)".to_string(),
         Action::Open => "Queue: 選んでいるタスクを一覧で開く".to_string(),
@@ -669,6 +703,7 @@ fn all_actions() -> Vec<Action> {
         Action::OpenQueue,
         Action::OpenKanban,
         Action::Search,
+        Action::OpenLink,
         Action::SwitchView,
         Action::Open,
         Action::Help,
@@ -1000,6 +1035,7 @@ fn queue_item_line(item: &queue::Item, selected: bool, width: usize, theme: Them
         style: content_style,
         mark: content_style,
         min_width: MIN_QUEUE_CONTENT_WIDTH,
+        theme,
     };
     layout_row(head, content, tail, Some(place), width)
 }
@@ -1124,49 +1160,141 @@ fn search_row_line(
         style: content_style,
         mark,
         min_width: MIN_QUEUE_CONTENT_WIDTH,
+        theme,
     };
     layout_row(head, content, tail, Some(place), width)
 }
 
-/// `ranges` の部分を `mark` で強調した `text`。幅 `width` を超えれば `…` で切る。
-/// 作った幅も返す。
-fn highlighted(
+/// 本文を markdown として整えた部分と、その装飾。`ranges` (検索で当たった元の本文の範囲) は
+/// `mark` で強調する。URL を短くした部分などは、当たっていれば全体を強調する。
+fn content_pieces(
     text: &str,
     ranges: &[std::ops::Range<usize>],
-    width: usize,
     base: Style,
     mark: Style,
-) -> (Vec<Span<'static>>, usize) {
-    let cut = text.width() > width;
-    let limit = if cut { width.saturating_sub(1) } else { width };
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut used = 0;
-    let mut current = String::new();
-    let mut current_marked = false;
-    for (i, c) in text.char_indices() {
-        let w = c.width().unwrap_or(0);
-        if used + w > limit {
-            break;
+    theme: Theme,
+    urls: Urls,
+) -> Vec<(String, Style)> {
+    let mut pieces: Vec<(String, Style)> = Vec::new();
+    let overlaps = |r: &std::ops::Range<usize>| ranges.iter().any(|m| m.start < r.end && r.start < m.end);
+    for segment in markdown::render(text, urls, !theme.color).segments {
+        let style = inline_style(base, segment.style, theme);
+        if !segment.verbatim {
+            let style = if overlaps(&segment.source) {
+                style.patch(mark)
+            } else {
+                style
+            };
+            pieces.push((segment.text, style));
+            continue;
         }
-        let marked = ranges.iter().any(|r| r.contains(&i));
-        if marked != current_marked && !current.is_empty() {
-            spans.push(Span::styled(
-                std::mem::take(&mut current),
-                if current_marked { mark } else { base },
-            ));
+        // 元の本文そのままの部分は、当たった文字だけを強調する。
+        for (i, c) in segment.text.char_indices() {
+            let at = segment.source.start + i;
+            let s = if ranges.iter().any(|r| r.contains(&at)) {
+                style.patch(mark)
+            } else {
+                style
+            };
+            match pieces.last_mut() {
+                Some((text, last)) if *last == s => text.push(c),
+                _ => pieces.push((c.to_string(), s)),
+            }
         }
-        current_marked = marked;
-        current.push(c);
-        used += w;
     }
-    if !current.is_empty() {
-        spans.push(Span::styled(current, if current_marked { mark } else { base }));
+    pieces
+}
+
+/// markdown の装飾を文字の装飾にする。コードは色で示す (色を使わないときは `` ` `` を残してある)。
+fn inline_style(base: Style, inline: Inline, theme: Theme) -> Style {
+    let mut style = base;
+    if inline.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if inline.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if inline.strike {
+        style = style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    if inline.code {
+        style = style.patch(theme.fg(Color::LightYellow));
+    }
+    if inline.link {
+        style = style.add_modifier(Modifier::UNDERLINED).patch(theme.fg(Color::Blue));
+    }
+    style
+}
+
+/// 幅 `width` に収まるよう切り詰める (超えた分は `…`)。作った幅も返す。
+fn fit(pieces: Vec<(String, Style)>, width: usize, base: Style) -> (Vec<Span<'static>>, usize) {
+    let total: usize = pieces.iter().map(|(t, _)| t.width()).sum();
+    let cut = total > width;
+    let limit = if cut { width.saturating_sub(1) } else { width };
+    let mut spans = Vec::new();
+    let mut used = 0;
+    'pieces: for (text, style) in pieces {
+        let mut kept = String::new();
+        for c in text.chars() {
+            let w = c.width().unwrap_or(0);
+            if used + w > limit {
+                if !kept.is_empty() {
+                    spans.push(Span::styled(kept, style));
+                }
+                break 'pieces;
+            }
+            kept.push(c);
+            used += w;
+        }
+        spans.push(Span::styled(kept, style));
     }
     if cut {
         spans.push(Span::styled("…", base));
         used += 1;
     }
     (spans, used)
+}
+
+/// 幅 `width` ごとに折り返し、`max_lines` 行を超えるなら最後の行の末尾を `…` にする。
+fn wrap_pieces(pieces: Vec<(String, Style)>, width: usize, max_lines: usize, base: Style) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut lines: Vec<Vec<(String, Style)>> = vec![Vec::new()];
+    let mut used = 0;
+    for (text, style) in pieces {
+        for c in text.chars() {
+            let w = c.width().unwrap_or(0);
+            if used + w > width {
+                if lines.len() == max_lines {
+                    // 入りきらない。最後の行の末尾を `…` にする。
+                    let last = lines.last_mut().expect("never empty");
+                    while used + 1 > width {
+                        let Some((t, _)) = last.last_mut() else { break };
+                        match t.pop() {
+                            Some(removed) => used -= removed.width().unwrap_or(0),
+                            None => {
+                                last.pop();
+                            }
+                        }
+                    }
+                    last.push(("…".to_string(), base));
+                    return lines.into_iter().map(to_line).collect();
+                }
+                lines.push(Vec::new());
+                used = 0;
+            }
+            let line = lines.last_mut().expect("never empty");
+            match line.last_mut() {
+                Some((t, s)) if *s == style => t.push(c),
+                _ => line.push((c.to_string(), style)),
+            }
+            used += w;
+        }
+    }
+    lines.into_iter().map(to_line).collect()
+}
+
+fn to_line(pieces: Vec<(String, Style)>) -> Line<'static> {
+    Line::from(pieces.into_iter().map(|(t, s)| Span::styled(t, s)).collect::<Vec<_>>())
 }
 
 /// カンバンの見出し (列の名前と枚数)。
@@ -1306,10 +1434,13 @@ fn card_lines(card: &kanban::Card, width: usize, today: NaiveDate, theme: Theme)
     let task = &card.row.task;
     let from_done_md = card.file == FileKind::Done;
     let base = if from_done_md { theme.dim() } else { Style::new() };
-    let mut lines: Vec<Line> = kanban::body_lines(task, width)
-        .into_iter()
-        .map(|l| Line::styled(l, base))
-        .collect();
+    // 本文は 2 行まで (超えれば `…`)。markdown を整えて折り返す。
+    let mut pieces = Vec::new();
+    if let Some(p) = task.priority {
+        pieces.push((format!("({p}) "), base.add_modifier(Modifier::BOLD)));
+    }
+    pieces.extend(content_pieces(&task.content, &[], base, base, theme, Urls::Short));
+    let mut lines = wrap_pieces(pieces, width, kanban::BODY_LINES, base);
 
     let value = |v: &Option<String>| v.as_deref().filter(|v| !v.is_empty()).map(str::to_string);
     // 期日・待ち先・タグの順 (ROADMAP の決定事項)。完了したカードの期日は出さない (完了日を出す)。
@@ -1347,6 +1478,105 @@ fn card_lines(card: &kanban::Card, width: usize, today: NaiveDate, theme: Theme)
         lines.push(Line::from(spans));
     }
     lines
+}
+
+/// 詳細欄の行数の上限 (本文の行)。この下にタグの行が 1 行付く。
+const DETAIL_BODY_LINES: usize = 3;
+/// 詳細欄を出す端末の高さの下限 (低い端末では一覧の行を優先する)。
+const DETAIL_MIN_HEIGHT: u16 = 16;
+
+/// 選んでいるタスクの全文 (URL も短くしない) と、すべてのタグの行。カードや一覧の行が
+/// 切れても、ここで全部読めるようにする。選んでいなければ空。
+fn detail_lines(app: &App, theme: Theme, area: Rect) -> Vec<Line<'static>> {
+    if area.height < DETAIL_MIN_HEIGHT {
+        return Vec::new();
+    }
+    let Some(selected) = app.selected() else {
+        return Vec::new();
+    };
+    let task = &selected.row.task;
+    let width = usize::from(area.width);
+    let mut pieces = vec![(
+        if task.status == Status::Done { "[x] " } else { "[ ] " }.to_string(),
+        theme.dim(),
+    )];
+    if let Some(p) = task.priority {
+        pieces.push((format!("({p}) "), Style::new().add_modifier(Modifier::BOLD)));
+    }
+    pieces.extend(content_pieces(
+        &task.content,
+        &[],
+        Style::new(),
+        Style::new(),
+        theme,
+        Urls::Full,
+    ));
+    let mut lines = wrap_pieces(pieces, width, DETAIL_BODY_LINES, Style::new());
+
+    fn value(v: &Option<String>) -> Option<&str> {
+        v.as_deref().filter(|v| !v.is_empty())
+    }
+    let mut tags: Vec<String> = [project_tag(task), context_tag(task)].into_iter().flatten().collect();
+    if let Some(due) = value(&task.due) {
+        tags.push(due_label(due, app.today()).0);
+    }
+    for (name, v) in [
+        ("wait", &task.wait),
+        ("created", &task.created),
+        ("completed_at", &task.completed_at),
+        ("done", &task.done),
+        ("cancelled", &task.cancelled),
+    ] {
+        if let Some(v) = value(v) {
+            tags.push(format!("{name}:{v}"));
+        }
+    }
+    if !tags.is_empty() {
+        lines.push(Line::styled(truncate(&tags.join("  "), width), theme.dim()));
+    }
+    lines
+}
+
+/// 開くリンクを選ぶ小窓。
+fn draw_link_choice(frame: &mut Frame, links: &[String], cursor: usize, theme: Theme, area: Rect) {
+    let width = (area.width.saturating_sub(4)).min(100);
+    let inner = usize::from(width.saturating_sub(4));
+    let lines: Vec<Line> = links
+        .iter()
+        .enumerate()
+        .map(|(i, url)| {
+            let selected = i == cursor;
+            let number = if i < 9 { format!("{}", i + 1) } else { " ".to_string() };
+            Line::from(vec![
+                if selected {
+                    Span::styled(GUTTER, theme.accent())
+                } else {
+                    Span::raw(" ")
+                },
+                Span::styled(format!("{number} "), theme.key()),
+                Span::styled(
+                    truncate(url, inner.saturating_sub(3)),
+                    if selected {
+                        Style::new().add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new()
+                    },
+                ),
+            ])
+        })
+        .collect();
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" リンクを開く ").border_style(theme.accent())),
+        popup,
+    );
 }
 
 #[cfg(test)]
@@ -1393,6 +1623,70 @@ mod tests {
         assert_eq!(wrap_plain("abcdef", 4), ["abcd", "ef"]);
         assert_eq!(wrap_plain("日本語", 4), ["日本", "語"]);
         assert_eq!(wrap_plain("", 4), [""]);
+    }
+
+    /// `content_pieces` で整えて `fit` で切る (一覧の行と同じ)。
+    fn highlighted(
+        text: &str,
+        ranges: &[std::ops::Range<usize>],
+        width: usize,
+        base: Style,
+        mark: Style,
+    ) -> (Vec<Span<'static>>, usize) {
+        let pieces = content_pieces(text, ranges, base, mark, Theme { color: false }, Urls::Short);
+        fit(pieces, width, base)
+    }
+
+    fn plain(lines: &[Line]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn wrapping_keeps_two_lines_and_marks_the_cut() {
+        let p = |t: &str| vec![(t.to_string(), Style::new())];
+        assert_eq!(plain(&wrap_pieces(p("abcdef"), 3, 2, Style::new())), ["abc", "def"]);
+        assert_eq!(plain(&wrap_pieces(p("abcdefg"), 3, 2, Style::new())), ["abc", "de…"]);
+        assert_eq!(
+            plain(&wrap_pieces(
+                p("(A) とても長いタスクの本文がここに続く"),
+                12,
+                2,
+                Style::new()
+            )),
+            ["(A) とても長", "いタスクの…"]
+        );
+        assert_eq!(plain(&wrap_pieces(p("短い"), 12, 2, Style::new())), ["短い"]);
+    }
+
+    #[test]
+    fn markdown_in_a_row_is_styled_and_a_match_inside_a_url_marks_the_link() {
+        let (base, mark) = (Style::new(), Style::new().add_modifier(Modifier::REVERSED));
+        let text = "**重要** [仕様](https://example.com/spec/v2) を読む";
+        // 「spec」は URL の中にだけある。見えているリンクの文字を強調する。
+        let at = text.find("spec").unwrap();
+        let (spans, _) = highlighted(text, &[std::ops::Range { start: at, end: at + 4 }], 40, base, mark);
+        let parts: Vec<(String, bool, bool)> = spans
+            .iter()
+            .map(|s| {
+                (
+                    s.content.to_string(),
+                    s.style.add_modifier.contains(Modifier::BOLD),
+                    s.style.add_modifier.contains(Modifier::REVERSED),
+                )
+            })
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("重要".to_string(), true, false),
+                (" ".to_string(), false, false),
+                ("仕様".to_string(), false, true),
+                (" を読む".to_string(), false, false),
+            ]
+        );
     }
 
     #[test]

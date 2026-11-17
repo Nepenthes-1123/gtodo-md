@@ -292,7 +292,10 @@ fn a_pending_key_shows_what_can_follow_and_esc_cancels_it() {
     let f = Fixture::new();
     let mut app = f.app();
     press(&mut app, "g");
-    assert_eq!(footer(&mut app), "gg 先頭へ  gt 次のタブ  gT 前のタブ  Esc 取り消す");
+    assert_eq!(
+        footer(&mut app),
+        "gg 先頭へ  gt 次のタブ  gT 前のタブ  gx リンクを開く (複数あれば選ぶ)  Esc 取り消す"
+    );
     press_code(&mut app, KeyCode::Esc);
     assert!(app.pending.is_empty());
     // Esc は戻る・取り消すだけで、何度押しても終了しない (lazygit と同じ)。終了は q。
@@ -1038,9 +1041,10 @@ fn q_opens_the_queue_with_the_neovim_headings() {
             " 12/20 日 (34日後)",
             "  ▶ 来月                                                Next",
             "",
-            "",
-            "",
-            "",
+            // 選んでいるタスクの全文とタグ (詳細欄)。
+            "────────────────────────────────────────────────────────────",
+            "[ ] 遅れ",
+            "+work  due:2026-11-13 (3日超過)",
             "x 完了にする  Enter 一覧で開く  Tab 待ち先別  ? ヘルプ",
         ]
     );
@@ -1588,4 +1592,120 @@ fn a_card_taller_than_the_column_is_drawn_as_far_as_it_fits() {
     let rows = screen(&mut app, 40, 6);
     assert_eq!(rows[3], "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
     assert_eq!(rows[4], "┃(A) 今日1                             ┃");
+}
+
+/// markdown のテスト用のデータ。
+fn markdown_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n- [ ] **請求書** を [経理](https://example.com/finance/2026/invoice) へ `送る` id:aaaaaa\n\
+         - [ ] 参考 https://a.example/x と https://b.example/y/z id:bbbbbb\n- [ ] リンクなし id:cccccc\n\
+         - [ ] ファイル [手順](docs/howto.md) id:dddddd\n\n## Next\n\n## Waiting\n\n## Someday\n",
+    );
+    f
+}
+
+/// 開いたリンクを記録する。
+fn record_opened(app: &mut App) -> Rc<std::cell::RefCell<Vec<String>>> {
+    let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = Rc::clone(&opened);
+    app.set_opener(Box::new(move |url| {
+        sink.borrow_mut().push(url.to_string());
+        Ok(())
+    }));
+    opened
+}
+
+#[test]
+fn rows_show_markdown_and_the_detail_shows_full_urls() {
+    let f = markdown_fixture();
+    let mut app = f.app();
+    let rows = screen(&mut app, 80, 18);
+    // 色を使わないときはコードの記号を残す。リンクは文字だけ、URL は短くする。
+    assert_eq!(rows[2], "▌ [ ] 請求書 を 経理 へ `送る`");
+    assert_eq!(rows[3], "  [ ] 参考 a.example/x と b.example/…/z");
+    // 詳細欄には全文 (行き先も短くせずに)。
+    assert!(
+        rows.iter()
+            .any(|r| r == "[ ] 請求書 を 経理 (https://example.com/finance/2026/invoice) へ `送る`"),
+        "{rows:#?}"
+    );
+    // 低い端末では詳細欄を出さない。
+    let rows = screen(&mut app, 80, 12);
+    assert!(!rows.iter().any(|r| r.contains("https://")), "{rows:#?}");
+}
+
+#[test]
+fn gx_opens_the_link_or_asks_which_one() {
+    let f = markdown_fixture();
+    let mut app = f.app();
+    let opened = record_opened(&mut app);
+    // 1 つならすぐ開く。
+    press(&mut app, "gx");
+    assert_eq!(*opened.borrow(), ["https://example.com/finance/2026/invoice"]);
+    assert_eq!(last_message(&app), "opened https://example.com/finance/2026/invoice");
+
+    // 複数なら選ぶ。番号でも、選んで Enter でも開ける。
+    press(&mut app, "j");
+    press(&mut app, "gx");
+    assert!(matches!(app.mode, Mode::ChooseLink { .. }));
+    let rows = screen(&mut app, 60, 12).join("\n");
+    assert!(
+        rows.contains("▌1 https://a.example/x") && rows.contains(" 2 https://b.example/y/z"),
+        "{rows}"
+    );
+    press(&mut app, "2");
+    assert_eq!(opened.borrow().last().unwrap(), "https://b.example/y/z");
+    press(&mut app, "gx");
+    press_code(&mut app, KeyCode::Down);
+    press_code(&mut app, KeyCode::Up);
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(opened.borrow().last().unwrap(), "https://a.example/x");
+    // それ以外のキーで取り消す。
+    press(&mut app, "gx");
+    press_code(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(opened.borrow().len(), 3);
+
+    // リンクが無い・http(s) でないリンクは開かない。
+    press(&mut app, "j");
+    press(&mut app, "gx");
+    assert_eq!(last_message(&app), "the task has no links");
+    press(&mut app, "j");
+    press(&mut app, "gx");
+    assert_eq!(
+        last_message(&app),
+        "only http(s) and mailto links are opened: docs/howto.md"
+    );
+    assert_eq!(opened.borrow().len(), 3);
+}
+
+#[test]
+fn the_footer_offers_gx_only_for_tasks_with_links() {
+    let f = markdown_fixture();
+    let mut app = f.app();
+    assert!(screen(&mut app, 200, 12)[11].contains("gx リンクを開く"));
+    press(&mut app, "jj");
+    assert!(!screen(&mut app, 200, 12)[11].contains("gx"));
+}
+
+#[test]
+fn failing_to_open_a_link_is_reported() {
+    let f = markdown_fixture();
+    let mut app = f.app();
+    app.set_opener(Box::new(|_| Err(std::io::Error::other("no browser"))));
+    press(&mut app, "gx");
+    assert_eq!(app.messages.last().unwrap().level, Level::Error);
+    assert!(last_message(&app).contains("no browser"));
+}
+
+#[test]
+fn cards_show_markdown_too() {
+    let f = markdown_fixture();
+    let mut app = f.app();
+    press(&mut app, "Kll");
+    let rows = screen(&mut app, 60, 12).join("\n");
+    assert!(rows.contains("┃請求書 を 経理 へ `送る`"), "{rows}");
+    assert!(rows.contains("│参考 a.example/x と"), "{rows}");
 }
