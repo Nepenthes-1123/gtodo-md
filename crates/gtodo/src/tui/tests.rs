@@ -2148,6 +2148,13 @@ fn new_projects_are_created_and_opened_in_the_editor() {
     let opened = fake_editor(&mut app, |_, text| text.replace("title:\n", "title: 新規\n"));
     press(&mut app, "Pa");
     assert!(matches!(app.mode, Mode::NewProject { .. }));
+    // すでにある名前なら、作らずにそれを選ぶ。
+    press(&mut app, "site");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(last_message(&app), "projects/site.md already exists");
+    assert_eq!(app.projects.selected().unwrap().tag, "site");
+    assert!(!app.editor_requested());
+    press(&mut app, "a");
     // ファイル名にできない名前は、直した名前を添えて断る (入力は残す)。
     press(&mut app, "a/b");
     press_code(&mut app, KeyCode::Enter);

@@ -13,6 +13,7 @@ use crate::document::{Document, Item, Section, TaskItem};
 use crate::guard::{self, Landmarks};
 use crate::key::{self, FindError};
 use crate::logic::{completion, due, history, sort};
+use crate::lua_compat;
 use crate::project;
 use crate::sections::{SectionKey, SectionNames};
 use crate::store::{self, DataDir, FileKind, RawFile, ReadError, Stamp};
@@ -155,7 +156,8 @@ pub fn create_project(data_dir: &DataDir, tag: &str, today: NaiveDate) -> Result
 
 /// `projects/<tag>.md` の `status:` を書き換える (アーカイブ・復元)。書き換えたか (すでにその値なら偽) を返す。
 pub fn set_project_status(data_dir: &DataDir, tag: &str, status: &str) -> Result<bool, ProjectError> {
-    let tag = project::check_tag(tag)?;
+    // Neovim 版で作った、作るときの規則に合わない名前のファイルもアーカイブできるように。
+    let tag = project::check_existing(lua_compat::trim(tag))?;
     let path = project::path(data_dir, &tag);
     let file = store::read_file(&path)?;
     let Some(stamp) = file.stamp else {

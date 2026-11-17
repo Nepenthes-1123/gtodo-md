@@ -90,6 +90,22 @@ pub fn check_tag(tag: &str) -> Result<String, TagError> {
     }
 }
 
+/// すでにあるプロジェクトファイルの名前として受け付けるか ([`check_tag`] より緩い)。先頭の `+` は取り除いて返す。
+///
+/// Neovim 版の新しいプロジェクトの入力は名前を直さないので、`my notes.md` のようなファイルもありうる。
+/// 作るときの規則で断るとアーカイブも編集もできなくなるため、データディレクトリの外や別のディレクトリを
+/// 指しうる名前 (パスの区切り・`.`・`..`) だけを断る。
+pub fn check_existing(tag: &str) -> Result<String, TagError> {
+    let tag = tag.strip_prefix('+').unwrap_or(tag);
+    if tag.is_empty() {
+        return Err(TagError::Empty);
+    }
+    if tag.contains(['/', '\\']) || tag == "." || tag == ".." {
+        return Err(TagError::Unusable(tag.to_string()));
+    }
+    Ok(tag.to_string())
+}
+
 /// ファイル名として使えるように直す (Lua 版 `ui/split.lua` の `sanitize_project_tag` と同じ規則)。
 /// 前後の `.` を除き、ファイル名に使えない記号と空白を `-` にし、Windows の予約名には `_proj` を付け、
 /// 80 文字までにする。直した結果が空になることがある。
@@ -409,6 +425,11 @@ mod tests {
             })
         );
         assert_eq!(check_tag("+"), Err(TagError::Empty));
+        // すでにあるファイルは、外を指さない限り Neovim 版で作った名前のまま扱える。
+        assert_eq!(check_existing("my notes"), Ok("my notes".into()));
+        assert_eq!(check_existing("+con"), Ok("con".into()));
+        assert_eq!(check_existing("../x"), Err(TagError::Unusable("../x".into())));
+        assert_eq!(check_existing(".."), Err(TagError::Unusable("..".into())));
         assert_eq!(check_tag("..."), Err(TagError::Unusable("...".into())));
         assert_eq!(sanitize_tag(&"x".repeat(100)).len(), 80);
         assert_eq!(sanitize_tag("--a--b--"), "a-b");

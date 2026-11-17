@@ -1188,18 +1188,25 @@ impl App {
             .filter(|p| !p.is_empty());
         let reopen = self.screen != Screen::Projects;
         self.screen = Screen::Projects;
-        self.refresh_projects();
-        let Some(tag) = wanted else {
-            if reopen {
-                self.projects.cursor = 0;
-                self.projects.offset = 0;
+        match wanted {
+            Some(tag) => self.open_projects_at(&tag),
+            None => {
+                self.refresh_projects();
+                if reopen {
+                    self.projects.cursor = 0;
+                    self.projects.offset = 0;
+                }
             }
-            return;
-        };
-        if !self.projects.select_tag(&tag) {
+        }
+    }
+
+    /// `tag` のプロジェクトを選ぶ (アーカイブしたものなら、アーカイブしたものの表示で)。
+    fn open_projects_at(&mut self, tag: &str) {
+        self.refresh_projects();
+        if !self.projects.select_tag(tag) {
             self.projects.archived = !self.projects.archived;
             self.refresh_projects();
-            if !self.projects.select_tag(&tag) {
+            if !self.projects.select_tag(tag) {
                 self.projects.archived = !self.projects.archived;
                 self.refresh_projects();
             }
@@ -1244,10 +1251,16 @@ impl App {
 
     /// 選んでいるプロジェクトのファイルを `$EDITOR` で開く (無ければ作ってから)。
     fn edit_project(&mut self) {
-        let Some(tag) = self.projects.selected().map(|r| r.tag.clone()) else {
+        let Some(row) = self.projects.selected() else {
             return;
         };
-        match project::check_tag(&tag) {
+        // 作るときだけ、ファイル名として使えるかを確かめる (Neovim 版で作ったファイルは名前を直していないことがある)。
+        let checked = if row.has_file {
+            project::check_existing(&row.tag)
+        } else {
+            project::check_tag(&row.tag)
+        };
+        match checked {
             Ok(tag) => {
                 self.projects_stale = true;
                 self.edit_file(EditTarget::Project(tag), None);
@@ -1271,6 +1284,12 @@ impl App {
                 };
                 self.mode = Mode::Normal;
                 self.messages.clear();
+                if project::path(&self.ws.data_dir, &tag).exists() {
+                    // すでにあるなら、作らずにそれを選ぶ。
+                    self.message(Level::Info, format!("{}/{tag}.md already exists", project::DIR));
+                    self.open_projects_at(&tag);
+                    return;
+                }
                 let created = self.write(false, |ws| Ok(ops::create_project(&ws.data_dir, &tag, ws.today)?));
                 if created.is_some() {
                     self.message(Level::Info, format!("created {}/{tag}.md", project::DIR));

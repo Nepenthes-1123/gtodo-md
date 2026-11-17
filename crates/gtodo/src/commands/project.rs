@@ -1,14 +1,16 @@
 //! `gtodo project`: プロジェクトファイル (`projects/<tag>.md`) の一覧・表示・作成・アーカイブ。
 
+use std::collections::HashMap;
 use std::fmt::Write;
 
 use anyhow::{Result, bail};
 use clap::Subcommand;
+use gtodo_core::document::Document;
 use gtodo_core::ops;
 use gtodo_core::project::{self, Progress, ProjectFile};
 use gtodo_core::store::FileKind;
 use gtodo_core::task::Status;
-use gtodo_core::view::{Entry, QUEUE_FILES, entries};
+use gtodo_core::view::{Entry, entries};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
@@ -105,16 +107,28 @@ impl<'a> ProjectJson<'a> {
     }
 }
 
-fn progress_of(ws: &Workspace) -> Result<std::collections::HashMap<String, Progress>> {
-    let (inbox, todo, done) = (
-        ws.load(FileKind::Inbox)?,
-        ws.load(FileKind::Todo)?,
-        ws.load(FileKind::Done)?,
-    );
-    Ok(project::progress(
-        project::tasks(&inbox).chain(project::tasks(&todo)),
-        project::tasks(&done),
-    ))
+/// inbox.md・todo.md・done.md を読む (進捗を数えるため)。
+struct Docs {
+    inbox: Document,
+    todo: Document,
+    done: Document,
+}
+
+impl Docs {
+    fn load(ws: &Workspace) -> Result<Docs> {
+        Ok(Docs {
+            inbox: ws.load(FileKind::Inbox)?,
+            todo: ws.load(FileKind::Todo)?,
+            done: ws.load(FileKind::Done)?,
+        })
+    }
+
+    fn progress(&self) -> HashMap<String, Progress> {
+        project::progress(
+            project::tasks(&self.inbox).chain(project::tasks(&self.todo)),
+            project::tasks(&self.done),
+        )
+    }
 }
 
 fn list(ws: &Workspace, archived: bool, json: bool, warn: &mut impl FnMut(String), out: &mut String) -> Result<()> {
@@ -124,7 +138,7 @@ fn list(ws: &Workspace, archived: bool, json: bool, warn: &mut impl FnMut(String
         .filter(|p| p.archived == archived)
         .collect();
     warnings.into_iter().for_each(&mut *warn);
-    let progress = progress_of(ws)?;
+    let progress = Docs::load(ws)?.progress();
     let progress_of = |tag: &str| progress.get(tag).copied().unwrap_or_default();
     if json {
         let rows: Vec<_> = files.iter().map(|f| ProjectJson::new(f, progress_of(&f.tag))).collect();
@@ -166,16 +180,12 @@ fn show(ws: &Workspace, tag: &str, json: bool, warn: &mut impl FnMut(String), ou
         .into_iter()
         .find(|p| p.tag == tag);
     warnings.into_iter().for_each(&mut *warn);
-    let docs = QUEUE_FILES
-        .iter()
-        .map(|kind| ws.load(*kind).map(|doc| (*kind, doc)))
-        .collect::<Result<Vec<_>>>()?;
-    let open: Vec<Entry> = docs
-        .iter()
-        .flat_map(|(kind, doc)| entries(*kind, doc))
+    let docs = Docs::load(ws)?;
+    let open: Vec<Entry> = entries(FileKind::Inbox, &docs.inbox)
+        .chain(entries(FileKind::Todo, &docs.todo))
         .filter(|e| e.task().status == Status::Open && e.task().project.as_deref() == Some(tag))
         .collect();
-    let progress = progress_of(ws)?.get(tag).copied().unwrap_or_default();
+    let progress = docs.progress().get(tag).copied().unwrap_or_default();
     if file.is_none() && progress.total() == 0 {
         bail!("no project file (projects/{tag}.md) and no tasks for +{tag}");
     }

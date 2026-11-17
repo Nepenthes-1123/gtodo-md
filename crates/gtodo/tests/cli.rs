@@ -1169,6 +1169,11 @@ fn project_names_that_cannot_be_file_names_are_refused() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains(r#"use "outside" instead"#), "{stderr}");
     assert!(!f.data_dir().join("outside.md").exists() && !f.data_dir().join("projects").exists());
+    assert!(!f.run(&["project", "archive", "../outside"]).status.success());
+    // Neovim 版で作った、作るときの規則に合わない名前のファイルもアーカイブできる。
+    fs::create_dir(f.data_dir().join("projects")).unwrap();
+    f.write("projects/my notes.md", "---\ntitle: メモ\nstatus: active\n---\n");
+    assert_eq!(f.stdout(&["project", "archive", "my notes"]), "archived my notes\n");
     let out = f.run(&["project", "show", "nothing"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no project file (projects/nothing.md) and no tasks"));
