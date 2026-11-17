@@ -25,6 +25,8 @@ pub const GUTTER: &str = "▌";
 const MAX_MESSAGE_LINES: usize = 6;
 /// 本文を切り詰めるときも残す幅。これより狭いときはタグの方を切る。
 const MIN_CONTENT_WIDTH: usize = 10;
+/// Queue で本文を切り詰めるときも残す幅 (右端の場所を優先する)。
+const MIN_QUEUE_CONTENT_WIDTH: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
@@ -884,7 +886,8 @@ fn queue_item_line(item: &queue::Item, selected: bool, width: usize, theme: Them
 
     // 本文と右端の場所の間は 2 文字以上空ける。
     let fixed: usize = head.iter().chain(&tail).map(Span::width).sum::<usize>() + place.width() + 2;
-    let content = truncate(&task.content, width.saturating_sub(fixed).max(MIN_CONTENT_WIDTH));
+    // 狭くても右端の場所を残すため、一覧より本文を短くしてよい。
+    let content = truncate(&task.content, width.saturating_sub(fixed).max(MIN_QUEUE_CONTENT_WIDTH));
     let content_style = if selected {
         base.add_modifier(Modifier::BOLD)
     } else {

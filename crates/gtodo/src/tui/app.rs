@@ -197,15 +197,15 @@ impl QueueView {
 }
 
 /// 選んでいるタスクと、それがどこにあるか。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Selected {
-    pub row: Row,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selected<'a> {
+    pub row: &'a Row,
     pub file: FileKind,
     /// todo.md の管理対象のセクションにあれば、そのキー。
     pub section: Option<SectionKey>,
 }
 
-impl Selected {
+impl Selected<'_> {
     /// 操作できるか (done.md・cancelled.md は見るだけ)。
     pub fn writable(&self) -> bool {
         matches!(self.file, FileKind::Inbox | FileKind::Todo)
@@ -247,6 +247,10 @@ pub struct App {
     rollover_pending: bool,
     /// 表示した設定の警告。読み直すたびに同じ警告を出さないため。
     seen_warnings: HashSet<String>,
+    /// 期日が来ても inbox.md に残っているタスクを知らせた (日次の整理が警告した場合を含む) 日。
+    inbox_noticed: Option<NaiveDate>,
+    /// Queue を開いていない間に inbox.md・todo.md が変わり、作り直しが要る。
+    queue_stale: bool,
     /// Queue を作るために持っておく、最後に読んだ inbox.md と todo.md。
     inbox_doc: Document,
     todo_doc: Document,
@@ -291,6 +295,8 @@ impl App {
             config_error: None,
             rollover_pending: true,
             seen_warnings: HashSet::new(),
+            inbox_noticed: None,
+            queue_stale: true,
             inbox_doc: Document::default(),
             todo_doc: Document::default(),
         };
@@ -326,7 +332,7 @@ impl App {
     /// 定期的な確認 (1 秒ごと)。日付が変わっていれば日次ロールオーバーを行い、
     /// ファイルが変わっていれば読み直す。
     pub fn tick(&mut self) {
-        let new_day = self.check_date();
+        self.check_date();
         if let Mode::Form(form) = &mut self.mode {
             form.set_today(self.today);
         }
@@ -334,17 +340,17 @@ impl App {
             self.try_rollover();
         }
         self.reload();
-        if new_day {
-            self.notice_inbox_due();
-        }
+        self.notice_inbox_due();
     }
 
-    /// `auto_move_inbox_to_today` が偽のとき、期日が来ても inbox.md に残っているタスクを知らせる
-    /// (起動したときと日付が変わったとき)。日次ロールオーバーが同じ知らせを出していれば重ねない。
+    /// `auto_move_inbox_to_today` が偽のとき、期日が来ても inbox.md に残っているタスクを知らせる。
+    /// 1 日に 1 回 (起動したときと日付が変わったとき)、その日の日次の整理が済んでから確かめる。
+    /// 日次の整理が同じタスクを警告していれば重ねない。
     fn notice_inbox_due(&mut self) {
-        if self.ws.auto_move_inbox_to_today || self.messages.iter().any(|m| m.text.starts_with(writing::INBOX_DUE)) {
+        if self.ws.auto_move_inbox_to_today || self.rollover_pending || self.inbox_noticed == Some(self.today) {
             return;
         }
+        self.inbox_noticed = Some(self.today);
         let count = queue::due_in_inbox(&self.inbox_doc, self.today);
         if count > 0 {
             let queue = self.keymap.label(Action::OpenQueue).unwrap_or_default();
@@ -360,15 +366,13 @@ impl App {
     /// 日付が変わっていれば、新しい日付で設定を開き直す (日次ロールオーバーは次の確認か、
     /// 書き込む前の準備で行う)。前の日付のままだと、その日の整理は済んでいると判定されて
     /// 何もせず、完了日なども前の日付になる。
-    fn check_date(&mut self) -> bool {
+    fn check_date(&mut self) {
         let today = (self.clock)();
-        if today == self.today {
-            return false;
+        if today != self.today {
+            self.today = today;
+            self.rollover_pending = true;
+            self.reload();
         }
-        self.today = today;
-        self.rollover_pending = true;
-        self.reload();
-        true
     }
 
     pub fn handle_key(&mut self, event: KeyEvent) {
@@ -438,8 +442,11 @@ impl App {
                 if self.screen != Screen::Queue {
                     self.queue.cursor = 0;
                     self.queue.offset = 0;
+                    self.screen = Screen::Queue;
+                    if self.queue_stale {
+                        self.refresh_queue();
+                    }
                 }
-                self.screen = Screen::Queue;
             }
             Action::QueueMode => {
                 if self.screen == Screen::Queue {
@@ -479,12 +486,12 @@ impl App {
     }
 
     /// 今の画面で選んでいるタスク。
-    pub fn selected(&self) -> Option<Selected> {
+    pub fn selected(&self) -> Option<Selected<'_>> {
         match self.screen {
             Screen::List => {
                 let tab = self.tab();
                 self.view().selected().map(|row| Selected {
-                    row: row.clone(),
+                    row,
                     file: tab.file(),
                     section: match tab {
                         Tab::Section(key) => Some(key),
@@ -493,7 +500,7 @@ impl App {
                 })
             }
             Screen::Queue => self.queue.selected().map(|item| Selected {
-                row: item.row.clone(),
+                row: &item.row,
                 file: item.file,
                 section: item.section,
             }),
@@ -504,13 +511,11 @@ impl App {
     fn target(&mut self) -> Option<Row> {
         let selected = self.selected()?;
         if !selected.writable() {
-            self.message(
-                Level::Warning,
-                format!("tasks in {} cannot be changed", selected.file.file_name()),
-            );
+            let text = format!("tasks in {} cannot be changed", selected.file.file_name());
+            self.message(Level::Warning, text);
             return None;
         }
-        Some(selected.row)
+        Some(selected.row.clone())
     }
 
     /// Queue で選んでいるタスクを、一覧のタブで選ぶ。
@@ -544,6 +549,7 @@ impl App {
             &self.ws.names,
             self.today,
         );
+        self.queue_stale = false;
         let kept = selected.is_some_and(|k| self.queue.select_key(&k));
         if !kept {
             self.queue.cursor = self.queue.cursor.min(self.queue.len().saturating_sub(1));
@@ -864,7 +870,10 @@ impl App {
         // 失敗しても読み直す (他で書き換えられていて見つからなかった場合に、今の内容を出すため)。
         self.reload();
         match result {
-            Ok(value) => Some(value),
+            Ok((value, prepared)) => {
+                self.note_prepared(prepared);
+                Some(value)
+            }
             Err(e) => {
                 self.message(Level::Error, format!("{e:#}"));
                 None
@@ -904,10 +913,18 @@ impl App {
         for w in warnings {
             self.message(Level::Warning, w);
         }
-        if let Err(e) = result {
-            self.message(Level::Error, format!("{e:#}"));
+        match result {
+            Ok(((), prepared)) => self.note_prepared(prepared),
+            Err(e) => self.message(Level::Error, format!("{e:#}")),
         }
         self.reload();
+    }
+
+    /// 書き込む前の準備で日次の整理が inbox.md のタスクを警告したら、その日はもう知らせない。
+    fn note_prepared(&mut self, prepared: writing::Prepared) {
+        if prepared.inbox_due_warned {
+            self.inbox_noticed = Some(self.today);
+        }
     }
 
     /// 変わったファイルだけを読み直す。gtodo.json か .state.json が変わったとき (と日付が
@@ -957,7 +974,12 @@ impl App {
         // inbox.md と todo.md を読み終えてから作り直す。片方ずつ作り直すと、inbox.md から
         // todo.md へ移したタスクが途中でどちらにも無くなり、選んでいたタスクを見失う。
         if queue_changed || reparse {
-            self.refresh_queue();
+            // 開いていない間は作り直さない (開くときに作る)。
+            if self.screen == Screen::Queue {
+                self.refresh_queue();
+            } else {
+                self.queue_stale = true;
+            }
         }
         self.stamps = now;
     }

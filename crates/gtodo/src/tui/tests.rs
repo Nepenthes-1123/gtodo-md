@@ -1047,7 +1047,7 @@ fn the_queue_cursor_skips_headings_and_tab_switches_to_waits() {
     let f = queue_fixture();
     let mut app = f.app();
     press(&mut app, "Q");
-    let selected = |app: &App| app.selected().map(|s| s.row.task.content).unwrap_or_default();
+    let selected = |app: &App| app.selected().map(|s| s.row.task.content.clone()).unwrap_or_default();
     assert_eq!(selected(&app), "遅れ");
     press(&mut app, "j");
     assert_eq!(selected(&app), "受信");
@@ -1183,4 +1183,67 @@ fn no_note_when_due_inbox_tasks_move_automatically() {
     let f = queue_fixture();
     let app = f.app();
     assert!(app.messages.iter().all(|m| !m.text.contains("auto_move")));
+}
+
+#[test]
+fn the_inbox_note_waits_for_the_rollover_and_is_not_repeated() {
+    let f = queue_fixture();
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today": false}"#);
+    let mut app = f.app();
+    press(&mut app, "j");
+    // 日付が変わったとき、Neovim 版がロックを持っていれば日次の整理を待つ。
+    f.write(".gtodo.lock", "12345 0");
+    f.today.set(date("2026-11-17"));
+    app.tick();
+    assert!(app.messages.iter().all(|m| !m.text.contains("inbox.md")));
+    fs::remove_file(f.path().join(".gtodo.lock")).unwrap();
+    app.tick();
+    app.tick();
+    let about_inbox = app.messages.iter().filter(|m| m.text.contains("inbox.md")).count();
+    assert_eq!(about_inbox, 1, "{:?}", app.messages);
+}
+
+#[test]
+fn the_inbox_note_is_given_once_even_if_an_operation_notices_the_new_day() {
+    let f = queue_fixture();
+    f.write("gtodo.json", r#"{"auto_move_inbox_to_today": false}"#);
+    let mut app = f.app();
+    press(&mut app, "j");
+    f.today.set(date("2026-11-17"));
+    // 次の確認より前に操作した。日次の整理はその準備で行われ、inbox.md のタスクを警告する。
+    press(&mut app, "x");
+    app.tick();
+    app.tick();
+    let about_inbox = app.messages.iter().filter(|m| m.text.contains("inbox.md")).count();
+    assert_eq!(about_inbox, 1, "{:?}", app.messages);
+}
+
+#[test]
+fn changes_made_while_the_queue_is_closed_show_when_it_opens() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    f.write("inbox.md", "# Inbox\n\n- [ ] 新しく来た due:2026-11-16 id:333333\n");
+    app.tick();
+    press(&mut app, "Q");
+    let contents: Vec<&str> = app.queue.items().map(|(_, i)| i.row.task.content.as_str()).collect();
+    assert_eq!(
+        contents,
+        ["遅れ", "新しく来た", "今日の作業", "牛乳", "見積もり", "来月"]
+    );
+}
+
+#[test]
+fn the_place_stays_visible_on_a_narrow_terminal() {
+    let f = queue_fixture();
+    let mut app = f.app();
+    press(&mut app, "Q");
+    let rows = screen(&mut app, 32, 8);
+    assert_eq!(rows[3], "▌ ⚠ 遅れ +work (3日超過)   Today");
+    f.write(
+        "todo.md",
+        "# Todo\n\n## Today\n\n## Next\n\n## Waiting\n\n- [ ] とても長い本文のタスク +work @office due:2026-11-13 id:aaaaaa\n\n## Someday\n",
+    );
+    app.tick();
+    let rows = screen(&mut app, 40, 8);
+    assert!(rows[3].ends_with("Waiting"), "{}", rows[3]);
 }
