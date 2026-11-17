@@ -647,7 +647,7 @@ pub fn help_entries(app: &App) -> Vec<(String, String)> {
         keys.len() == 1 && keys[0] == [Key::char(char::from(b'1' + i as u8))]
     });
     let mut entries = Vec::new();
-    for action in all_actions() {
+    for action in Action::configurable() {
         if digits_only && matches!(action, Action::GoTab(_)) {
             if action == Action::GoTab(0) {
                 entries.push((format!("1〜{}", TABS.len()), "番号のタブへ".to_string()));
@@ -665,10 +665,6 @@ pub fn help_entries(app: &App) -> Vec<(String, String)> {
         "押しかけのキー・入力・確認を取り消す。Queue からは一覧へ戻る (終了はしない)".to_string(),
     ));
     entries
-}
-
-fn all_actions() -> Vec<Action> {
-    Action::configurable()
 }
 
 fn draw_help(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {

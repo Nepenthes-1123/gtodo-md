@@ -211,8 +211,10 @@ pub fn parse_keys(text: &str) -> Result<Vec<Key>, String> {
     let mut keys = Vec::new();
     let mut rest = text;
     while let Some(c) = rest.chars().next() {
+        // `<` の後に `>` が無い、または `>` までにもう 1 つ `<` があれば、その `<` は文字 (vim と同じ)。
         if c == '<'
             && let Some(end) = rest.find('>')
+            && !rest[1..end].contains('<')
         {
             keys.push(parse_special(&rest[1..end]).ok_or_else(|| format!("unknown key {:?}", &rest[..=end]))?);
             rest = &rest[end + 1..];
@@ -278,14 +280,20 @@ fn parse_special(inner: &str) -> Option<Key> {
             if chars.next().is_some() {
                 return None;
             }
-            // 端末は Ctrl と英字を小文字で送る。Shift は文字そのもので表す (`<S-a>` は `A`)。
-            KeyCode::Char(if key.ctrl {
-                c.to_ascii_lowercase()
-            } else if shift {
-                c.to_ascii_uppercase()
+            if shift {
+                // Shift は大文字そのもので表す (`<S-a>` は `A`)。端末は Ctrl と Shift の付いた英字を
+                // Ctrl だけの英字と区別して送らず、Shift の付いた記号も記号そのもので送るため、
+                // それ以外の組み合わせは押せないキーとして断る (別のキーとして読まないように)。
+                if key.ctrl || !c.is_ascii_alphabetic() {
+                    return None;
+                }
+                KeyCode::Char(c.to_ascii_uppercase())
+            } else if key.ctrl {
+                // 端末は Ctrl と英字を小文字で送る。
+                KeyCode::Char(c.to_ascii_lowercase())
             } else {
-                c
-            })
+                KeyCode::Char(c)
+            }
         }
     };
     if shift && !matches!(key.code, KeyCode::BackTab | KeyCode::Char(_)) {
@@ -322,7 +330,11 @@ impl Keymap {
             };
             for (name, value) in keys {
                 let Some(action) = Action::from_name(name) else {
-                    warnings.push(format!("keys.{name}: unknown action is ignored"));
+                    warnings.push(if name == "back" {
+                        format!("keys.{name}: Esc always goes back and cannot be changed; ignored")
+                    } else {
+                        format!("keys.{name}: unknown action is ignored")
+                    });
                     continue;
                 };
                 let texts: Vec<&str> = match value {
@@ -587,6 +599,12 @@ mod tests {
         assert_eq!(one("<F5>"), [Key::plain(KeyCode::F(5))]);
         assert_eq!(one("<S-a>"), [Key::char('A')]);
         assert_eq!(
+            one("<<Down>"),
+            [Key::char('<'), Key::plain(KeyCode::Down)],
+            "a < before <...> is a letter"
+        );
+        assert_eq!(one("a<b"), [Key::char('a'), Key::char('<'), Key::char('b')]);
+        assert_eq!(
             one("<A-x>"),
             [Key {
                 code: KeyCode::Char('x'),
@@ -595,7 +613,10 @@ mod tests {
             }]
         );
         assert_eq!(one("<CR>"), [Key::plain(KeyCode::Enter)]);
-        for bad in ["", "<Dwn>", "<F0>", "<S-Down>", "<X-a>", "<Esc>", "<C-c>"] {
+        // `<C-S-a>` と `<S-1>` は端末から区別して届かないので、別のキーとして読まずに断る。
+        for bad in [
+            "", "<Dwn>", "<F0>", "<S-Down>", "<X-a>", "<Esc>", "<C-c>", "<C-S-a>", "<S-1>",
+        ] {
             assert!(parse_keys(bad).is_err(), "{bad:?}");
         }
     }
@@ -645,6 +666,7 @@ mod tests {
             r#"
             [keys]
             fly = "f"
+            back = "<BS>"
             down = "j"
 
             [colors]
@@ -656,6 +678,7 @@ mod tests {
             loaded.warnings,
             [
                 "unknown section \"colors\" is ignored",
+                "keys.back: Esc always goes back and cannot be changed; ignored",
                 "keys.fly: unknown action is ignored"
             ]
         );
@@ -687,14 +710,19 @@ mod tests {
 
     #[test]
     fn the_readme_lists_every_configurable_action() {
+        // `add` などは CLI の説明にも出るので、tui.toml の節の表の行だけを見る。
         let readme = include_str!("../../../../README.md");
+        let (_, section) = readme.split_once("### TUI のキー (`tui.toml`)").unwrap();
+        let section = section.split("\n#").next().unwrap();
+        let table: Vec<&str> = section.lines().filter(|l| l.starts_with("| `")).collect();
+        let listed = |text: &str| table.iter().any(|row| row.contains(text));
         for action in Action::configurable() {
             let name = action.name();
             // `tab_1`〜`tab_7` は 1 行にまとめてある。
-            let listed = readme.contains(&format!("`{name}`")) || name.starts_with("tab_");
+            let listed = listed(&format!("`{name}`")) || name.starts_with("tab_");
             assert!(listed, "README.md does not list `{name}` in the tui.toml table");
         }
-        assert!(readme.contains("`tab_1` 〜 `tab_7`"));
+        assert!(listed("`tab_1` 〜 `tab_7`"));
     }
 
     #[test]
