@@ -2,12 +2,14 @@
 //!
 //! 画面は ratatui の `TestBackend` に描画して、文字だけを比べる (色や太字は見ない)。
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use chrono::NaiveDate;
+use gtodo_core::store::FileKind;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1785,4 +1787,198 @@ fn keys_from_tui_toml_also_move_in_the_help_and_the_link_choice() {
     press(&mut app, "j");
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(opened.borrow().len(), 1);
+}
+
+/// エディタで開かれたもの (コピーのパス・行・開いたときの内容)。
+type Opened = Rc<RefCell<Vec<(PathBuf, Option<usize>, String)>>>;
+
+/// エディタの代わりに、開かれたものを記録し、`edit(何回目か, 内容)` でコピーを書き換える。
+fn fake_editor(app: &mut App, edit: impl Fn(usize, &str) -> String + 'static) -> Opened {
+    let opened: Opened = Rc::default();
+    let sink = Rc::clone(&opened);
+    app.set_editor(Box::new(move |path, line| {
+        let text = fs::read_to_string(path).unwrap();
+        let n = sink.borrow().len();
+        sink.borrow_mut().push((path.to_path_buf(), line, text.clone()));
+        fs::write(path, edit(n, &text)).unwrap();
+        Ok(true)
+    }));
+    opened
+}
+
+/// `E` を押してエディタを開く (端末を明け渡すのは mod.rs なので、ここでは直接呼ぶ)。
+fn edit_file(app: &mut App) {
+    press(app, "E");
+    assert!(app.editor_requested());
+    app.run_editor();
+}
+
+#[test]
+fn edit_file_opens_a_copy_at_the_selected_task_and_saves_it() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    let opened = fake_editor(&mut app, |_, text| text.replace("今日2", "今日2 を直した"));
+    press(&mut app, "j");
+    edit_file(&mut app);
+    let (copy, line, text) = opened.borrow()[0].clone();
+    // 本物ではなく、同じ名前のコピーを開く。カーソルは選んでいたタスクの行。
+    assert_eq!(copy.file_name().unwrap(), "todo.md");
+    assert_ne!(copy.parent().unwrap(), f.dir.path());
+    assert_eq!(text.lines().nth(5), Some("- [ ] 今日2 id:bbbbbb"));
+    assert_eq!(line, Some(6));
+    assert!(!copy.exists(), "the copy is removed once saved");
+    assert!(f.read("todo.md").contains("- [ ] 今日2 を直した id:bbbbbb"));
+    assert_eq!(last_message(&app), "saved todo.md");
+    assert!(app.view().rows.iter().any(|r| r.task.content == "今日2 を直した"));
+}
+
+#[test]
+fn edit_file_opens_the_file_of_the_selected_task_or_the_tab() {
+    let f = Fixture::new();
+    fs::remove_file(f.dir.path().join("cancelled.md")).unwrap();
+    let mut app = f.app();
+    let opened = fake_editor(&mut app, |_, text| text.to_string());
+    let last = |opened: &Opened| {
+        let (path, line, text) = opened.borrow().last().unwrap().clone();
+        (path.file_name().unwrap().to_string_lossy().into_owned(), line, text)
+    };
+    // 見るだけのタブでも、ファイルは手で直せる。
+    press(&mut app, "6");
+    let selected = selected_content(&app);
+    edit_file(&mut app);
+    let (name, line, text) = last(&opened);
+    assert_eq!(name, "done.md");
+    assert!(text.lines().nth(line.unwrap() - 1).unwrap().contains(&selected));
+    // タスクが無ければ行は指定しない。無いファイルは雛形で作ってから開く。
+    press(&mut app, "7");
+    edit_file(&mut app);
+    let (name, line, text) = last(&opened);
+    assert_eq!((name.as_str(), line), ("cancelled.md", None));
+    assert!(text.starts_with("# Cancelled\n"), "{text:?}");
+    assert_eq!(f.read("cancelled.md"), text);
+    // Queue では選んでいるタスクのファイル。
+    press(&mut app, "Q");
+    edit_file(&mut app);
+    let (name, line, _) = last(&opened);
+    assert_eq!((name.as_str(), line), ("todo.md", Some(5)));
+    assert_eq!(last_message(&app), "todo.md was not changed");
+}
+
+#[test]
+fn edit_file_writes_nothing_when_the_editor_fails() {
+    let f = Fixture::new();
+    let before = f.read("todo.md");
+    let mut app = f.app();
+    // `:cq` などで終わったときは、保存していても書かない (git のコミットメッセージと同じ)。
+    app.set_editor(Box::new(|path, _| {
+        fs::write(path, "broken").unwrap();
+        Ok(false)
+    }));
+    edit_file(&mut app);
+    assert!(last_message(&app).ends_with("exited with an error; todo.md was not changed"));
+    app.set_editor(Box::new(|_, _| {
+        Err(io::Error::new(io::ErrorKind::NotFound, "not found"))
+    }));
+    edit_file(&mut app);
+    assert!(last_message(&app).starts_with("failed to start the editor ("));
+    assert_eq!(f.read("todo.md"), before);
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn an_edit_that_fails_the_neovim_checks_can_be_edited_again() {
+    let f = Fixture::new();
+    let before = f.read("todo.md");
+    let mut app = f.app();
+    // 1 回目は Waiting の見出しを消してしまい、2 回目で戻す。
+    let opened = fake_editor(&mut app, |n, text| match n {
+        0 => text.replace("## Waiting\n", "").replace("次1", "次1 直した"),
+        _ => text.replace("## Someday", "## Waiting\n\n## Someday"),
+    });
+    edit_file(&mut app);
+    assert_eq!(f.read("todo.md"), before, "nothing is written");
+    assert_eq!(
+        app.mode,
+        Mode::FixEdit {
+            file: FileKind::Todo,
+            problems: vec!["required sections are missing: ## Waiting".into()]
+        }
+    );
+    let rows = screen(&mut app, 80, 12);
+    assert_eq!(
+        rows[10..],
+        [
+            "todo.md: required sections are missing: ## Waiting",
+            "Edit again? [y/n] (n discards your changes)"
+        ]
+    );
+    // y か n (Esc) で答えるまでは他のキーを受け付けない。
+    press(&mut app, "xq");
+    assert!(matches!(app.mode, Mode::FixEdit { .. }) && !app.should_quit());
+    assert!(!app.editor_requested());
+    press(&mut app, "y");
+    assert!(app.editor_requested());
+    app.run_editor();
+    // 前に編集したコピーの続きを開く。
+    let opened = opened.borrow();
+    assert_eq!(opened[0].0, opened[1].0);
+    assert!(opened[1].2.contains("次1 直した"));
+    let todo = f.read("todo.md");
+    assert!(todo.contains("次1 直した") && todo.contains("## Waiting"), "{todo}");
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(last_message(&app), "saved todo.md");
+}
+
+#[test]
+fn an_edit_that_fails_the_neovim_checks_can_be_discarded() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    let opened = fake_editor(&mut app, |_, text| text.replace("# Inbox", "Inbox"));
+    press(&mut app, "1");
+    edit_file(&mut app);
+    assert!(matches!(
+        app.mode,
+        Mode::FixEdit {
+            file: FileKind::Inbox,
+            ..
+        }
+    ));
+    let copy = opened.borrow()[0].0.clone();
+    assert!(copy.exists());
+    press_code(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(!copy.exists(), "the copy is removed");
+    assert_eq!(f.read("inbox.md"), "# Inbox\n\n- [ ] 受信1 id:111111\n");
+    assert_eq!(last_message(&app), "discarded the changes to inbox.md");
+}
+
+#[test]
+fn an_edit_is_not_saved_over_changes_made_while_editing() {
+    let f = Fixture::new();
+    let mut app = f.app();
+    let real = f.dir.path().join("todo.md");
+    app.set_editor(Box::new(move |path, _| {
+        // 編集している間に Neovim 版が書いた。
+        let theirs = fs::read_to_string(&real).unwrap().replace("次2", "次2 Neovim");
+        fs::write(&real, theirs).unwrap();
+        let mine = fs::read_to_string(path).unwrap().replace("次1", "次1 TUI");
+        fs::write(path, mine).unwrap();
+        Ok(true)
+    }));
+    edit_file(&mut app);
+    let todo = f.read("todo.md");
+    assert!(todo.contains("次2 Neovim") && !todo.contains("次1 TUI"), "{todo}");
+    // 編集した内容は失わず、場所を知らせる。
+    let message = last_message(&app);
+    // 80 桁の端末でも切れないように短くしてある。
+    let first = format!("error: {}", message.lines().next().unwrap());
+    assert_eq!(
+        first,
+        "error: todo.md was changed while you were editing and was not saved. Your copy:"
+    );
+    assert!(first.width() <= 80);
+    // 場所は切り詰められないよう、別の行に出す。
+    let kept = Path::new(message.lines().last().unwrap());
+    assert!(fs::read_to_string(kept).unwrap().contains("次1 TUI"));
+    fs::remove_dir_all(kept.parent().unwrap()).unwrap();
 }

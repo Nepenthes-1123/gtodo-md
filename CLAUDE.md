@@ -57,7 +57,7 @@ OS で分かれるコード (`#[cfg(unix)]` や `std::os::unix` を使うテス�
   書き込むコマンドは必ず `writing.rs` の `with_lock` の中で書く (ロック・無いファイルの作成・日次ロールオーバーを済ませるため)。
   TUI はロックの取り方 (待つ時間) と知らせの出し方を変えるため、同じ準備をする `run_locked` を使う (`with_lock` もこれを呼ぶ)。
   TUI はメモリ上のタスクを書き戻さない。操作のたびに `ops` でファイルを読み直し、タスクのキーで探して書く。
-  - `tui/app.rs` — 状態とキー操作 (描画と端末から切り離し、画面を通さずにテストする)。`draw.rs` — 描画。`keymap.rs` — 動作とキーの表 (最下段の案内とヘルプはここから作る)。`tui.toml` (`config.json` の隣) で動作ごとに置き換える。動作を足したら `Action::configurable`・`name` と README の表にも足す。`form.rs` — 追加・編集フォーム (core の `input` で読み、編集では変えた項目だけを渡す)。`queue.rs` — Queue の行 (core の `view::due_queue`・`wait_queue` から作る。見出しの文言は CLI の `queue` と共有)。`search.rs` — 検索の画面の状態 (正規化は読み込んだときに 1 回だけ、強調の範囲は描くときに求める)。`kanban.rs` — カンバンの列 (一覧のタブの行から作り、Done の列は done.md の全件を含む)。`markdown.rs` — 本文の markdown を表示するときだけ整える (ファイル・フォーム・CLI の出力は元のまま)。整えた部分ごとに元の本文の範囲を持ち、検索の強調をそこに重ねる。
+  - `tui/app.rs` — 状態とキー操作 (描画と端末から切り離し、画面を通さずにテストする)。`draw.rs` — 描画。`keymap.rs` — 動作とキーの表 (最下段の案内とヘルプはここから作る)。`tui.toml` (`config.json` の隣) で動作ごとに置き換える。動作を足したら `Action::configurable`・`name` と README の表にも足す。`form.rs` — 追加・編集フォーム (core の `input` で読み、編集では変えた項目だけを渡す)。`queue.rs` — Queue の行 (core の `view::due_queue`・`wait_queue` から作る。見出しの文言は CLI の `queue` と共有)。`search.rs` — 検索の画面の状態 (正規化は読み込んだときに 1 回だけ、強調の範囲は描くときに求める)。`kanban.rs` — カンバンの列 (一覧のタブの行から作り、Done の列は done.md の全件を含む)。`editor.rs` — `$VISUAL`・`$EDITOR` でファイルを開くコマンドを作る (`E` は一時ディレクトリのコピーを開き、閉じた後に core の `ops::write_edited` で検証して書き戻す)。`markdown.rs` — 本文の markdown を表示するときだけ整える (ファイル・フォーム・CLI の出力は元のまま)。整えた部分ごとに元の本文の範囲を持ち、検索の強調をそこに重ねる。
   - TUI のテストは `tui/tests.rs`。ratatui の `TestBackend` に描画して文字を比べる。
   **読むだけのコマンドはファイルを一切書き換えない** (書くと Neovim 側の未保存の編集が破棄されるため)。
   `tests/cli.rs` の `read_only_commands_never_create_or_modify_files` で固定している。
@@ -70,7 +70,7 @@ OS で分かれるコード (`#[cfg(unix)]` や `std::os::unix` を使うテス�
 - Vim の正規表現を移植するときは、`\s` は `[ \t]`、`\w` は `[0-9A-Za-z_]`、`[:space:]` は `[\t\n\x0B\x0C\r ]` に置き換える。Rust の `\s`/`\w`/`\b` は Unicode の範囲で判定するため、そのまま使うと全角スペースや日本語の直後で結果が変わる。`\<` は `task.rs` の `is_vim_word_start` を使う。
 - 意図して Lua 版と挙動を変えた箇所は、コードコメントに理由を書く (例: `date.rs` の夏時間の扱い)。
 - `data_dir` のファイルを書くときは必ず `atomic.rs` を通し、読んだときの `Stamp` を渡す (`fs::write` で直接書かない)。並行更新の検出とアトミックな置き換えが効かなくなり、Neovim 版の変更を潰す。
-- 読んだファイルを書き戻すときは、`guard.rs` で読んだときの見出しが消えていないかを確かめてから書く (`ops.rs` の `Loaded` と `write_history` が行う)。新しい書き込み経路を足すときも通す。
+- 読んだファイルを書き戻すときは、`guard.rs` で読んだときの見出しが消えていないかを確かめてから書く (`ops.rs` の `Loaded` と `write_history` が行う)。新しい書き込み経路を足すときも通す。利用者が手で編集した内容 (TUI の `E`) は、代わりに Neovim 版の保存時の検証と同じ規則の `guard::hand_edit_problems` で確かめる (`ops::write_edited`)。
 - 2 ファイルにまたがる移動は必ず `ops.rs` の `append_then_remove` を通す (追記を先、削除を後)。順序が逆だと、後の書き込みに失敗したときタスクがどちらのファイルからも消える。
 - `config.json` と `gtodo.json` は Neovim 版と共有する。知らないキーで止めてはならない (警告して無視する)。項目を足すときは ROADMAP の決定事項と README を更新し、Neovim 版でも同じ意味で読めるようにする。
 

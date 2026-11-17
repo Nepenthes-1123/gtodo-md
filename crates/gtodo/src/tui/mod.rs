@@ -2,6 +2,7 @@
 
 mod app;
 mod draw;
+mod editor;
 mod form;
 mod input;
 mod kanban;
@@ -23,6 +24,7 @@ use chrono::Local;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 
 use self::app::App;
 use self::draw::Theme;
@@ -85,9 +87,26 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, theme: Theme) -> Re
                 _ => {}
             }
         }
+        if app.editor_requested() {
+            hand_over_to_editor(terminal, app)?;
+            next_tick = Instant::now() + TICK;
+        }
         if Instant::now() >= next_tick {
             app.tick();
             next_tick = Instant::now() + TICK;
         }
     }
+}
+
+/// 端末をエディタに明け渡し、閉じたら取り戻す。
+fn hand_over_to_editor(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+    terminal.show_cursor()?;
+    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
+    disable_raw_mode()?;
+    app.run_editor();
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    // エディタが書いた画面の内容は ratatui の知らないものなので、全部描き直させる。
+    terminal.clear()?;
+    Ok(())
 }
