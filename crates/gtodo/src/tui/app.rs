@@ -26,6 +26,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::form::{Form, Outcome, Submit};
 use super::input::{Edit, LineInput};
+use super::kanban::{self, KanbanView};
 use super::keymap::{Action, Fed, Key, Keymap, TAB_COUNT};
 use super::queue;
 use super::search::{self, SearchView};
@@ -160,6 +161,7 @@ pub enum Screen {
     List,
     Queue,
     Search,
+    Kanban,
 }
 
 /// Queue の状態。
@@ -230,6 +232,7 @@ pub struct App {
     pub screen: Screen,
     pub queue: QueueView,
     pub search: SearchView,
+    pub kanban: KanbanView,
     pub mode: Mode,
     /// 押しかけのキー列 (`g` の後など)。
     pub pending: Vec<Key>,
@@ -258,6 +261,8 @@ pub struct App {
     queue_stale: bool,
     /// 検索を開いていない間に対象のファイルが変わり、絞り込み直しが要る。
     search_stale: bool,
+    /// カンバンを開いていない間に todo.md・done.md が変わり、作り直しが要る。
+    kanban_stale: bool,
     /// Queue を作るために持っておく、最後に読んだ inbox.md と todo.md。
     inbox_doc: Document,
     todo_doc: Document,
@@ -289,6 +294,7 @@ impl App {
             screen: Screen::List,
             queue: QueueView::default(),
             search: SearchView::default(),
+            kanban: KanbanView::default(),
             mode: Mode::Normal,
             pending: Vec::new(),
             messages: Vec::new(),
@@ -306,6 +312,7 @@ impl App {
             inbox_noticed: None,
             queue_stale: true,
             search_stale: true,
+            kanban_stale: true,
             inbox_doc: Document::default(),
             todo_doc: Document::default(),
         };
@@ -440,7 +447,13 @@ impl App {
             Action::HalfPageUp => self.move_cursor(-(page / 2).max(1)),
             Action::PageDown => self.move_cursor(page),
             Action::PageUp => self.move_cursor(-page),
-            // Queue から押したときは一覧へ戻ってタブを選ぶ。
+            // カンバンでは列を移る。Queue などから押したときは一覧へ戻ってタブを選ぶ。
+            Action::NextTab if self.screen == Screen::Kanban => {
+                self.kanban.focus = (self.kanban.focus + 1).min(kanban::COLUMNS - 1);
+            }
+            Action::PrevTab if self.screen == Screen::Kanban => {
+                self.kanban.focus = self.kanban.focus.saturating_sub(1);
+            }
             Action::NextTab => {
                 self.current = (self.current + 1) % TAB_COUNT;
                 self.screen = Screen::List;
@@ -448,6 +461,13 @@ impl App {
             Action::PrevTab => {
                 self.current = (self.current + TAB_COUNT - 1) % TAB_COUNT;
                 self.screen = Screen::List;
+            }
+            Action::OpenKanban => {
+                if self.screen != Screen::Kanban && self.kanban_stale {
+                    self.kanban.rebuild(&self.tabs);
+                    self.kanban_stale = false;
+                }
+                self.screen = Screen::Kanban;
             }
             Action::GoTab(i) => {
                 self.current = i.min(TAB_COUNT - 1);
@@ -477,7 +497,7 @@ impl App {
                     self.search.status = self.search.status.next();
                     self.search.run(true);
                 }
-                Screen::List => {}
+                Screen::List | Screen::Kanban => {}
             },
             Action::Search => self.open_search(),
             Action::Open => self.open_in_list(),
@@ -501,6 +521,10 @@ impl App {
             Screen::List => (self.view().rows.len(), &mut self.tabs[self.current].cursor),
             Screen::Queue => (self.queue.len(), &mut self.queue.cursor),
             Screen::Search => (self.search.results.len(), &mut self.search.cursor),
+            Screen::Kanban => {
+                let focus = self.kanban.focus;
+                (self.kanban.columns[focus].len(), &mut self.kanban.cursors[focus])
+            }
         };
         if len == 0 {
             return;
@@ -531,6 +555,11 @@ impl App {
                 row: &entry.row,
                 file: entry.file,
                 section: entry.section,
+            }),
+            Screen::Kanban => self.kanban.selected().map(|card| Selected {
+                row: &card.row,
+                file: card.file,
+                section: card.section,
             }),
         }
     }
@@ -680,6 +709,10 @@ impl App {
         let tab = match self.screen {
             Screen::List => self.tab(),
             Screen::Queue | Screen::Search => Tab::Inbox,
+            // 選んでいる列のセクションへ入れる (Done の列からは inbox へ)。
+            Screen::Kanban => kanban::SECTION_COLUMNS
+                .get(self.kanban.focus)
+                .map_or(Tab::Inbox, |key| Tab::Section(*key)),
         };
         self.mode = Mode::Form(Box::new(Form::add(tab, projects, contexts, self.today)));
     }
@@ -903,6 +936,7 @@ impl App {
             Screen::List => self.view_mut().select_key(key),
             Screen::Queue => self.queue.select_key(key),
             Screen::Search => self.search.select_key(key),
+            Screen::Kanban => self.kanban.select_key(key),
         };
     }
 
@@ -1033,11 +1067,21 @@ impl App {
         }
         let mut queue_changed = false;
         let mut search_changed = false;
+        let mut kanban_changed = false;
         for (i, kind) in WATCHED_DOCS.iter().enumerate() {
             if reparse || now[i] != self.stamps[i] {
                 self.load(*kind);
                 queue_changed |= matches!(kind, FileKind::Inbox | FileKind::Todo);
                 search_changed |= SEARCH_FILES.contains(kind);
+                // カンバンに出るのは todo.md と done.md (inbox.md は出さない)。
+                kanban_changed |= matches!(kind, FileKind::Todo | FileKind::Done);
+            }
+        }
+        if kanban_changed {
+            if self.screen == Screen::Kanban {
+                self.kanban.rebuild(&self.tabs);
+            } else {
+                self.kanban_stale = true;
             }
         }
         if search_changed {

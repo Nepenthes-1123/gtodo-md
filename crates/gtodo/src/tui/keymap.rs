@@ -108,6 +108,7 @@ pub enum Action {
     Add,
     Edit,
     OpenQueue,
+    OpenKanban,
     Search,
     /// 表示を切り替える (Queue は期日別と待ち先別、検索は状態)。
     SwitchView,
@@ -162,6 +163,7 @@ impl Default for Keymap {
             (vec![Key::char('a')], Add),
             (vec![Key::char('e')], Edit),
             (vec![Key::char('Q')], OpenQueue),
+            (vec![Key::char('K')], OpenKanban),
             (vec![Key::char('/')], Search),
             (vec![Key::plain(KeyCode::Tab)], SwitchView),
             (vec![Key::plain(KeyCode::Enter)], Open),

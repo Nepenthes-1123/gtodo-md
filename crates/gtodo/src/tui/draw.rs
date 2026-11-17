@@ -17,6 +17,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{App, Level, Mode, Row, Screen, TABS, Tab};
 use super::form::{DESTINATIONS, Field, Form, preview_line};
+use super::kanban;
 use super::keymap::{Action, Key, sequence_label};
 use super::queue::{self, Heading};
 use super::search::{self, StatusFilter};
@@ -93,6 +94,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
             );
             draw_queue(frame, app, theme, list_area);
         }
+        Screen::Kanban => draw_kanban(frame, app, theme, tabs_area, list_area),
         Screen::Search => {
             let cursor = draw_search_bar(frame, app, theme, tabs_area);
             if app.search.typing && app.mode == Mode::Normal {
@@ -250,11 +252,10 @@ fn layout_row(
 fn tail_spans(task: &Task, tab: Tab, today: NaiveDate, base: Style, theme: Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let value = |v: &Option<String>| v.as_deref().filter(|v| !v.is_empty()).map(str::to_string);
-    if let Some(p) = project_tag(task) {
-        spans.push(Span::styled(format!(" {p}"), base.patch(theme.fg(Color::Magenta))));
-    }
-    if let Some(c) = context_tag(task) {
-        spans.push(Span::styled(format!(" {c}"), base.patch(theme.fg(Color::Green))));
+    let tags = Tags::of(task, today, base, theme);
+    for tag in [tags.project, tags.context].into_iter().flatten() {
+        spans.push(Span::raw(" "));
+        spans.push(tag);
     }
     match tab {
         Tab::Done => {
@@ -268,25 +269,46 @@ fn tail_spans(task: &Task, tab: Tab, today: NaiveDate, base: Style, theme: Theme
             }
         }
         _ => {
-            if let Some(due) = value(&task.due) {
-                let (text, urgency) = due_label(&due, today);
-                let style = if task.status == Status::Done {
-                    base
-                } else {
-                    match urgency {
-                        Urgency::Overdue => theme.fg(Color::Red).add_modifier(Modifier::BOLD),
-                        Urgency::Today => theme.fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                        Urgency::Later => Style::new(),
-                    }
-                };
-                spans.push(Span::styled(format!("  {text}"), style));
-            }
-            if let Some(w) = value(&task.wait) {
-                spans.push(Span::styled(format!("  wait:{w}"), base.patch(theme.fg(Color::Blue))));
+            for tag in [tags.due, tags.wait].into_iter().flatten() {
+                spans.push(Span::raw("  "));
+                spans.push(tag);
             }
         }
     }
     spans
+}
+
+/// タスクのタグの表示 (一覧の行とカンバンのカードで共有する。並べる順は呼び出し元が決める)。
+struct Tags {
+    project: Option<Span<'static>>,
+    context: Option<Span<'static>>,
+    /// 期日と残りの日数 (期限切れ・今日は強調する。完了したタスクでは強調しない)。
+    due: Option<Span<'static>>,
+    wait: Option<Span<'static>>,
+}
+
+impl Tags {
+    fn of(task: &Task, today: NaiveDate, base: Style, theme: Theme) -> Tags {
+        fn value(v: &Option<String>) -> Option<&str> {
+            v.as_deref().filter(|v| !v.is_empty())
+        }
+        let due = value(&task.due).map(|due| {
+            let (text, urgency) = due_label(due, today);
+            let style = match (task.status, urgency) {
+                (Status::Done, _) => base,
+                (_, Urgency::Overdue) => theme.fg(Color::Red).add_modifier(Modifier::BOLD),
+                (_, Urgency::Today) => theme.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                (_, Urgency::Later) => base,
+            };
+            Span::styled(text, style)
+        });
+        Tags {
+            project: project_tag(task).map(|p| Span::styled(p, base.patch(theme.fg(Color::Magenta)))),
+            context: context_tag(task).map(|c| Span::styled(c, base.patch(theme.fg(Color::Green)))),
+            due,
+            wait: value(&task.wait).map(|w| Span::styled(format!("wait:{w}"), base.patch(theme.fg(Color::Blue)))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -472,6 +494,7 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
                 add(Action::Sort, "並べ替え".to_string());
             }
             add(Action::OpenQueue, "Queue".to_string());
+            add(Action::OpenKanban, "カンバン".to_string());
         }
         Screen::Queue => {
             if selected.is_some() {
@@ -480,6 +503,22 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
             let mode = if app.queue.wait { "期日別" } else { "待ち先別" };
             add(Action::SwitchView, mode.to_string());
             add(Action::Sort, "並べ替え".to_string());
+            hints.push((Action::Back, "Esc".to_string(), "一覧へ".to_string()));
+        }
+        Screen::Kanban => {
+            if selected.is_some() {
+                add(Action::Open, "一覧で開く".to_string());
+            }
+            let short = |action| {
+                app.keymap
+                    .keys_for(action)
+                    .map(sequence_label)
+                    .min_by_key(|l| l.width())
+            };
+            add(Action::Sort, "並べ替え".to_string());
+            if let (Some(prev), Some(next)) = (short(Action::PrevTab), short(Action::NextTab)) {
+                hints.push((Action::NextTab, format!("{prev}/{next}"), "列".to_string()));
+            }
             hints.push((Action::Back, "Esc".to_string(), "一覧へ".to_string()));
         }
         Screen::Search => {
@@ -503,9 +542,10 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
 
 /// 幅に収まるまで、重要でない案内から外す。`?` (ヘルプ) は外さない (外したキーもヘルプで分かるように)。
 fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(String, String)> {
-    const DROP_ORDER: [Action; 15] = [
+    const DROP_ORDER: [Action; 17] = [
         Action::Quit,
         Action::Sort,
+        Action::OpenKanban,
         Action::OpenQueue,
         Action::Search,
         Action::Cancel,
@@ -518,6 +558,7 @@ fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(Str
         Action::Add,
         Action::Open,
         Action::SwitchView,
+        Action::NextTab,
         Action::ToggleDone,
     ];
     let line_width = |hints: &[(Action, String, String)]| -> usize {
@@ -562,6 +603,7 @@ fn description(app: &App, action: Action) -> String {
         Action::Add => "タスクを追加する (追加先の初期値は開いているタブ)".to_string(),
         Action::Edit => "タスクを編集する".to_string(),
         Action::OpenQueue => "Queue を開く (期日・待ち先ごとの一覧)".to_string(),
+        Action::OpenKanban => "カンバンを開く (h/l などのタブのキーで列を移る)".to_string(),
         Action::Search => "検索 (本文の語・+project・@context・wait:。結果の中では入力欄へ戻る)".to_string(),
         Action::SwitchView => "表示を切り替える (Queue は期日別と待ち先別、検索はすべて・未完了・完了)".to_string(),
         Action::Open => "Queue: 選んでいるタスクを一覧で開く".to_string(),
@@ -625,6 +667,7 @@ fn all_actions() -> Vec<Action> {
         Action::Edit,
         Action::Sort,
         Action::OpenQueue,
+        Action::OpenKanban,
         Action::Search,
         Action::SwitchView,
         Action::Open,
@@ -1124,6 +1167,186 @@ fn highlighted(
         used += 1;
     }
     (spans, used)
+}
+
+/// カンバンの見出し (列の名前と枚数)。
+fn kanban_title(app: &App, column: usize) -> String {
+    let name = match kanban::SECTION_COLUMNS.get(column) {
+        Some(key) => app.ws.names.name(*key),
+        None => "Done",
+    };
+    format!(" {name} ({}) ", app.kanban.columns[column].len())
+}
+
+fn draw_kanban(frame: &mut Frame, app: &mut App, theme: Theme, title_area: Rect, area: Rect) {
+    let (visible, column_width) = kanban::layout(usize::from(area.width));
+    let first = kanban::first_visible(app.kanban.focus, visible, app.kanban.first_column);
+    app.kanban.first_column = first;
+
+    // 1 行目: 画面の名前と、入らずに左右へ送った列。
+    let mut spans = vec![Span::styled(" Kanban", theme.accent().add_modifier(Modifier::BOLD))];
+    let hidden = |range: std::ops::Range<usize>| -> Vec<String> {
+        range.map(|c| kanban_title(app, c).trim().to_string()).collect()
+    };
+    let left = hidden(0..first);
+    let right = hidden(first + visible..kanban::COLUMNS);
+    if !left.is_empty() {
+        spans.push(Span::styled(format!("   ◀ {}", left.join(" · ")), theme.dim()));
+    }
+    if !right.is_empty() {
+        spans.push(Span::styled(format!("   {} ▶", right.join(" · ")), theme.dim()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), title_area);
+
+    let block = Block::new().borders(Borders::TOP).border_style(theme.dim());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let today = app.today();
+    let mut page = 1;
+    for slot in 0..visible.min(kanban::COLUMNS - first) {
+        let column = first + slot;
+        let x = inner.x + (slot * (column_width + 1)) as u16;
+        let rect = Rect {
+            x,
+            y: inner.y,
+            width: (column_width as u16).min(inner.right().saturating_sub(x)),
+            height: inner.height,
+        };
+        let shown = draw_kanban_column(frame, app, theme, column, rect, today);
+        if column == app.kanban.focus {
+            page = shown;
+        }
+    }
+    app.page_height = page.max(1);
+}
+
+/// 列を描き、入りきったカードの枚数を返す (半ページ・1 ページの移動に使う)。
+fn draw_kanban_column(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: Theme,
+    column: usize,
+    area: Rect,
+    today: NaiveDate,
+) -> usize {
+    let focused = column == app.kanban.focus;
+    let title_style = if focused {
+        theme.key().add_modifier(Modifier::UNDERLINED)
+    } else {
+        theme.dim().add_modifier(Modifier::BOLD)
+    };
+    let title = truncate(&kanban_title(app, column), usize::from(area.width));
+    frame.render_widget(
+        Paragraph::new(Line::styled(title, title_style)).alignment(ratatui::layout::Alignment::Center),
+        Rect { height: 1, ..area },
+    );
+    let body = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    let cards = &app.kanban.columns[column];
+    if cards.is_empty() {
+        frame.render_widget(Paragraph::new(Span::styled("  (no tasks)", theme.dim())), body);
+        return 0;
+    }
+    let inner_width = usize::from(area.width.saturating_sub(2));
+    // 高さは見えるあたりのカードについてだけ求める (Done の列は数万枚になりうる)。
+    let height = |card: &kanban::Card| card_lines(card, inner_width, today, theme).len() as u16 + 2;
+
+    // 選んでいるカードが全部見えるよう、表示する最初のカードをずらす。選んでいるカードから
+    // 上へ、入るだけ数えたところが、選んでいるカードが見える一番上。
+    let cursor = app.kanban.cursors[column].min(cards.len() - 1);
+    let mut top = cursor;
+    let mut used = height(&cards[cursor]);
+    while top > 0 {
+        let h = height(&cards[top - 1]);
+        if used + h > body.height {
+            break;
+        }
+        used += h;
+        top -= 1;
+    }
+    let offset = app.kanban.offsets[column].clamp(top, cursor);
+    app.kanban.offsets[column] = offset;
+
+    let mut y = body.y;
+    let mut shown = 0;
+    for (i, card) in cards.iter().enumerate().skip(offset) {
+        let mut height = height(card);
+        let mut sides = Borders::ALL;
+        if y + height > body.bottom() {
+            // 列より高いカードは、下の枠を除いて入る分だけ描く (選んでいるカードが見えなくならないように)。
+            if shown > 0 || y >= body.bottom() {
+                break;
+            }
+            height = body.bottom() - y;
+            sides = Borders::TOP | Borders::LEFT | Borders::RIGHT;
+        }
+        let selected = focused && i == cursor;
+        let border = if selected {
+            Block::new()
+                .borders(sides)
+                .border_type(ratatui::widgets::BorderType::Thick)
+                .border_style(theme.accent())
+        } else {
+            Block::new().borders(sides).border_style(theme.dim())
+        };
+        let lines = card_lines(card, inner_width, today, theme);
+        frame.render_widget(Paragraph::new(lines).block(border), Rect { y, height, ..body });
+        y += height;
+        shown += 1;
+    }
+    shown
+}
+
+/// カードの中身。本文 (2 行まで) と、期日・待ち先・タグ・完了日の行。
+/// `[ ]` は出さない (どの列にあるかが完了したかを表すため。Neovim 版と同じ)。
+fn card_lines(card: &kanban::Card, width: usize, today: NaiveDate, theme: Theme) -> Vec<Line<'static>> {
+    let task = &card.row.task;
+    let from_done_md = card.file == FileKind::Done;
+    let base = if from_done_md { theme.dim() } else { Style::new() };
+    let mut lines: Vec<Line> = kanban::body_lines(task, width)
+        .into_iter()
+        .map(|l| Line::styled(l, base))
+        .collect();
+
+    let value = |v: &Option<String>| v.as_deref().filter(|v| !v.is_empty()).map(str::to_string);
+    // 期日・待ち先・タグの順 (ROADMAP の決定事項)。完了したカードの期日は出さない (完了日を出す)。
+    let t = Tags::of(task, today, base, theme);
+    let due = t.due.filter(|_| task.status == Status::Open);
+    let mut tags: Vec<Span> = [due, t.wait, t.project, t.context].into_iter().flatten().collect();
+    if let Some(d) = value(&task.done) {
+        tags.push(Span::styled(format!("done:{d}"), theme.dim()));
+    } else if let Some(d) = value(&task.completed_at) {
+        tags.push(Span::styled(format!("completed:{d}"), theme.dim()));
+    }
+    if !tags.is_empty() {
+        // 1 行に収める (入らない分は `…`)。
+        let mut spans: Vec<Span> = Vec::new();
+        let mut used = 0;
+        for (i, tag) in tags.into_iter().enumerate() {
+            let sep = usize::from(i > 0);
+            let w = tag.width();
+            if used + sep + w > width {
+                let room = width.saturating_sub(used + sep);
+                if room > 0 {
+                    if sep == 1 {
+                        spans.push(Span::raw(" "));
+                    }
+                    spans.push(Span::styled(truncate(&tag.content, room), tag.style));
+                }
+                break;
+            }
+            if sep == 1 {
+                spans.push(Span::raw(" "));
+            }
+            used += sep + w;
+            spans.push(tag);
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 #[cfg(test)]
