@@ -102,23 +102,7 @@ pub struct ReadFile {
 ///
 /// 改行は `\n` で区切り、各行の末尾の `\r` を1つ取り除く。末尾の改行の後ろに空行は作らない。
 pub fn read_file(path: &Path) -> Result<ReadFile, ReadError> {
-    let io_err = |source| ReadError::Io {
-        path: path.to_path_buf(),
-        source,
-    };
-    // 読む前に取る。読んでいる最中に書き換えられた場合も、書き込み前の照合で食い違いとして検出できる。
-    let stamp = Stamp::of(path).map_err(io_err)?;
-    let bytes = match fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Ok(ReadFile {
-                lines: Vec::new(),
-                stamp: None,
-                crlf: false,
-            });
-        }
-        Err(source) => return Err(io_err(source)),
-    };
+    let RawFile { bytes, stamp } = read_raw(path)?;
     let crlf = is_crlf(&bytes);
     let text = String::from_utf8(bytes).map_err(|_| ReadError::InvalidUtf8 {
         path: path.to_path_buf(),
@@ -130,12 +114,39 @@ pub fn read_file(path: &Path) -> Result<ReadFile, ReadError> {
     })
 }
 
+/// 中身を解釈せずに読んだファイル (TUI で `$EDITOR` に渡すコピーを作るため)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawFile {
+    pub bytes: Vec<u8>,
+    /// 読む前に取った状態。ファイルが無ければ `None`。
+    pub stamp: Option<Stamp>,
+}
+
+/// ファイルをそのまま読む。ファイルが無ければ空として扱う ([`read_file`] と同じ)。
+pub fn read_raw(path: &Path) -> Result<RawFile, ReadError> {
+    let io_err = |source| ReadError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    // 読む前に取る。読んでいる最中に書き換えられた場合も、書き込み前の照合で食い違いとして検出できる。
+    let stamp = Stamp::of(path).map_err(io_err)?;
+    match fs::read(path) {
+        Ok(bytes) => Ok(RawFile { bytes, stamp }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(RawFile {
+            bytes: Vec::new(),
+            stamp: None,
+        }),
+        Err(source) => Err(io_err(source)),
+    }
+}
+
 /// Lua 版 (`io.lua` の `detect_crlf`) と同じく、先頭 2048 バイトに `\r\n` があれば CRLF とみなす。
 fn is_crlf(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(2048)].windows(2).any(|w| w == b"\r\n")
 }
 
-fn split_lines(text: &str) -> Vec<String> {
+/// [`read_file`] と同じ規則で行に分ける。
+pub fn split_lines(text: &str) -> Vec<String> {
     if text.is_empty() {
         return Vec::new();
     }

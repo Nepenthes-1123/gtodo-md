@@ -10,11 +10,11 @@ use chrono::NaiveDate;
 
 use crate::atomic::{self, WriteError};
 use crate::document::{Document, Item, Section, TaskItem};
-use crate::guard::Landmarks;
+use crate::guard::{self, Landmarks};
 use crate::key::{self, FindError};
 use crate::logic::{completion, due, history, sort};
 use crate::sections::{SectionKey, SectionNames};
-use crate::store::{self, DataDir, FileKind, ReadError, Stamp};
+use crate::store::{self, DataDir, FileKind, RawFile, ReadError, Stamp};
 use crate::task::{self, Status, Task};
 
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +42,41 @@ pub enum OpError {
         added.display()
     )]
     PartiallyMoved { added: PathBuf, source: WriteError },
+}
+
+/// 手で編集した内容 ([`write_edited`]) を書かなかった理由。
+#[derive(Debug, thiserror::Error)]
+pub enum EditedError {
+    /// Neovim 版の保存時の検証に通らない。直せば書ける。
+    #[error("{}", .0.join("; "))]
+    Invalid(Vec<String>),
+    #[error(transparent)]
+    Write(#[from] WriteError),
+}
+
+/// 利用者が手で編集した内容 `edited` で `kind` のファイルを置き換える (TUI の `$EDITOR`)。
+/// `original` は編集を始めたときに読んだ内容。
+///
+/// Neovim 版の保存時の検証と同じ規則 ([`guard::hand_edit_problems`]) で確かめ、通らなければ書かない。
+/// 読んだときからファイルが変わっていれば書かない ([`WriteError::Changed`])。内容は手を加えずに
+/// (改行も ID も変えずに) 書く。Neovim 版で `:w` したときと同じく、並べ替えや期日のチェックもしない。
+pub fn write_edited(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    kind: FileKind,
+    original: &RawFile,
+    edited: &[u8],
+) -> Result<(), EditedError> {
+    // 読めない文字があると、以後 gtodo がこのファイルを読めなくなる。
+    let after =
+        std::str::from_utf8(edited).map_err(|_| EditedError::Invalid(vec!["the file is not valid UTF-8".into()]))?;
+    let before = String::from_utf8_lossy(&original.bytes);
+    let problems = guard::hand_edit_problems(kind, &store::split_lines(&before), &store::split_lines(after), names);
+    if !problems.is_empty() {
+        return Err(EditedError::Invalid(problems));
+    }
+    atomic::write_bytes(&data_dir.path(kind), edited, original.stamp.as_ref())?;
+    Ok(())
 }
 
 /// 無いファイルを Lua 版 `io.ensure_files` と同じ雛形で作る。
@@ -700,6 +735,37 @@ mod tests {
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn hand_edits_are_written_as_they_are_after_the_neovim_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let names = SectionNames::default();
+        let path = data_dir.path(FileKind::Todo);
+        let todo = "# Todo\r\n## Today\r\n## Next\r\n## Waiting\r\n## Someday\r\n";
+        fs::write(&path, todo).unwrap();
+        let original = store::read_raw(&path).unwrap();
+
+        // 足りないセクションがあれば書かない。
+        let err = write_edited(&data_dir, &names, FileKind::Todo, &original, b"## Today\n").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "required sections are missing: ## Next, ## Waiting, ## Someday"
+        );
+        let err = write_edited(&data_dir, &names, FileKind::Todo, &original, b"\xff").unwrap_err();
+        assert!(matches!(err, EditedError::Invalid(_)), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), todo);
+
+        // 改行・ID の無いタスク・末尾の改行の無さも、書かれたまま。並べ替えもしない。
+        let edited = "# Todo\r\n## Today\r\n- [ ] b\r\n- [ ] a due:2026-01-01\r\n## Next\r\n## Waiting\r\n## Someday";
+        write_edited(&data_dir, &names, FileKind::Todo, &original, edited.as_bytes()).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+
+        // 読んだときから変わっていれば書かない。
+        let err = write_edited(&data_dir, &names, FileKind::Todo, &original, todo.as_bytes()).unwrap_err();
+        assert!(matches!(err, EditedError::Write(WriteError::Changed { .. })), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), edited);
     }
 
     const INBOX: &str = "# Inbox\n- [ ] 受信 due:2026-02-01 id:aaaaaa\n";

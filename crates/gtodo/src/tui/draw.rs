@@ -406,6 +406,10 @@ fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             Line::styled(format!("→ cancelled.md: {content}"), theme.dim()),
             Line::from(Span::styled("Cancel this task? [y/N]", theme.key())),
         ],
+        Mode::FixEdit { file, problems } => vec![
+            Line::styled(format!("{}: {}", file.file_name(), problems.join("; ")), theme.dim()),
+            Line::from(Span::styled("Edit again? [y/n] (n discards your changes)", theme.key())),
+        ],
         Mode::ChooseLink { .. } => {
             let hints = [("1〜9/Enter", "開く"), ("↑/↓", "選ぶ"), ("Esc", "取り消す")]
                 .map(|(k, d)| (k.to_string(), d.to_string()));
@@ -632,6 +636,9 @@ fn description(app: &App, action: Action) -> String {
         Action::Search => "検索 (本文の語・+project・@context・wait:。結果の中では入力欄へ戻る)".to_string(),
         Action::SwitchView => "表示を切り替える (Queue は期日別と待ち先別、検索はすべて・未完了・完了)".to_string(),
         Action::Open => "Queue: 選んでいるタスクを一覧で開く".to_string(),
+        Action::EditFile => {
+            "ファイルを $EDITOR で開く (選んでいるタスクの行へ。保存前に Neovim 版と同じ検証をする)".to_string()
+        }
         Action::Back => "一覧へ戻る".to_string(),
         Action::Help => "このヘルプ".to_string(),
         Action::Quit => "終了 (Ctrl-c でも)".to_string(),

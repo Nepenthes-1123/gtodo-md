@@ -68,6 +68,56 @@ impl Landmarks {
     }
 }
 
+/// 利用者が手で編集した内容 (TUI の `$EDITOR`) を、Neovim 版の保存時の検証 (`validate.lua` と
+/// `autocmds.lua` の `BufWritePre`) と同じ規則で確かめ、問題の説明を返す。空なら書いてよい。
+///
+/// - todo.md: 4 つの管理対象セクションの見出しがあること (別名でもよい)。`# Todo` は問わない。
+/// - inbox.md・done.md・cancelled.md: トップヘッダー (`# Inbox` など) があること。
+/// - done.md・cancelled.md: 開いたときにあった `## YYYY-MM` の見出しが消えていないこと。
+///
+/// [`Landmarks::check`] (コードによる書き込み) と違い、開いたときから欠けていた見出しも問う。
+/// Neovim 版と同じで、利用者が書く内容なので、足してから保存すればよい。
+pub fn hand_edit_problems(kind: FileKind, before: &[String], after: &[String], names: &SectionNames) -> Vec<String> {
+    let mut problems = Vec::new();
+    match kind {
+        FileKind::Todo => {
+            let found: Vec<SectionKey> = after
+                .iter()
+                .filter_map(|l| section_heading(l))
+                .filter_map(|h| names.key_of(h))
+                .collect();
+            let missing: Vec<String> = SectionKey::ALL
+                .into_iter()
+                .filter(|k| !found.contains(k))
+                .map(|k| format!("## {}", names.name(k)))
+                .collect();
+            if !missing.is_empty() {
+                problems.push(format!("required sections are missing: {}", missing.join(", ")));
+            }
+        }
+        FileKind::Inbox | FileKind::Done | FileKind::Cancelled => {
+            let title = title(kind);
+            if !after.iter().any(|l| l.starts_with(title)) {
+                problems.push(format!("the header {title} is missing"));
+            }
+        }
+    }
+    if matches!(kind, FileKind::Done | FileKind::Cancelled) {
+        let months = |lines: &[String]| lines.iter().filter_map(|l| month_heading(l)).collect::<BTreeSet<_>>();
+        let removed: Vec<String> = months(before)
+            .difference(&months(after))
+            .map(|m| format!("## {m}"))
+            .collect();
+        if !removed.is_empty() {
+            problems.push(format!(
+                "month headings that were there when the file was opened were removed: {}",
+                removed.join(", ")
+            ));
+        }
+    }
+    problems
+}
+
 /// Lua 版は todo.md の `# Todo` を確かめないが、ここでも確かめる。gtodo の書き込みで消える理由は無く、
 /// 消えたなら不具合なので、他のファイルのトップヘッダーと同じく止めてよい。
 fn title(kind: FileKind) -> &'static str {
@@ -104,6 +154,69 @@ mod tests {
                 WriteError::WouldRemove { missing, .. } => missing,
                 other => panic!("{other}"),
             })
+    }
+
+    #[test]
+    fn hand_edits_follow_the_neovim_save_checks() {
+        let names = SectionNames::default();
+        let problems =
+            |kind, before: &str, after: &str| hand_edit_problems(kind, &lines(before), &lines(after), &names);
+        let todo = "# Todo\n## Today\n## Next\n## Waiting\n## Someday\n";
+        assert!(problems(FileKind::Todo, todo, todo).is_empty());
+        // `# Todo` は問わない (Neovim 版も問わない)。
+        assert!(problems(FileKind::Todo, todo, "## Today\n## Next\n## Waiting\n## Someday\n").is_empty());
+        // 開いたときから欠けていたセクションも問う。
+        assert_eq!(
+            problems(FileKind::Todo, "## Today\n", "## Today\n## Next\n"),
+            ["required sections are missing: ## Waiting, ## Someday"]
+        );
+        // `###` やセクションの名前の後ろに何かある見出しは数えない。
+        assert_eq!(
+            problems(
+                FileKind::Todo,
+                todo,
+                "## Today\n## Next\n### Waiting\n## Someday (later)\n"
+            ),
+            ["required sections are missing: ## Waiting, ## Someday"]
+        );
+        assert_eq!(
+            problems(FileKind::Inbox, "# Inbox\n", "- [ ] a\n"),
+            ["the header # Inbox is missing"]
+        );
+        assert_eq!(
+            problems(FileKind::Inbox, "", "- [ ] a\n"),
+            ["the header # Inbox is missing"]
+        );
+        // 年月の見出しは、開いたときにあったものだけを問う。
+        let done = "# Done\n\n## 2026-01\n- [x] a\n\n## 2026-02\n- [x] b\n";
+        assert!(problems(FileKind::Done, done, "# Done\n## 2026-02\n## 2026-03\n## 2026-01\n").is_empty());
+        assert_eq!(
+            problems(
+                FileKind::Cancelled,
+                "# Cancelled\n## 2026-01\n## 2026-02\n",
+                "## 2026-02\n"
+            ),
+            [
+                "the header # Cancelled is missing",
+                "month headings that were there when the file was opened were removed: ## 2026-01"
+            ]
+        );
+    }
+
+    #[test]
+    fn hand_edits_accept_every_name_of_a_section() {
+        // 現在の名前・デフォルト名・Neovim 版が前回使っていた名前のどれでもよい。
+        let names = SectionNames::new(["今日", "Next", "Waiting", "Someday"].map(String::from))
+            .unwrap()
+            .with_last(SectionKey::Next, Some("次".into()));
+        let after = lines("## Today\n## 次\n## Waiting\n## Someday\n");
+        assert!(hand_edit_problems(FileKind::Todo, &[], &after, &names).is_empty());
+        // 足りない見出しは現在の名前で知らせる。
+        let after = lines("## Next\n## Waiting\n## Someday\n");
+        assert_eq!(
+            hand_edit_problems(FileKind::Todo, &[], &after, &names),
+            ["required sections are missing: ## 今日"]
+        );
     }
 
     #[test]

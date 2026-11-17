@@ -116,6 +116,8 @@ pub enum Action {
     SwitchView,
     /// Queue で選んでいるタスクを一覧で開く。
     Open,
+    /// ファイルを `$EDITOR` で開く。
+    EditFile,
     /// Queue などから一覧へ戻る。`Esc` に固定で、割り当てを変えられない (案内に出すためだけにある)。
     Back,
     Help,
@@ -158,6 +160,7 @@ impl Action {
             OpenLink,
             SwitchView,
             Open,
+            EditFile,
             Help,
             Quit,
         ]);
@@ -194,6 +197,7 @@ impl Action {
             Search => "search".into(),
             SwitchView => "switch_view".into(),
             Open => "open".into(),
+            EditFile => "edit_file".into(),
             Back => "back".into(),
             Help => "help".into(),
             Quit => "quit".into(),
@@ -443,6 +447,7 @@ impl Default for Keymap {
             (vec![Key::char('/')], Search),
             (vec![Key::plain(KeyCode::Tab)], SwitchView),
             (vec![Key::plain(KeyCode::Enter)], Open),
+            (vec![Key::char('E')], EditFile),
             (vec![Key::char('?')], Help),
             // Esc は終了に割り当てない。戻る・取り消すだけにする (lazygit・lazydocker と同じ)。
             // vim を使う人は癖で押すため、一覧で押して終了すると困る。

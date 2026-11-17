@@ -6,24 +6,28 @@
 //! 読み直し、タスクのキーで探して書く (CLI と同じ `ops`)。表示が古くても他のツールの変更を潰さない。
 
 use std::collections::{BTreeSet, HashSet};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use gtodo_core::atomic::WriteError;
+use gtodo_core::config::{Platform, ProcessEnv};
 use gtodo_core::document::Document;
 use gtodo_core::input;
 use gtodo_core::key::task_key;
 use gtodo_core::lock::Lock;
 use gtodo_core::logic::due::DueOutcome;
-use gtodo_core::ops::{self, Destination, Moved, Wait};
+use gtodo_core::ops::{self, Destination, EditedError, Moved, Wait};
 use gtodo_core::sections::{SectionKey, SectionNames};
-use gtodo_core::store::{DataDir, FileKind, Stamp};
+use gtodo_core::store::{self, DataDir, FileKind, RawFile, Stamp};
 use gtodo_core::task::{Status, Task};
 use gtodo_core::view::{SEARCH_FILES, entries};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use super::editor::Editor;
 use super::form::{Form, Outcome, Submit};
 use super::input::{Edit, LineInput};
 use super::kanban::{self, KanbanView};
@@ -142,6 +146,11 @@ pub enum Mode {
         links: Vec<String>,
         cursor: usize,
     },
+    /// `$EDITOR` で編集した内容が保存時の検証に通らず、もう一度編集するか尋ねている。
+    FixEdit {
+        file: FileKind,
+        problems: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +172,24 @@ const LOCK_WAIT: Duration = Duration::from_millis(300);
 
 /// リンクを開く関数。
 pub type Opener = Box<dyn Fn(&str) -> std::io::Result<()>>;
+
+/// ファイル (と 1 始まりの行) をエディタで開き、閉じるまで待つ関数。エディタが正常に終わったかを返す。
+pub type EditorRunner = Box<dyn Fn(&Path, Option<usize>) -> std::io::Result<bool>>;
+
+/// `$EDITOR` で編集しているファイルのコピー。
+///
+/// 本物のファイルではなく一時ディレクトリのコピーを開く。そのまま開くと、エディタが保存した時点で
+/// 書かれてしまい、Neovim 版の保存時の検証で止めることも、編集している間に Neovim 版などが書いた
+/// 変更を潰さないよう確かめることもできないため。閉じた後に検証し、読んだときの状態と照らして書き戻す。
+struct EditSession {
+    file: FileKind,
+    /// 編集を始めたときに読んだ内容と状態。
+    original: RawFile,
+    /// コピーを置いた一時ディレクトリ。セッションを捨てると一緒に消える。
+    dir: tempfile::TempDir,
+    copy: PathBuf,
+    line: Option<usize>,
+}
 
 /// 今の画面。Queue は一覧から開く全画面で、`Esc` で一覧へ戻る。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +280,16 @@ pub struct App {
     data_dir: PathBuf,
     /// リンクを開く (テストでは差し替えて、開いたものを記録する)。
     opener: Opener,
+    /// ファイルをエディタで開く (テストでは差し替えて、編集したことにする)。
+    editor: EditorRunner,
+    /// 知らせに出すエディタの名前。
+    editor_name: String,
+    /// `$EDITOR` で編集しているファイル (もう一度編集するかを尋ねている間も持つ)。
+    edit: Option<EditSession>,
+    /// [`App::run_editor`] でエディタを開く。端末を明け渡す必要があるので、呼ぶのは `mod.rs`。
+    editor_requested: bool,
+    /// 書き戻せずに残した編集のコピー。終了した後にも標準エラーへ知らせる (画面の知らせは消えるため)。
+    kept_copies: Vec<PathBuf>,
     /// 今日の日付を返す (テストでは日付を差し替える)。
     clock: Box<dyn Fn() -> NaiveDate>,
     today: NaiveDate,
@@ -294,6 +331,8 @@ impl App {
         let dir = DataDir::new(data_dir.clone());
         let config_stamps = [stamp(&dir.settings_file()), stamp(&dir.state_file())];
         let ws = Workspace::open(data_dir.clone(), today, &mut |m| warnings.push(m))?;
+        let editor = Editor::from_env(&ProcessEnv, Platform::current());
+        let editor_name = editor.name().to_string();
         let mut stamps = [None; WATCHED];
         stamps[SETTINGS] = Some(config_stamps[0]);
         stamps[STATE] = Some(config_stamps[1]);
@@ -313,6 +352,11 @@ impl App {
             help_scroll: 0,
             data_dir,
             opener: Box::new(|url| open::that_detached(url)),
+            editor: Box::new(move |file, line| editor.command(file, line).status().map(|s| s.success())),
+            editor_name,
+            edit: None,
+            editor_requested: false,
+            kept_copies: Vec::new(),
             clock,
             today,
             opened_date: today,
@@ -343,8 +387,24 @@ impl App {
         self.opener = opener;
     }
 
+    /// エディタを差し替える (テスト用)。
+    #[cfg(test)]
+    pub fn set_editor(&mut self, editor: EditorRunner) {
+        self.editor = editor;
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
+    }
+
+    /// 書き戻せずに残した編集のコピー。終わるときに呼ぶ。編集の途中 (検証に通らず尋ねている間に
+    /// `Ctrl-c` で終えたときなど) のものもコピーを残して返す (編集した内容を黙って消さないため)。
+    pub fn finish(&mut self) -> Vec<PathBuf> {
+        if let Some(session) = self.edit.take() {
+            let name = session.file.file_name();
+            self.kept_copies.push(session.dir.keep().join(name));
+        }
+        std::mem::take(&mut self.kept_copies)
     }
 
     pub fn tab(&self) -> Tab {
@@ -423,6 +483,7 @@ impl App {
             Mode::ConfirmCancel { .. } => return self.handle_confirm_cancel(key),
             Mode::Form(_) => return self.handle_form(key),
             Mode::ChooseLink { .. } => return self.handle_choose_link(key),
+            Mode::FixEdit { .. } => return self.handle_fix_edit(key),
         }
         if self.screen == Screen::Search && self.search.typing {
             return self.handle_search_input(key);
@@ -521,6 +582,7 @@ impl App {
             Action::Search => self.open_search(),
             Action::OpenLink => self.open_link(),
             Action::Open => self.open_in_list(),
+            Action::EditFile => self.start_edit(),
             Action::Back => self.screen = Screen::List,
             Action::MoveToday => self.move_selected(SectionKey::Today, Wait::Keep),
             Action::MoveNext => self.move_selected(SectionKey::Next, Wait::Keep),
@@ -850,6 +912,171 @@ impl App {
             key: row.key,
             content: row.task.content.clone(),
         };
+    }
+
+    /// 選んでいるタスクのファイル (選んでいなければ開いているタブ・列のファイル) のコピーを作り、
+    /// エディタで開くよう求める。カーソルはそのタスクの行に置く。
+    fn start_edit(&mut self) {
+        let (file, key) = match self.selected() {
+            Some(selected) => (selected.file, Some(selected.row.key.clone())),
+            None => match self.screen {
+                Screen::List => (self.tab().file(), None),
+                Screen::Kanban if self.kanban.focus >= kanban::SECTION_COLUMNS.len() => (FileKind::Done, None),
+                _ => (FileKind::Todo, None),
+            },
+        };
+        let path = self.ws.data_dir.path(file);
+        let mut original = store::read_raw(&path);
+        if matches!(&original, Ok(raw) if raw.stamp.is_none()) {
+            // 無いファイルは雛形で作ってから開く (書き戻すときに、作られたファイルと食い違わないように)。
+            if self.write(false, |_| Ok(())).is_none() {
+                return;
+            }
+            original = store::read_raw(&path);
+        }
+        let original = match original {
+            Ok(raw) => raw,
+            Err(e) => return self.message(Level::Error, e.to_string()),
+        };
+        let Ok(text) = std::str::from_utf8(&original.bytes) else {
+            let text = format!("{} is not valid UTF-8", file.file_name());
+            return self.message(Level::Error, text);
+        };
+        let line = key.and_then(|key| {
+            store::split_lines(text)
+                .iter()
+                .position(|l| Task::parse(l).is_some_and(|t| task_key(&t, l) == key))
+                .map(|i| i + 1)
+        });
+        // ファイル名は元と同じにする (エディタの色分けが効き、どのファイルか分かるように)。
+        let session = tempfile::Builder::new()
+            .prefix("gtodo-edit-")
+            .tempdir()
+            .and_then(|dir| {
+                let copy = dir.path().join(file.file_name());
+                fs::write(&copy, &original.bytes)?;
+                Ok(EditSession {
+                    file,
+                    original,
+                    dir,
+                    copy,
+                    line,
+                })
+            });
+        match session {
+            Ok(session) => {
+                self.edit = Some(session);
+                self.editor_requested = true;
+            }
+            Err(e) => self.message(Level::Error, format!("failed to make a copy to edit: {e}")),
+        }
+    }
+
+    /// エディタで開くよう求められているか。
+    pub fn editor_requested(&self) -> bool {
+        self.editor_requested
+    }
+
+    /// エディタでコピーを開いて閉じるまで待ち、編集した内容を確かめて書き戻す。端末は呼び出し元が明け渡す。
+    ///
+    /// エディタを待つ間はロックを持たない (Neovim 版は 60 秒より古いロックを残骸とみなすため)。
+    pub fn run_editor(&mut self) {
+        self.editor_requested = false;
+        let Some(session) = self.edit.take() else { return };
+        let name = session.file.file_name();
+        self.messages.clear();
+        match (self.editor)(&session.copy, session.line) {
+            Ok(true) => {}
+            Ok(false) => {
+                let text = format!(
+                    "the editor ({}) exited with an error; {name} was not changed",
+                    self.editor_name
+                );
+                self.message(Level::Warning, text);
+                return self.reload();
+            }
+            Err(e) => {
+                let text = format!("failed to start the editor ({}): {e}", self.editor_name);
+                self.message(Level::Error, text);
+                return self.reload();
+            }
+        }
+        let edited = match fs::read(&session.copy) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.message(Level::Error, format!("failed to read the edited copy: {e}"));
+                return self.reload();
+            }
+        };
+        if edited == session.original.bytes {
+            self.message(Level::Info, format!("{name} was not changed"));
+            return self.reload();
+        }
+        enum Saved {
+            Yes,
+            Invalid(Vec<String>),
+            Changed,
+        }
+        let saved = self.write(false, |ws| {
+            match ops::write_edited(&ws.data_dir, &ws.names, session.file, &session.original, &edited) {
+                Ok(()) => Ok(Saved::Yes),
+                Err(EditedError::Invalid(problems)) => Ok(Saved::Invalid(problems)),
+                Err(EditedError::Write(WriteError::Changed { .. })) => Ok(Saved::Changed),
+                Err(e) => Err(e.into()),
+            }
+        });
+        match saved {
+            Some(Saved::Yes) => self.message(Level::Info, format!("saved {name}")),
+            Some(Saved::Invalid(problems)) => {
+                self.message(Level::Error, format!("{name} was not saved: {}", problems.join("; ")));
+                self.mode = Mode::FixEdit {
+                    file: session.file,
+                    problems,
+                };
+                self.edit = Some(session);
+            }
+            // 書けなかった。編集した内容を失わないよう、コピーを残して場所を知らせる。
+            // 場所は切り詰められないよう、行を分けて出す。
+            Some(Saved::Changed) => {
+                let kept = session.dir.keep().join(name);
+                let text = format!(
+                    "{name} was changed while you were editing and was not saved. Your copy:\n{}",
+                    kept.display()
+                );
+                self.message(Level::Error, text);
+                self.kept_copies.push(kept);
+            }
+            None => {
+                let kept = session.dir.keep().join(name);
+                let text = format!("{name} was not saved. Your copy:\n{}", kept.display());
+                self.message(Level::Warning, text);
+                self.kept_copies.push(kept);
+            }
+        }
+    }
+
+    /// 保存時の検証に通らなかったとき。`y` でもう一度編集し、`n`・`Esc` で編集した内容を捨てる。
+    fn handle_fix_edit(&mut self, key: Key) {
+        let Mode::FixEdit { file, .. } = self.mode else {
+            return;
+        };
+        if key.ctrl || key.alt {
+            return;
+        }
+        match key.code {
+            KeyCode::Char('y' | 'Y') => {
+                self.mode = Mode::Normal;
+                self.messages.clear();
+                self.editor_requested = true;
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.edit = None;
+                self.messages.clear();
+                self.message(Level::Info, format!("discarded the changes to {}", file.file_name()));
+            }
+            _ => {}
+        }
     }
 
     fn handle_confirm_cancel(&mut self, key: Key) {
