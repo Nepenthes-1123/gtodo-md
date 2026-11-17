@@ -2434,3 +2434,23 @@ fn split_asks_again_when_a_line_is_not_a_task_and_does_nothing_when_nothing_is_w
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(last_message(&app), "completed tasks cannot be split");
 }
+
+#[test]
+fn a_task_keeps_a_project_whose_name_cannot_be_a_file_name_when_split() {
+    let f = Fixture::new();
+    f.write("inbox.md", "# Inbox\n\n- [ ] 手書き +a/b id:111111\n");
+    let mut app = f.app();
+    fake_editor(&mut app, |_, text| text.replace("- [ ] \n", "- [ ] 続き\n"));
+    press(&mut app, "1p");
+    press_code(&mut app, KeyCode::Enter);
+    app.run_editor();
+    assert!(
+        f.read("inbox.md").contains("- [ ] 続き +a/b id:"),
+        "{}",
+        f.read("inbox.md")
+    );
+    assert!(
+        !f.path().join("projects").exists(),
+        "no file for a name that cannot be a file name"
+    );
+}

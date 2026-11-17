@@ -1337,6 +1337,10 @@ impl App {
                 let text = input.text().trim().to_string();
                 let project = if text.is_empty() {
                     SplitProject::Remove
+                } else if row.task.project.as_deref() == Some(text.trim_start_matches('+')) {
+                    // 元のプロジェクトのままなら、名前を確かめない (Neovim 版で作った名前のままでも分割できるように。
+                    // ファイル名に使えない名前なら、ファイルは作らない)。
+                    SplitProject::Keep
                 } else {
                     match project::check_tag(&text) {
                         Ok(tag) if row.task.project.as_deref() == Some(tag.as_str()) => SplitProject::Keep,
