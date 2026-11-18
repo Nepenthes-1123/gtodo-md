@@ -91,12 +91,15 @@ Neovim 版にある機能は M3 でほぼそろった。M4 では、他の人が
 下の「M4 の未決事項」は、進める前に決める。
 
 - [ ] CI に macOS を足す (`macos-latest`)。今は Linux と Windows だけで、macOS ではパスの既定 (`~/.config`・`~/.local/share`。Neovim 版も macOS でこの場所を使う)・一時ディレクトリ・端末の動きを一度も確かめていない
-- [ ] リリースの仕組み: `v*` のタグを push すると、GitHub Actions が各 OS のバイナリを作り、SHA-256 と一緒に GitHub Releases へ置く
-  - 対象 (案): Linux x86_64・aarch64 (musl で静的にリンクし、glibc の版に左右されないようにする)、macOS aarch64・x86_64、Windows x86_64
-  - ワークフローは手で書く (案)。cargo-dist は installer や Homebrew まで生成して便利だが、生成物が大きく、何をしているか追いにくい。installer は要望が出てから
+- [ ] リリースの仕組み: `v*` のタグを push すると、GitHub Actions が各 OS のバイナリを作り、GitHub Releases へ置く
+  - 対象: Linux x86_64・aarch64 (musl で静的にリンクし、glibc の版に左右されないようにする)、macOS aarch64・x86_64、Windows x86_64
+  - ファイル名は `gtodo-v<版>-<ターゲット>.tar.gz` (Windows は `.zip`)。mise の `github:` バックエンドなどが、名前から OS と CPU を選べるようにする
+  - SHA-256 のファイル (`SHA256SUMS`) を一緒に置く (mise などが確かめに使う)
+  - ワークフローは手で書く。cargo-dist は installer や Homebrew まで生成して便利だが、生成物が大きく、何をしているか追いにくい。installer は要望が出てから
+  - リリースは下書きで作り、利用者が確かめてから公開する
 - [ ] シェルの補完 (`gtodo completions <bash|zsh|fish|powershell>`。clap_complete で生成する。タスクのキーは補完しない)
 - [ ] バージョンと変更履歴: `CHANGELOG.md` を作り、M0〜M3 の内容を v0.1.0 として書く。どの版の gtodo-md.nvim と一緒に使えるか (共有設定を読む版以降) を README と変更履歴に書く
-- [ ] README を利用者向けに書き直す: 「開発中です」を外し、インストール・最初の起動 (データディレクトリの決まり方・Neovim 版との共有)・CLI と TUI の使い方の順にする。開発者向けの内容は後ろへ
+- [ ] README を利用者向けに書き直す: 「開発中です」を外し、インストール (GitHub Releases から。mise なら `mise use -g github:Nepenthes-1123/gtodo-md`)・最初の起動 (データディレクトリの決まり方・Neovim 版との共有)・CLI と TUI の使い方の順にする。開発者向けの内容は後ろへ
 - [ ] v0.1.0 を出す (タグ・リリースノート。リリースの作業は利用者が確かめてから行う)
 
 ### gtodo-md.nvim 側の対応 (M4)
@@ -107,12 +110,16 @@ Neovim 版にある機能は M3 でほぼそろった。M4 では、他の人が
   - テンプレートの `{{project}}`・`{{context}}` の値の頭の `+`・`@` を除かず (`++site` になる)、空白を含む値は後ろが本文へ混ざる
 - [ ] 共有設定を読む版 (保留にしている v0.3.0) のリリース。Rust 版の v0.1.0 は共有設定を前提にするので、先か同時に出す
 
+### M4 で決めたこと
+
+- 配布先は GitHub Releases のバイナリだけにする。mise の `github:` バックエンドで入れられる (こちらで準備は要らない)。crates.io (cargo-binstall を含む)・Homebrew・Scoop・aqua は要望が出てから
+- 最初の版は v0.1.0。共有設定 (`config.json`・`gtodo.json`) は v0.1.0 から、前の版と互換のある変え方だけにする (項目を足すのはよい。意味を変える・消すのはしない。知らない項目は警告して無視する決め事はそのまま)
+- todo.md の他の見出し (`## 買い物` など) を TUI のタブに出す件は、M5 以降に回す (`gtodo.json` の項目になり、Neovim 版にも手を入れるため)
+- 要望が出てから足すとしたもの (`tui.toml` の色・記号、Waiting の警告の日数) は M4 に入れない
+
 ### M4 の未決事項
 
-- 配布先: GitHub Releases のバイナリだけにするか、crates.io にも出すか (`cargo install gtodo`。2026-11-18 時点で `gtodo`・`gtodo-md` の名前は空いている。出すなら `gtodo-core` も出すか、1 つのクレートにまとめる必要がある)。Homebrew・Scoop などは要望が出てから (案)
-- 最初の版の番号: v0.1.0 (案)。共有設定の形 (`config.json`・`gtodo.json`) を変えない約束をどこから始めるか
-- todo.md の他の見出し (`## 買い物` など) にあるタスクを、TUI のタブに出すか。決定事項の「一覧のタブ」に「セクションを設定ファイルで扱えるようにしたら見直す」とある。扱うなら `gtodo.json` の項目になり、Neovim 版でも同じ意味で読めるようにする必要があるため、M4 に入れるか M5 以降に回すかを決める
-- 要望が出てから足すとしたもの (`tui.toml` の色・記号、Waiting の警告の日数) は M4 に入れない (案)
+- リポジトリを公開するか (2026-11-18 時点で非公開)。非公開のままだと、GitHub artifact attestations は付けられず (GitHub Enterprise Cloud が要る)、Actions は無料枠を超えると課金され (macOS は Linux の約 10 倍の単価)、mise で入れる人は GitHub のトークンが要る。公開するなら、attestations も付け、macOS の CI も PR ごとに走らせる
 
 ## 決定事項
 
