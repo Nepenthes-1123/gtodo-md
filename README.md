@@ -21,6 +21,7 @@ Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled
 | Windows (x86_64) | `gtodo-v<版>-x86_64-pc-windows-msvc.zip` |
 
 Linux 版は静的にリンクしているので、ディストリビューションを選びません。ダウンロードしたファイルは、同じリリースの `SHA256SUMS` で確かめられます (`sha256sum -c SHA256SUMS --ignore-missing`)。
+GitHub Actions でこのリポジトリから作ったものであることは、`gh attestation verify <ファイル> --repo Nepenthes-1123/gtodo-md` で確かめられます。
 macOS 版は署名していないので、ブラウザで取ったファイルは開けないことがあります。そのときは `xattr -d com.apple.quarantine gtodo` で検疫の印を外してください。
 
 ### mise で
@@ -31,6 +32,9 @@ macOS 版は署名していないので、ブラウザで取ったファイル�
 mise use -g github:Nepenthes-1123/gtodo-md          # 最新の版
 mise use -g github:Nepenthes-1123/gtodo-md@0.1.0    # 版を固定する
 ```
+
+mise は既定で、公開から 24 時間たっていない版を入れません (`minimum_release_age`)。出たばかりの版は、`@0.1.0` のように版を指定して入れてください。
+入れるときに、上の attestations も mise が確かめます。
 
 ### ソースから
 
