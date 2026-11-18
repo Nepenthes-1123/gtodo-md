@@ -18,7 +18,9 @@ jobs:
       fail-fast: false
       matrix:
         # Windows ではファイルの置き換えやパスの判定が変わり、クロスコンパイルでは確かめられないため、実機で走らせる。
-        os: [ubuntu-latest, windows-latest]
+        # macOS は既定の場所 (`~/.config`・`~/.local/share`) と一時ディレクトリ (`/var` → `/private/var` の
+        # シンボリックリンクを通る) が Linux と違うため走らせる。公開リポジトリの Actions は無料。
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     # ロック待ちや置き換えの再試行が止まらなくなったときに、既定の 6 時間まで待たせない。
     timeout-minutes: 30
