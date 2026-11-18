@@ -42,7 +42,7 @@ cargo install --locked --git https://github.com/Nepenthes-1123/gtodo-md gtodo
 
 ## はじめに
 
-- Neovim 版と一緒に使うなら、gtodo-md.nvim v0.3.0 以降にしてください (データディレクトリの場所とセクション名を、同じ設定ファイルから読む版です)。
+- Neovim 版と一緒に使うなら、gtodo-md.nvim v0.3.1 以降にしてください (データディレクトリの場所とセクション名を、同じ設定ファイルから読む版です)。
 - データディレクトリは、Neovim 版と同じ規則で決まります (下記の「設定」)。Neovim 版を使っていれば、何も設定しなくても同じ場所を見ます。
 - gtodo はデータディレクトリを作りません。初めて使うときは、作ってから始めてください (`mkdir -p ~/.local/share/gtodo-md`。中のファイルは最初に書き込むときに、Neovim 版と同じ雛形で作られます)。
 

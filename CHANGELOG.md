@@ -3,9 +3,9 @@
 各版の変更点です。版の付け方は [Semantic Versioning](https://semver.org/lang/ja/) に従います。
 共有設定 (`config.json`・`gtodo.json`) は v0.1.0 から、前の版と互換のある変え方 (項目を足す) だけにします。
 
-## v0.1.0 (未リリース)
+## v0.1.0 (2026-11-18)
 
-最初のリリースです。[gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) v0.3.0 以降と同じデータディレクトリを、同時に使えます。
+最初のリリースです。[gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) v0.3.1 以降と同じデータディレクトリを、同時に使えます。
 
 ### CLI
 
