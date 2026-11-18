@@ -245,6 +245,14 @@ cargo fmt --all -- --check
 
 GitHub Actions (`.github/workflows/ci.yml`) は、`main` への push と pull request のたびに Linux と Windows でテストと clippy を、Linux で fmt を実行します。
 
+### リリース
+
+1. `crates/gtodo/Cargo.toml` と `crates/gtodo-core/Cargo.toml` の `version` を上げ、`CHANGELOG.md` に `## v<版> (<日付>)` の節を書く
+2. `main` で `v<版>` のタグを付けて push する (`git tag v0.1.0` → `git push origin v0.1.0`)
+3. GitHub Actions の Release (`.github/workflows/release.yml`) が、各 OS のバイナリ (`gtodo-v<版>-<ターゲット>.tar.gz`、Windows は `.zip`) と `SHA256SUMS` を下書きのリリースに置く。リリースノートは `CHANGELOG.md` のその版の節。確かめてから公開する
+
+タグと `Cargo.toml` の版が食い違うと、ビルドの前に止まります。`release.yml` を変えた pull request では、リリースを作らずにビルドだけを試します。
+
 ## ライセンス
 
 MIT License

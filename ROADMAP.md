@@ -93,7 +93,7 @@ Neovim 版にある機能は M3 でほぼそろった。M4 では、他の人が
 - [ ] macOS で確かめる。今は Linux と Windows だけで、macOS ではパスの既定 (`~/.config`・`~/.local/share`。Neovim 版も macOS でこの場所を使う)・一時ディレクトリ・端末の動きを一度も確かめていない
   - 公開するまでは、リリース用のビルドでだけ macOS を動かす (非公開のリポジトリでは macOS の Actions は Linux の約 10 倍の単価で、PR ごとに走らせると無料枠を早く使い切るため)
   - 公開した後に、PR ごとの CI (`ci.yml`) に `macos-latest` を足す (公開リポジトリの Actions は無料)
-- [ ] リリースの仕組み: `v*` のタグを push すると、GitHub Actions が各 OS のバイナリを作り、GitHub Releases へ置く
+- [x] リリースの仕組み: `v*` のタグを push すると、GitHub Actions が各 OS のバイナリを作り、GitHub Releases へ置く
   - 対象: Linux x86_64・aarch64 (musl で静的にリンクし、glibc の版に左右されないようにする)、macOS aarch64・x86_64、Windows x86_64
   - ファイル名は `gtodo-v<版>-<ターゲット>.tar.gz` (Windows は `.zip`)。mise の `github:` バックエンドなどが、名前から OS と CPU を選べるようにする
   - SHA-256 のファイル (`SHA256SUMS`) を一緒に置く (mise などが確かめに使う)
