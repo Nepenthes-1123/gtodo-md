@@ -18,6 +18,7 @@ use crate::project;
 use crate::sections::{SectionKey, SectionNames};
 use crate::store::{self, DataDir, FileKind, RawFile, ReadError, Stamp};
 use crate::task::{self, Status, Task};
+use crate::template;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpError {
@@ -62,6 +63,8 @@ pub enum EditTarget {
     Data(FileKind),
     /// プロジェクトファイル。タグは [`project::check_tag`] を通ったもの。
     Project(String),
+    /// テンプレート。名前は [`template::check_name`] を通ったもの。
+    Template(String),
 }
 
 impl EditTarget {
@@ -69,6 +72,7 @@ impl EditTarget {
         match self {
             EditTarget::Data(kind) => data_dir.path(*kind),
             EditTarget::Project(tag) => project::path(data_dir, tag),
+            EditTarget::Template(name) => template::path(data_dir, name),
         }
     }
 
@@ -77,6 +81,7 @@ impl EditTarget {
         match self {
             EditTarget::Data(kind) => kind.file_name().to_string(),
             EditTarget::Project(tag) => format!("{}/{tag}.md", project::DIR),
+            EditTarget::Template(name) => format!("{}/{name}.md", template::DIR),
         }
     }
 
@@ -85,6 +90,7 @@ impl EditTarget {
         match self {
             EditTarget::Data(kind) => kind.file_name().to_string(),
             EditTarget::Project(tag) => format!("{tag}.md"),
+            EditTarget::Template(name) => format!("{name}.md"),
         }
     }
 }
@@ -111,6 +117,8 @@ pub fn write_edited(
     let problems = match target {
         EditTarget::Data(kind) => guard::hand_edit_problems(*kind, &before, &after, names),
         EditTarget::Project(tag) => project::hand_edit_problems(tag, &before, &after),
+        // テンプレートは Neovim 版にも保存時の検証が無い。
+        EditTarget::Template(_) => Vec::new(),
     };
     if !problems.is_empty() {
         return Err(EditedError::Invalid(problems));
@@ -134,6 +142,134 @@ pub enum ProjectError {
     Read(#[from] ReadError),
     #[error(transparent)]
     Write(#[from] WriteError),
+}
+
+/// テンプレートを作れない・動かせないとき。
+#[derive(Debug, thiserror::Error)]
+pub enum TemplateError {
+    #[error(transparent)]
+    Name(#[from] template::NameError),
+    #[error("no template named {0:?}")]
+    NotFound(String),
+    #[error("{} already exists", .0.display())]
+    Exists(PathBuf),
+    #[error("template {0:?} is archived; restore it or choose a different name")]
+    Archived(String),
+    #[error("failed to {op} {}: {source}", path.display())]
+    Io {
+        op: &'static str,
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error(transparent)]
+    Write(#[from] WriteError),
+}
+
+/// `templates/<name>.md` を Lua 版と同じ記法メモで作る。すでにあればエラー (上書きしない)。作ったパスを返す。
+/// アーカイブした同じ名前のテンプレートがあれば作らない (Lua 版と同じ。作るとどちらも動かせなくなるため)。
+pub fn create_template(data_dir: &DataDir, name: &str) -> Result<PathBuf, TemplateError> {
+    let name = template::check_name(name)?;
+    if template::archived_path(data_dir, name).exists() {
+        return Err(TemplateError::Archived(name.to_string()));
+    }
+    let path = template::path(data_dir, name);
+    let dir = data_dir.root().join(template::DIR);
+    std::fs::create_dir_all(&dir).map_err(|source| TemplateError::Io {
+        op: "create",
+        path: dir,
+        source,
+    })?;
+    match atomic::write_bytes(&path, template::seed().as_bytes(), None) {
+        Ok(_) => Ok(path),
+        Err(WriteError::Changed { .. }) => Err(TemplateError::Exists(path)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// テンプレートをアーカイブする (`templates/archive/` へ動かす)。`restore` なら戻す。
+/// 行き先に同じ名前のファイルがあれば動かさない (上書きしない)。
+pub fn move_template(data_dir: &DataDir, name: &str, restore: bool) -> Result<(), TemplateError> {
+    let name = template::check_name(name)?;
+    let (src, dst) = if restore {
+        (template::archived_path(data_dir, name), template::path(data_dir, name))
+    } else {
+        (template::path(data_dir, name), template::archived_path(data_dir, name))
+    };
+    if !src.is_file() {
+        return Err(TemplateError::NotFound(name.to_string()));
+    }
+    if let Some(dir) = dst.parent() {
+        std::fs::create_dir_all(dir).map_err(|source| TemplateError::Io {
+            op: "create",
+            path: dir.to_path_buf(),
+            source,
+        })?;
+    }
+    move_no_replace(&src, &dst)
+}
+
+/// `src` を `dst` へ動かす。`dst` がすでにあれば動かさない (Lua 版 `io.move_file_no_replace` と同じ手順)。
+///
+/// 先に `dst` を排他的に作って場所を押さえてから、`src` をその上に rename する。確かめてから動かすと、
+/// その間に他のプロセスが作った `dst` を置き換えて消してしまうため。
+///
+/// 中身を書くのではなくファイルを動かすだけなので、`atomic.rs` (読んだ時点との照合と一時ファイルからの
+/// 置き換え) は通さない。rename 自体がアトミックで、行き先は排他的に押さえてある。
+fn move_no_replace(src: &Path, dst: &Path) -> Result<(), TemplateError> {
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(dst) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(TemplateError::Exists(dst.to_path_buf()));
+        }
+        Err(source) => {
+            return Err(TemplateError::Io {
+                op: "create",
+                path: dst.to_path_buf(),
+                source,
+            });
+        }
+    }
+    std::fs::rename(src, dst).map_err(|source| {
+        // 押さえただけの空のファイルを残さない (src にはまだ触れていない)。
+        let _ = std::fs::remove_file(dst);
+        TemplateError::Io {
+            op: "move",
+            path: src.to_path_buf(),
+            source,
+        }
+    })
+}
+
+/// テンプレートから作ったタスクを inbox.md の末尾へ足す。足したタスクの ID を返す。
+///
+/// Lua 版は行をそのまま末尾へ足すが、ここでは `add_task` と同じく文書として書く (ID はほかのタスクと
+/// 重ならないものを先に決め、知らせた ID と書いた ID が食い違わないようにする)。
+pub fn insert_tasks(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    tasks: Vec<Task>,
+) -> Result<Vec<String>, OpError> {
+    let mut inbox = Loaded::read(data_dir, FileKind::Inbox, names, today)?;
+    let todo = Loaded::read(data_dir, FileKind::Todo, names, today)?;
+    let mut ids = Vec::new();
+    for mut task in tasks {
+        let id = loop {
+            let id = unused_id(&[&inbox.doc, &todo.doc]);
+            if !ids.contains(&id) {
+                break id;
+            }
+        };
+        task.id = Some(id.clone());
+        ids.push(id);
+        inbox.doc.preamble.push(Item::Task(Box::new(TaskItem {
+            line: task.clone().serialize(),
+            task,
+            lnum: 0,
+        })));
+    }
+    inbox.write()?;
+    Ok(ids)
 }
 
 /// `projects/<tag>.md` を Lua 版と同じ雛形で作る。すでにあればエラー (上書きしない)。作ったパスを返す。
@@ -931,6 +1067,70 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), edited);
+    }
+
+    #[test]
+    fn templates_are_created_archived_and_restored_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(dir.path());
+        let path = create_template(&data_dir, "weekly").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), template::seed());
+        assert!(matches!(
+            create_template(&data_dir, "weekly"),
+            Err(TemplateError::Exists(_))
+        ));
+        assert!(matches!(
+            create_template(&data_dir, "../x"),
+            Err(TemplateError::Name(_))
+        ));
+
+        move_template(&data_dir, "weekly", false).unwrap();
+        assert!(!path.exists());
+        let archived = template::archived_path(&data_dir, "weekly");
+        assert_eq!(fs::read_to_string(&archived).unwrap(), template::seed());
+        // アーカイブした名前では作らない (Lua 版と同じ)。
+        assert!(matches!(
+            create_template(&data_dir, "weekly"),
+            Err(TemplateError::Archived(_))
+        ));
+        // 戻す先に同じ名前があれば動かさない。
+        fs::write(&path, "別の内容\n").unwrap();
+        assert!(matches!(
+            move_template(&data_dir, "weekly", true),
+            Err(TemplateError::Exists(_))
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "別の内容\n");
+        assert!(archived.exists());
+        fs::remove_file(&path).unwrap();
+        move_template(&data_dir, "weekly", true).unwrap();
+        assert!(path.exists() && !archived.exists());
+        assert!(matches!(
+            move_template(&data_dir, "none", false),
+            Err(TemplateError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn template_tasks_are_appended_to_the_inbox_with_new_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::new(dir.path());
+        fs::write(data_dir.path(FileKind::Inbox), INBOX).unwrap();
+        fs::write(data_dir.path(FileKind::Todo), TODO).unwrap();
+        let names = SectionNames::default();
+        let lines: Vec<String> = ["- [ ] 準備 +site", "- [ ] 連絡 id:aaaaaa"].map(String::from).to_vec();
+        let tasks = template::tasks(&lines, today(), &std::collections::HashMap::new());
+        let ids = insert_tasks(&data_dir, &names, today(), tasks).unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(!ids.contains(&"aaaaaa".to_string()), "the template's ID is not reused");
+        let inbox = fs::read_to_string(data_dir.path(FileKind::Inbox)).unwrap();
+        assert_eq!(
+            inbox,
+            format!(
+                // 書き出しは `gtodo add` と同じ (見出しの後に空行を置く。Lua 版の write_todo_file と同じ)。
+                "# Inbox\n\n- [ ] 受信 due:2026-02-01 id:aaaaaa\n- [ ] 準備 +site id:{}\n- [ ] 連絡 id:{}\n",
+                ids[0], ids[1]
+            )
+        );
     }
 
     const INBOX: &str = "# Inbox\n- [ ] 受信 due:2026-02-01 id:aaaaaa\n";

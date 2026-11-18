@@ -2147,7 +2147,7 @@ fn new_projects_are_created_and_opened_in_the_editor() {
     let mut app = f.app();
     let opened = fake_editor(&mut app, |_, text| text.replace("title:\n", "title: 新規\n"));
     press(&mut app, "Pa");
-    assert!(matches!(app.mode, Mode::NewProject { .. }));
+    assert!(matches!(app.mode, Mode::NewName { .. }));
     // すでにある名前なら、作らずにそれを選ぶ。
     press(&mut app, "site");
     press_code(&mut app, KeyCode::Enter);
@@ -2158,7 +2158,7 @@ fn new_projects_are_created_and_opened_in_the_editor() {
     // ファイル名にできない名前は、直した名前を添えて断る (入力は残す)。
     press(&mut app, "a/b");
     press_code(&mut app, KeyCode::Enter);
-    assert!(matches!(app.mode, Mode::NewProject { .. }));
+    assert!(matches!(app.mode, Mode::NewName { .. }));
     assert!(
         last_message(&app).contains(r#"use "a-b" instead"#),
         "{}",
@@ -2213,4 +2213,153 @@ fn project_files_are_checked_like_neovim_when_edited_by_hand() {
     assert!(f.read("projects/site.md").contains("tag: site\n"));
     press(&mut app, "n");
     assert_eq!(last_message(&app), "discarded the changes to projects/site.md");
+}
+
+/// テンプレートの画面を試すためのデータ。weekly はプレースホルダーを使い、plain は使わない。
+fn template_fixture() -> Fixture {
+    let f = Fixture::new();
+    fs::create_dir_all(f.path().join("templates/archive")).unwrap();
+    f.write(
+        "templates/weekly.md",
+        "<!-- メモ {{project}} -->\n- [ ] 振り返り {{project}} due:+2d\n- [ ] {{who}} に連絡 {{context}}\n",
+    );
+    f.write("templates/plain.md", "- [ ] 掃除 due:+1d\n");
+    f.write("templates/archive/old.md", "- [ ] 古い作業\n");
+    f
+}
+
+#[test]
+fn templates_are_inserted_after_asking_placeholders_and_the_base_date() {
+    let f = template_fixture();
+    let mut app = f.app();
+    press(&mut app, "T");
+    assert_eq!(app.screen, Screen::Templates);
+    let rows = screen(&mut app, 90, 12);
+    assert_eq!(rows[0], " Templates 2");
+    let weekly = rows
+        .iter()
+        .find(|r| r.contains("weekly"))
+        .unwrap_or_else(|| panic!("{rows:#?}"));
+    assert!(
+        weekly.ends_with("weekly  2 task(s)  {{project}}  {{who}}  {{context}}"),
+        "{weekly}"
+    );
+    let i = app.templates.rows.iter().position(|r| r.name == "weekly").unwrap();
+    app.templates.cursor = i;
+
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(
+        screen(&mut app, 90, 12).pop().unwrap(),
+        "Value for {{project}} (blank to omit):"
+    );
+    // タグに空白を含む値は断る (入力は残す)。
+    press(&mut app, "my site");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(last_message(&app).contains("cannot be a +project or @context tag"));
+    for _ in 0.."my site".chars().count() {
+        press_code(&mut app, KeyCode::Backspace);
+    }
+    press(&mut app, "+site");
+    press_code(&mut app, KeyCode::Enter);
+    press(&mut app, "田中");
+    press_code(&mut app, KeyCode::Enter);
+    press_code(&mut app, KeyCode::Enter); // context は空
+    // 基準日の初期値は today。
+    assert_eq!(
+        screen(&mut app, 90, 12).pop().unwrap(),
+        "Base Date (today, +3d, 2026-08-20, ...): today"
+    );
+    for _ in 0..5 {
+        press_code(&mut app, KeyCode::Backspace);
+    }
+    press(&mut app, "2026-12-01");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(last_message(&app), "added 2 task(s) from weekly to inbox.md");
+    let inbox = f.read("inbox.md");
+    assert!(inbox.contains("- [ ] 振り返り +site due:2026-12-03 id:"), "{inbox}");
+    assert!(inbox.contains("- [ ] 田中 に連絡 id:"), "{inbox}");
+}
+
+#[test]
+fn due_template_tasks_move_to_today_like_add() {
+    let f = template_fixture();
+    let mut app = f.app();
+    press(&mut app, "T");
+    let i = app.templates.rows.iter().position(|r| r.name == "plain").unwrap();
+    app.templates.cursor = i;
+    // プレースホルダーが無ければ、すぐ基準日を尋ねる。前日を基準にすると due:+1d は今日になる。
+    press_code(&mut app, KeyCode::Enter);
+    for _ in 0..5 {
+        press_code(&mut app, KeyCode::Backspace);
+    }
+    press(&mut app, "2026-11-15");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(
+        f.read("todo.md").contains("- [ ] 掃除 due:2026-11-16 id:"),
+        "{}",
+        f.read("todo.md")
+    );
+    assert!(!f.read("inbox.md").contains("掃除"));
+}
+
+#[test]
+fn templates_are_created_edited_archived_and_restored() {
+    let f = template_fixture();
+    let mut app = f.app();
+    let opened = fake_editor(&mut app, |_, text| format!("{text}- [ ] 新しい作業\n"));
+    press(&mut app, "Ta");
+    press(&mut app, "a b");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(last_message(&app).contains("invalid template name"));
+    for _ in 0..3 {
+        press_code(&mut app, KeyCode::Backspace);
+    }
+    // アーカイブした名前では作らない (入力は残す)。
+    press(&mut app, "old");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(last_message(&app).contains("is archived"));
+    assert!(matches!(app.mode, Mode::NewName { .. }));
+    for _ in 0..3 {
+        press_code(&mut app, KeyCode::Backspace);
+    }
+    press(&mut app, "daily");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(app.editor_requested());
+    app.run_editor();
+    let (copy, _, text) = opened.borrow()[0].clone();
+    assert_eq!(copy.file_name().unwrap(), "daily.md");
+    assert!(text.starts_with("<!--\n記法メモ:"), "{text}");
+    assert!(f.read("templates/daily.md").ends_with("- [ ] 新しい作業\n"));
+    app.tick();
+    assert_eq!(app.templates.selected().unwrap().name, "daily");
+    assert_eq!(app.templates.selected().unwrap().tasks, 1);
+
+    // タスク行の無いテンプレートは、尋ねる前に知らせる。
+    f.write("templates/empty.md", &template_seed());
+    app.tick();
+    app.templates.cursor = app.templates.rows.iter().position(|r| r.name == "empty").unwrap();
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(last_message(&app).contains("has no task lines"));
+    app.templates.cursor = app.templates.rows.iter().position(|r| r.name == "daily").unwrap();
+    // X でアーカイブし、Tab でアーカイブしたものを見て、X で戻す。
+    press(&mut app, "X");
+    assert_eq!(last_message(&app), "archived daily");
+    assert!(f.path().join("templates/archive/daily.md").exists());
+    press_code(&mut app, KeyCode::Tab);
+    assert_eq!(screen(&mut app, 80, 10)[0], " Templates (archived) 2");
+    // アーカイブしたものは挿入も編集もしない。
+    press(&mut app, "gg");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(last_message(&app).contains("is archived; restore it"));
+    assert_eq!(app.mode, Mode::Normal);
+    app.templates.cursor = app.templates.rows.iter().position(|r| r.name == "daily").unwrap();
+    press(&mut app, "X");
+    assert_eq!(last_message(&app), "restored daily");
+    assert!(f.path().join("templates/daily.md").exists());
+}
+
+fn template_seed() -> String {
+    gtodo_core::template::seed()
 }

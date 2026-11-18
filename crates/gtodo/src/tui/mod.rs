@@ -11,6 +11,7 @@ mod markdown;
 mod projects;
 mod queue;
 mod search;
+mod templates;
 
 #[cfg(test)]
 mod tests;

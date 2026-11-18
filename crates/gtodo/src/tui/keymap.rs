@@ -120,6 +120,8 @@ pub enum Action {
     EditFile,
     /// プロジェクト画面を開く。
     OpenProjects,
+    /// テンプレート画面を開く。
+    OpenTemplates,
     /// プロジェクト画面で、アーカイブする (アーカイブしたものの表示では復元する)。
     Archive,
     /// Queue などから一覧へ戻る。`Esc` に固定で、割り当てを変えられない (案内に出すためだけにある)。
@@ -161,6 +163,7 @@ impl Action {
             OpenQueue,
             OpenKanban,
             OpenProjects,
+            OpenTemplates,
             Search,
             OpenLink,
             SwitchView,
@@ -205,6 +208,7 @@ impl Action {
             Open => "open".into(),
             EditFile => "edit_file".into(),
             OpenProjects => "projects".into(),
+            OpenTemplates => "templates".into(),
             Archive => "archive".into(),
             Back => "back".into(),
             Help => "help".into(),
@@ -457,6 +461,7 @@ impl Default for Keymap {
             (vec![Key::plain(KeyCode::Enter)], Open),
             (vec![Key::char('E')], EditFile),
             (vec![Key::char('P')], OpenProjects),
+            (vec![Key::char('T')], OpenTemplates),
             (vec![Key::char('X')], Archive),
             (vec![Key::char('?')], Help),
             // Esc は終了に割り当てない。戻る・取り消すだけにする (lazygit・lazydocker と同じ)。

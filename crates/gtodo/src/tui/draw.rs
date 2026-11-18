@@ -9,6 +9,7 @@ use gtodo_core::search::Hit;
 use gtodo_core::sections::SectionKey;
 use gtodo_core::store::FileKind;
 use gtodo_core::task::{Status, Task};
+use gtodo_core::template;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,8 +17,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::app::{App, Level, Mode, Row, Screen, TABS, Tab};
+use super::app::{App, Level, Mode, NewKind, Row, Screen, TABS, Tab};
 use super::form::{DESTINATIONS, Field, Form, preview_line};
+use super::input::LineInput;
 use super::kanban;
 use super::keymap::{Action, Key, sequence_label};
 use super::markdown::{self, Inline, Urls};
@@ -107,6 +109,21 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
             draw_queue(frame, app, theme, list_area);
         }
         Screen::Kanban => draw_kanban(frame, app, theme, tabs_area, list_area),
+        Screen::Templates => {
+            let title = if app.templates.archived {
+                "Templates (archived)"
+            } else {
+                "Templates"
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {title} {}", app.templates.rows.len()),
+                    theme.accent().add_modifier(Modifier::BOLD),
+                )),
+                tabs_area,
+            );
+            draw_templates(frame, app, theme, list_area);
+        }
         Screen::Projects => {
             let title = if app.projects.archived {
                 "Projects (archived)"
@@ -133,12 +150,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
     frame.render_widget(Paragraph::new(messages), message_area);
     frame.render_widget(Paragraph::new(footer), footer_area);
 
-    let prompt = match &app.mode {
-        Mode::WaitInput { input, .. } => Some((WAIT_PROMPT, input)),
-        Mode::NewProject { input } => Some((NEW_PROJECT_PROMPT, input)),
-        _ => None,
-    };
-    if let Some((prompt, input)) = prompt {
+    if let Some((prompt, input)) = input_prompt(&app.mode) {
         let x = footer_area.x + (prompt.width() + input.cursor_width()) as u16;
         let y = footer_area.y + footer_area.height.saturating_sub(1);
         frame.set_cursor_position((x.min(area.right().saturating_sub(1)), y));
@@ -411,7 +423,29 @@ fn message_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
 /// Neovim 版の入力欄と同じ問いかけ。
 const WAIT_PROMPT: &str = "Waiting for (empty to skip/remove): ";
 
-const NEW_PROJECT_PROMPT: &str = "New project name: ";
+/// 最下段の入力欄の問いかけと入力 (入力欄にいるときだけ)。
+fn input_prompt(mode: &Mode) -> Option<(String, &LineInput)> {
+    match mode {
+        Mode::WaitInput { input, .. } => Some((WAIT_PROMPT.to_string(), input)),
+        Mode::NewName {
+            kind: NewKind::Project,
+            input,
+        } => Some(("New project name: ".to_string(), input)),
+        Mode::NewName {
+            kind: NewKind::Template,
+            input,
+        } => Some(("New template name: ".to_string(), input)),
+        // Neovim 版のテンプレートの挿入と同じ問いかけ。
+        Mode::InsertTemplate(insert) => Some((
+            match insert.asking() {
+                Some(name) => format!("Value for {{{{{name}}}}} (blank to omit): "),
+                None => "Base Date (today, +3d, 2026-08-20, ...): ".to_string(),
+            },
+            &insert.input,
+        )),
+        _ => None,
+    }
+}
 
 fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     match &app.mode {
@@ -429,16 +463,33 @@ fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             Line::styled(format!("→ cancelled.md: {content}"), theme.dim()),
             Line::from(Span::styled("Cancel this task? [y/N]", theme.key())),
         ],
-        Mode::NewProject { input } => vec![
-            Line::styled(
-                format!("→ {}/<name>.md (the same name as the +project tag)", project::DIR),
-                theme.dim(),
-            ),
-            Line::from(vec![
-                Span::styled(NEW_PROJECT_PROMPT, theme.key()),
-                Span::raw(input.text().to_string()),
-            ]),
-        ],
+        Mode::NewName { kind, input } => {
+            let note = match kind {
+                NewKind::Project => format!("→ {}/<name>.md (the same name as the +project tag)", project::DIR),
+                NewKind::Template => format!("→ {}/<name>.md (letters, digits, - and _)", template::DIR),
+            };
+            let prompt = input_prompt(&app.mode).map(|(p, _)| p).unwrap_or_default();
+            vec![
+                Line::styled(note, theme.dim()),
+                Line::from(vec![
+                    Span::styled(prompt, theme.key()),
+                    Span::raw(input.text().to_string()),
+                ]),
+            ]
+        }
+        Mode::InsertTemplate(insert) => {
+            let prompt = input_prompt(&app.mode).map(|(p, _)| p).unwrap_or_default();
+            vec![
+                Line::styled(
+                    format!("→ inbox.md: tasks from the template {}", insert.name),
+                    theme.dim(),
+                ),
+                Line::from(vec![
+                    Span::styled(prompt, theme.key()),
+                    Span::raw(insert.input.text().to_string()),
+                ]),
+            ]
+        }
         Mode::FixEdit { name, problems } => vec![
             Line::styled(format!("{name}: {}", problems.join("; ")), theme.dim()),
             Line::from(Span::styled("Edit again? [y/n] (n discards your changes)", theme.key())),
@@ -547,7 +598,7 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
     {
         add(Action::OpenLink, "リンクを開く".to_string());
     }
-    if app.screen != Screen::Projects {
+    if !matches!(app.screen, Screen::Projects | Screen::Templates) {
         add(Action::Add, "追加".to_string());
     }
     match app.screen {
@@ -558,6 +609,25 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
             add(Action::OpenQueue, "Queue".to_string());
             add(Action::OpenKanban, "カンバン".to_string());
             add(Action::OpenProjects, "プロジェクト".to_string());
+        }
+        Screen::Templates => {
+            if app.templates.selected().is_some() {
+                if app.templates.archived {
+                    add(Action::Archive, "復元".to_string());
+                } else {
+                    add(Action::Open, "挿入".to_string());
+                    add(Action::EditFile, "編集".to_string());
+                    add(Action::Archive, "アーカイブ".to_string());
+                }
+            }
+            add(Action::Add, "追加".to_string());
+            let view = if app.templates.archived {
+                "使えるもの"
+            } else {
+                "アーカイブ済み"
+            };
+            add(Action::SwitchView, view.to_string());
+            hints.push((Action::Back, "Esc".to_string(), "一覧へ".to_string()));
         }
         Screen::Projects => {
             if let Some(row) = app.projects.selected() {
@@ -695,7 +765,7 @@ fn description(app: &App, action: Action) -> String {
         Action::Cancel => "キャンセルする (cancelled.md へ移す。確認あり)".to_string(),
         Action::Sort => "期日が来たタスクを移し、並べ替える".to_string(),
         Action::Add => {
-            "タスクを追加する (追加先の初期値は開いているタブ)。プロジェクト画面では新しいプロジェクトを作る".to_string()
+            "タスクを追加する (追加先の初期値は開いているタブ)。プロジェクト・テンプレート画面では新しく作る".to_string()
         }
         Action::Edit => "タスクを編集する".to_string(),
         Action::OpenQueue => "Queue を開く (期日・待ち先ごとの一覧)".to_string(),
@@ -703,17 +773,20 @@ fn description(app: &App, action: Action) -> String {
         Action::OpenLink => "リンクを開く (複数あれば選ぶ)".to_string(),
         Action::Search => "検索 (本文の語・+project・@context・wait:。結果の中では入力欄へ戻る)".to_string(),
         Action::SwitchView => {
-            "表示を切り替える (Queue は期日別と待ち先別、検索はすべて・未完了・完了、プロジェクトは進行中とアーカイブ済み)"
+            "表示を切り替える (Queue は期日別と待ち先別、検索はすべて・未完了・完了、プロジェクト・テンプレートはアーカイブ済み)"
                 .to_string()
         }
         Action::Open => {
-            "Queue・検索・カンバン: 選んでいるタスクを一覧で開く。プロジェクト画面: そのプロジェクトのタスクを検索する"
+            "Queue・検索・カンバン: 選んでいるタスクを一覧で開く。プロジェクト画面: そのプロジェクトのタスクを検索する。テンプレート画面: inbox.md へ挿入する"
                 .to_string()
         }
         Action::OpenProjects => "プロジェクト画面を開く (選んでいるタスクのプロジェクトを選ぶ)".to_string(),
-        Action::Archive => "プロジェクト画面: アーカイブする (アーカイブしたものの表示では復元する)".to_string(),
+        Action::OpenTemplates => "テンプレート画面を開く".to_string(),
+        Action::Archive => {
+            "プロジェクト・テンプレート画面: アーカイブする (アーカイブしたものの表示では復元する)".to_string()
+        }
         Action::EditFile => {
-            "ファイルを $EDITOR で開く (選んでいるタスクの行へ。プロジェクト画面ではプロジェクトファイル。保存前に Neovim 版と同じ検証をする)"
+            "ファイルを $EDITOR で開く (選んでいるタスクの行へ。プロジェクト・テンプレート画面ではそのファイル。保存前に Neovim 版と同じ検証をする)"
                 .to_string()
         }
         Action::Back => "一覧へ戻る".to_string(),
@@ -1626,6 +1699,67 @@ fn draw_link_choice(frame: &mut Frame, links: &[String], cursor: usize, theme: T
         Paragraph::new(lines).block(Block::bordered().title(" リンクを開く ").border_style(theme.accent())),
         popup,
     );
+}
+
+/// テンプレート画面。名前・挿入されるタスクの数・尋ねるプレースホルダーを 1 行に並べる。
+fn draw_templates(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {
+    let block = Block::new().borders(Borders::TOP).border_style(theme.dim());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let height = usize::from(inner.height);
+    app.page_height = height;
+    let width = usize::from(inner.width);
+    let view = &mut app.templates;
+    if view.rows.is_empty() {
+        let text = if view.archived {
+            "  アーカイブしたテンプレートはありません"
+        } else {
+            "  テンプレートはありません (a で作る)"
+        };
+        frame.render_widget(Paragraph::new(Line::styled(text, theme.dim())), inner);
+        return;
+    }
+    if view.cursor < view.offset {
+        view.offset = view.cursor;
+    } else if height > 0 && view.cursor >= view.offset + height {
+        view.offset = view.cursor + 1 - height;
+    }
+    let name_width = view.rows.iter().map(|r| r.name.width()).max().unwrap_or(0);
+    let lines: Vec<Line> = view
+        .rows
+        .iter()
+        .enumerate()
+        .skip(view.offset)
+        .take(height)
+        .map(|(i, row)| {
+            let selected = i == view.cursor;
+            let mut text = format!(
+                "{}{}  {} task(s)",
+                row.name,
+                " ".repeat(name_width - row.name.width()),
+                row.tasks
+            );
+            for name in &row.placeholders {
+                text.push_str(&format!("  {{{{{name}}}}}"));
+            }
+            let style = if selected {
+                Style::new().add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            let gutter = if selected {
+                Span::styled(GUTTER, theme.accent())
+            } else {
+                Span::raw(" ")
+            };
+            Line::from(vec![
+                gutter,
+                Span::raw(" "),
+                Span::styled(truncate(&text, width.saturating_sub(2)), style),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// プロジェクト画面。進捗のバー (Neovim 版と同じ形)・名前・タイトル・期日を 1 行に並べる。
