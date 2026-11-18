@@ -52,9 +52,28 @@ pub struct Lock {
     released: bool,
 }
 
+/// 1 回の取得の試み。
+enum Attempt {
+    Acquired(Lock),
+    /// 他のプロセスが持っている。
+    Held,
+    /// ロックファイルを作ろうとして拒まれた (Windows の `PermissionDenied`)。他のプロセスが消している途中の
+    /// ファイルと同じ名前では作れず、このエラーになる (解放と取得が重なったとき)。本当に権限が無い場合と
+    /// 見分けられないため、持たれているのと同じに扱い、待っても続くときだけエラーにする。
+    Denied(LockError),
+}
+
 impl Lock {
     /// 1 回だけ取得を試みる。他のプロセスが持っていれば `None` (Lua 版の自動処理と同じ使い方)。
+    /// Windows でロックファイルを作ろうとして拒まれたときも `None` (他のプロセスが解放している途中でありうるため)。
     pub fn try_acquire(data_dir: &Path) -> Result<Option<Lock>, LockError> {
+        Ok(match Lock::attempt(data_dir)? {
+            Attempt::Acquired(lock) => Some(lock),
+            Attempt::Held | Attempt::Denied(_) => None,
+        })
+    }
+
+    fn attempt(data_dir: &Path) -> Result<Attempt, LockError> {
         let path = data_dir.join(LOCK_FILE);
         let io_err = |op, source| LockError::Io {
             op,
@@ -69,7 +88,8 @@ impl Lock {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = match options.open(&path) {
             Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(Attempt::Held),
+            Err(e) if may_be_being_removed(&e) => return Ok(Attempt::Denied(io_err("create", e))),
             Err(e) => return Err(io_err("create", e)),
         };
         let owner = owner_token();
@@ -80,7 +100,7 @@ impl Lock {
             let _ = fs::remove_file(&path);
             return Err(io_err("write", e));
         }
-        Ok(Some(Lock {
+        Ok(Attempt::Acquired(Lock {
             path,
             owner,
             released: false,
@@ -88,17 +108,21 @@ impl Lock {
     }
 
     /// 取れるまで最大 `wait` だけ待つ。利用者が実行したコマンドを黙って諦めないため。
+    /// 待ち終えたとき、最後の試みでロックファイルを作ろうとして拒まれていれば、そのエラーを返す
+    /// (書き込めないディレクトリを「他のプロセスが持っている」と知らせないため)。
     pub fn acquire(data_dir: &Path, wait: Duration) -> Result<Lock, LockError> {
         // 表せないほど長い待ち時間は、期限なしとして扱う。
         let deadline = Instant::now().checked_add(wait);
         loop {
-            if let Some(lock) = Lock::try_acquire(data_dir)? {
-                return Ok(lock);
-            }
+            let denied = match Lock::attempt(data_dir)? {
+                Attempt::Acquired(lock) => return Ok(lock),
+                Attempt::Held => None,
+                Attempt::Denied(e) => Some(e),
+            };
             if deadline.is_some_and(|d| Instant::now() >= d) {
-                return Err(LockError::Busy {
+                return Err(denied.unwrap_or_else(|| LockError::Busy {
                     path: data_dir.join(LOCK_FILE),
-                });
+                }));
             }
             thread::sleep(RETRY_INTERVAL);
         }
@@ -154,10 +178,18 @@ fn owner_token() -> String {
     format!("{} {nanos}", std::process::id())
 }
 
+/// Windows では、他のプロセスが消している途中 (閉じられるまで名前が残る削除待ち) のファイルは、
+/// 開くことも同じ名前で作ることも `PermissionDenied` で拒まれる。解放と取得が重なると起こる。
+fn may_be_being_removed(e: &io::Error) -> bool {
+    cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied
+}
+
 fn remove_if_stale(path: &Path, now: SystemTime) -> io::Result<()> {
     let modified = match fs::metadata(path) {
         Ok(meta) => meta.modified()?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        // 消している途中なら古いかどうかは関係ない。続く作成で、取れたかどうかが決まる。
+        Err(e) if may_be_being_removed(&e) => return Ok(()),
         Err(e) => return Err(e),
     };
     // 時計がずれて未来の時刻になっているロックは、古いとは判断できないので残す。
@@ -191,8 +223,9 @@ mod tests {
     }
 
     /// Windows の旧来の削除方式では、他のプロセス (解放前に中身を確かめる別の gtodo、ウイルス対策、同期クライアントなど)
-    /// が開いている間に消したファイルは、閉じられるまで名前が残り、作り直しが拒まれる。ロックはこれに対処しておらず、
-    /// NTFS の今の Windows では名前がすぐ空くことを前提にしているため、その前提を CI の Windows で確かめる。
+    /// が開いている間に消したファイルは、閉じられるまで名前が残り、作り直しが拒まれる。取得はこれを持たれているのと
+    /// 同じに扱って待つが (下の `a_lock_file_being_removed_counts_as_held`)、NTFS の今の Windows では名前がすぐ空き、
+    /// 待たずに取れることを CI の Windows で確かめる。
     #[test]
     fn a_lock_released_while_another_process_has_it_open_can_be_taken_again() {
         let dir = tempfile::tempdir().unwrap();
@@ -202,6 +235,35 @@ mod tests {
         let again = Lock::try_acquire(dir.path());
         drop(reader);
         assert!(matches!(again, Ok(Some(_))), "{again:?}");
+    }
+
+    /// 他のハンドルが開いている間に、閉じたら消す印 (`FILE_FLAG_DELETE_ON_CLOSE`) のハンドルを閉じて、
+    /// 名前が残ったまま削除を待つ状態を作る。解放と取得が重なったときと同じく、作り直しが `PermissionDenied` で拒まれる。
+    #[cfg(windows)]
+    #[test]
+    fn a_lock_file_being_removed_counts_as_held() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const DELETE: u32 = 0x0001_0000;
+        const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LOCK_FILE);
+        fs::write(&path, "12345").unwrap();
+        let other = File::open(&path).unwrap();
+        let removing = OpenOptions::new()
+            .access_mode(DELETE)
+            .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
+            .open(&path)
+            .unwrap();
+        drop(removing);
+
+        assert!(Lock::try_acquire(dir.path()).unwrap().is_none());
+        // 待っても続けば、他のプロセスが持っているのではなく、作れなかったと知らせる。
+        let err = Lock::acquire(dir.path(), Duration::from_millis(100)).unwrap_err();
+        assert!(matches!(err, LockError::Io { op: "create", .. }), "{err:?}");
+
+        drop(other);
+        assert!(Lock::try_acquire(dir.path()).unwrap().is_some());
     }
 
     #[test]
