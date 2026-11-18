@@ -100,7 +100,7 @@ Neovim 版にある機能は M3 でほぼそろった。M4 では、他の人が
   - GitHub artifact attestations (ビルドの出所の証明) は、公開してから付ける (非公開のリポジトリでは GitHub Enterprise Cloud が要る)
   - ワークフローは手で書く。cargo-dist は installer や Homebrew まで生成して便利だが、生成物が大きく、何をしているか追いにくい。installer は要望が出てから
   - リリースは下書きで作り、利用者が確かめてから公開する
-- [ ] シェルの補完 (`gtodo completions <bash|zsh|fish|powershell>`。clap_complete で生成する。タスクのキーは補完しない)
+- [x] シェルの補完 (`gtodo completions <bash|zsh|fish|powershell>`。clap_complete で生成する。タスクのキーは補完しない)
 - [ ] バージョンと変更履歴: `CHANGELOG.md` を作り、M0〜M3 の内容を v0.1.0 として書く。どの版の gtodo-md.nvim と一緒に使えるか (共有設定を読む版以降) を README と変更履歴に書く
 - [ ] README を利用者向けに書き直す: 「開発中です」を外し、インストール (GitHub Releases から。mise なら `mise use -g github:Nepenthes-1123/gtodo-md`)・最初の起動 (データディレクトリの決まり方・Neovim 版との共有)・CLI と TUI の使い方の順にする。開発者向けの内容は後ろへ
 - [ ] v0.1.0 を出す (タグ・リリースノート。リリースの作業は利用者が確かめてから行う)

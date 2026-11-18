@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use chrono::Local;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use gtodo_core::config::{self, Platform, ProcessEnv};
 use gtodo_core::task::Status;
 
@@ -141,6 +141,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print a shell completion script (e.g. `gtodo completions bash > ~/.local/share/bash-completion/completions/gtodo`)
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
     /// Project files (projects/<tag>.md): list, show, create, archive and restore
     Project {
         #[command(subcommand)]
@@ -189,6 +194,13 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli, out: &mut String) -> Result<()> {
     let command = cli.command.unwrap_or(Command::Tui);
+    // データディレクトリが無くても (インストールした直後でも) 作れるよう、決める前に返す。
+    if let Command::Completions { shell } = command {
+        let mut script = Vec::new();
+        clap_complete::generate(shell, &mut Cli::command(), "gtodo", &mut script);
+        out.push_str(&String::from_utf8(script)?);
+        return Ok(());
+    }
     if let Command::Tui = command {
         let mut warnings = Vec::new();
         let data_dir = config::resolve_data_dir(cli.data_dir, &ProcessEnv, Platform::current(), &mut |m| {
@@ -204,7 +216,7 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
     let ws = Workspace::open(data_dir, today, &mut warn)?;
 
     match command {
-        Command::Tui => unreachable!("handled above"),
+        Command::Tui | Command::Completions { .. } => unreachable!("handled above"),
         Command::Add {
             text,
             to,

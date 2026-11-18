@@ -1265,3 +1265,25 @@ fn split_replaces_a_task_with_subtasks_that_inherit_its_tags() {
     assert!(!f.run(&["split", "cccccc", "x id:ffffff"]).status.success());
     assert_eq!(fs::read_to_string(f.data_dir().join("todo.md")).unwrap(), before);
 }
+
+#[test]
+fn completions_are_printed_without_a_data_directory() {
+    let missing = tempfile::tempdir().unwrap();
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_gtodo"))
+            .args(["--data-dir"])
+            .arg(missing.path().join("none"))
+            .args(["completions", shell])
+            .env_remove("GTODO_DATA_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{shell}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let script = String::from_utf8(out.stdout).unwrap();
+        assert!(script.contains("gtodo") && script.contains("template"), "{shell}");
+    }
+    assert!(!missing.path().join("none").exists(), "nothing is created");
+}

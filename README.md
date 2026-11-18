@@ -29,6 +29,7 @@ gtodo project new site        # projects/site.md を作る (archive / restore �
 gtodo template list           # テンプレート (--archived でアーカイブしたもの)
 gtodo template new weekly     # templates/weekly.md を作る (archive / restore でアーカイブ・復元)
 gtodo template insert weekly --base mon --set project=site --set who=田中   # inbox.md へ足す
+gtodo completions zsh         # シェルの補完 (bash | zsh | fish | powershell | elvish)
 ```
 
 `add` の本文に書いた `+project`・`@context`・`due:`・`wait:`・先頭の `(A)` は、タスク行と同じくタグとして読みます。`--due` などのオプションを付けた場合はそちらを優先します。
@@ -47,6 +48,8 @@ gtodo template insert weekly --base mon --set project=site --set who=田中   # 
 `new` は Neovim 版と同じ記法のメモ (コメント) の入ったファイルを作ります。`archive` は `templates/archive/` へ動かし、`restore` で戻します (行き先に同じ名前があれば動かしません)。
 
 `list`・`search`・`stats`・`project list`・`project show`・`template list` は `--json` で JSON を出力します。
+
+`completions` はシェルの補完のスクリプトを出力します。コマンドとオプションを補完します (タスクのキーは補完しません)。たとえば bash なら `gtodo completions bash > ~/.local/share/bash-completion/completions/gtodo`、zsh なら `$fpath` にあるディレクトリへ `_gtodo` という名前で、fish なら `~/.config/fish/completions/gtodo.fish` に置きます。データディレクトリが無くても動きます。
 各タスクの先頭に表示されるキーは、タスクの ID (`id:` タグ) です。ID の無いタスクには、行の内容から作った一時キー (`~` で始まる) を表示します。
 `done` などでタスクを指定するときは、このキーを使います。ID は他のタスクと区別できれば、先頭の 4 文字以上だけでも構いません。一時キーは行が書き換わると使えなくなるので (Neovim 版は保存のたびに ID を付けます)、そのときは `list` し直してください。
 同じ ID のタスクが複数あるとどれも指定できないので、Neovim 版で片方の `id:` を消してください (保存したときに新しい ID が付きます)。
