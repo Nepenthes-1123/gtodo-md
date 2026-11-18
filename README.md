@@ -1,9 +1,56 @@
 # gtodo-md
 
 GTD 志向の Markdown Todo 管理ツール [gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) の TUI/CLI 版です。
-Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled.md` / `projects/*.md`) を読み書きし、同じデータを同時に使えることを目指しています。
+Neovim 版と同じファイル (`inbox.md` / `todo.md` / `done.md` / `cancelled.md` / `projects/*.md` / `templates/*.md`) を読み書きし、同じデータを同時に使えます。
+コマンドラインで使う CLI と、端末の中で操作する TUI があります。
 
-開発中です。進捗は [ROADMAP.md](ROADMAP.md) を参照してください。現在は読み取り系のコマンドと `add`・`done`・`undone`・`cancel`・`move`・`edit`・`sort`・`split`・`project`・`template`、TUI (一覧・Queue・検索・カンバン・プロジェクト・テンプレート) が使えます。
+各版の変更点は [CHANGELOG.md](CHANGELOG.md)、今後の予定と決めたことは [ROADMAP.md](ROADMAP.md) にあります。
+
+## インストール
+
+### GitHub Releases から
+
+[Releases](https://github.com/Nepenthes-1123/gtodo-md/releases) から OS と CPU に合うファイルを取り、中の `gtodo` (Windows は `gtodo.exe`) を `PATH` の通った場所に置きます。
+
+| OS | ファイル |
+| --- | --- |
+| Linux (x86_64) | `gtodo-v<版>-x86_64-unknown-linux-musl.tar.gz` |
+| Linux (ARM64) | `gtodo-v<版>-aarch64-unknown-linux-musl.tar.gz` |
+| macOS (Apple シリコン) | `gtodo-v<版>-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `gtodo-v<版>-x86_64-apple-darwin.tar.gz` |
+| Windows (x86_64) | `gtodo-v<版>-x86_64-pc-windows-msvc.zip` |
+
+Linux 版は静的にリンクしているので、ディストリビューションを選びません。ダウンロードしたファイルは、同じリリースの `SHA256SUMS` で確かめられます (`sha256sum -c SHA256SUMS --ignore-missing`)。
+macOS 版は署名していないので、ブラウザで取ったファイルは開けないことがあります。そのときは `xattr -d com.apple.quarantine gtodo` で検疫の印を外してください。
+
+### mise で
+
+[mise](https://mise.jdx.dev/) を使っていれば、GitHub Releases から入れて `PATH` に通せます。
+
+```sh
+mise use -g github:Nepenthes-1123/gtodo-md          # 最新の版
+mise use -g github:Nepenthes-1123/gtodo-md@0.1.0    # 版を固定する
+```
+
+### ソースから
+
+Rust (1.88 以降) と C のリンカがあれば、ソースから入れられます。
+
+```sh
+cargo install --locked --git https://github.com/Nepenthes-1123/gtodo-md gtodo
+```
+
+## はじめに
+
+- Neovim 版と一緒に使うなら、gtodo-md.nvim v0.3.0 以降にしてください (データディレクトリの場所とセクション名を、同じ設定ファイルから読む版です)。
+- データディレクトリは、Neovim 版と同じ規則で決まります (下記の「設定」)。Neovim 版を使っていれば、何も設定しなくても同じ場所を見ます。
+- gtodo はデータディレクトリを作りません。初めて使うときは、作ってから始めてください (`mkdir -p ~/.local/share/gtodo-md`。中のファイルは最初に書き込むときに、Neovim 版と同じ雛形で作られます)。
+
+```sh
+gtodo                         # TUI を開く (? でキーの一覧)
+gtodo add 牛乳を買う +home     # inbox.md へ追加
+gtodo list                    # inbox.md と todo.md のタスク
+```
 
 ## 使い方
 
