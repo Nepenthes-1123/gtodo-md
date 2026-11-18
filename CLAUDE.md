@@ -52,6 +52,7 @@ OS で分かれるコード (`#[cfg(unix)]` や `std::os::unix` を使うテス�
   - `view.rs` — 読み取り専用のビュー (一覧・Queue・件数)。CLI と TUI で共有する。
   - `project.rs` — プロジェクトファイル (`projects/<tag>.md`) のフロントマター・雛形・名前の確かめ方・手で編集したときの検証・進捗の数え方 (Lua 版 `ui/project.lua` と `validate.lua` と同じ規則)。書き込み (作成・`status:` の書き換え) は `ops.rs`。
   - `template.rs` — テンプレート (`templates/<name>.md`) の名前・記法メモ・プレースホルダーの埋め方・挿入するタスクの作り方 (Lua 版 `ui/template.lua` と同じ規則)。書き込み (作成・アーカイブの移動・inbox.md への挿入) は `ops.rs`。
+  - `split.rs` — タスクの分割で、サブタスクが元のタスクから引き継ぐ項目と、サブタスクを書くファイルの読み方 (Lua 版 `ui/split.lua` の分割)。書き込みは `ops.rs` の `split_task`。
   - `search.rs` — 検索の書き方と一致の規則 (本文の語は部分一致、タグは完全一致・打っている途中は前方一致、NFKC と小文字にそろえて比べる)。CLI の `search` と TUI の検索で共有する。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
   - `vim_class.rs` — `scripts/gen-vim-charclass.lua` の生成物。手で編集しない。

@@ -118,6 +118,8 @@ pub enum Action {
     Open,
     /// ファイルを `$EDITOR` で開く。
     EditFile,
+    /// 選んでいるタスクを分割する。
+    Split,
     /// プロジェクト画面を開く。
     OpenProjects,
     /// テンプレート画面を開く。
@@ -159,6 +161,7 @@ impl Action {
             Cancel,
             Add,
             Edit,
+            Split,
             Sort,
             OpenQueue,
             OpenKanban,
@@ -207,6 +210,7 @@ impl Action {
             SwitchView => "switch_view".into(),
             Open => "open".into(),
             EditFile => "edit_file".into(),
+            Split => "split".into(),
             OpenProjects => "projects".into(),
             OpenTemplates => "templates".into(),
             Archive => "archive".into(),
@@ -460,6 +464,7 @@ impl Default for Keymap {
             (vec![Key::plain(KeyCode::Tab)], SwitchView),
             (vec![Key::plain(KeyCode::Enter)], Open),
             (vec![Key::char('E')], EditFile),
+            (vec![Key::char('p')], Split),
             (vec![Key::char('P')], OpenProjects),
             (vec![Key::char('T')], OpenTemplates),
             (vec![Key::char('X')], Archive),

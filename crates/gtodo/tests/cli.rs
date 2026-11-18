@@ -1238,3 +1238,30 @@ fn templates_are_created_inserted_into_the_inbox_and_archived() {
     assert_eq!(f.stdout(&["template", "restore", "weekly"]), "restored weekly\n");
     assert!(!f.run(&["template", "new", "a/b"]).status.success());
 }
+
+#[test]
+fn split_replaces_a_task_with_subtasks_that_inherit_its_tags() {
+    let f = sample();
+    let out = f.stdout(&["split", "aaaaaa", "-p", "launch", "資料", "練習 @home"]);
+    assert!(out.starts_with("split aaaaaa into 2 task(s): "), "{out}");
+    let created = f.data_dir().join("projects").join("launch.md");
+    assert!(out.contains(&format!("created {}", created.display())), "{out}");
+    assert!(created.exists());
+    let todo = fs::read_to_string(f.data_dir().join("todo.md")).unwrap();
+    assert!(!todo.contains("今日1"), "{todo}");
+    // プロジェクトは指定したもの、コンテキストは書かなければ引き継ぐ。優先度は引き継がない。
+    assert!(todo.contains("- [ ] 資料 +launch @office id:"), "{todo}");
+    assert!(todo.contains("- [ ] 練習 +launch @home id:"), "{todo}");
+    // --project を省けば元のプロジェクトのまま、"" で外す。
+    f.stdout(&["split", "111111", "受信の続き"]);
+    assert!(
+        fs::read_to_string(f.data_dir().join("inbox.md"))
+            .unwrap()
+            .contains("- [ ] 受信の続き +work")
+    );
+    // 完了したタスクと、読めないサブタスクでは何も書かない。
+    let before = fs::read_to_string(f.data_dir().join("todo.md")).unwrap();
+    assert!(!f.run(&["split", "bbbbbb", "x"]).status.success());
+    assert!(!f.run(&["split", "cccccc", "x id:ffffff"]).status.success());
+    assert_eq!(fs::read_to_string(f.data_dir().join("todo.md")).unwrap(), before);
+}

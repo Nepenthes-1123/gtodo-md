@@ -20,9 +20,12 @@ use gtodo_core::input;
 use gtodo_core::key::task_key;
 use gtodo_core::lock::Lock;
 use gtodo_core::logic::due::DueOutcome;
-use gtodo_core::ops::{self, Destination, EditTarget, EditedError, Moved, ProjectError, TemplateError, Wait};
+use gtodo_core::ops::{
+    self, Destination, EditTarget, EditedError, Moved, ProjectError, SplitProject, TemplateError, Wait,
+};
 use gtodo_core::project;
 use gtodo_core::sections::{SectionKey, SectionNames};
+use gtodo_core::split;
 use gtodo_core::store::{self, DataDir, FileKind, RawFile, Stamp};
 use gtodo_core::task::{Status, Task};
 use gtodo_core::template;
@@ -153,6 +156,11 @@ pub enum Mode {
         kind: NewKind,
         input: LineInput,
     },
+    /// 分割する前に、サブタスクのプロジェクトを尋ねている (初期値は元のタスクのプロジェクト)。
+    SplitProject {
+        row: Box<Row>,
+        input: LineInput,
+    },
     /// テンプレートを挿入する前に、プレースホルダーの値と基準日を 1 つずつ尋ねている。
     InsertTemplate(Box<InsertTemplate>),
     /// 開くリンクを選んでいる (リンクが複数あるとき)。
@@ -226,13 +234,39 @@ pub type EditorRunner = Box<dyn Fn(&Path, Option<usize>) -> std::io::Result<bool
 /// 書かれてしまい、Neovim 版の保存時の検証で止めることも、編集している間に Neovim 版などが書いた
 /// 変更を潰さないよう確かめることもできないため。閉じた後に検証し、読んだときの状態と照らして書き戻す。
 struct EditSession {
-    target: EditTarget,
-    /// 編集を始めたときに読んだ内容と状態。
-    original: RawFile,
+    purpose: Purpose,
     /// コピーを置いた一時ディレクトリ。セッションを捨てると一緒に消える。
     dir: tempfile::TempDir,
     copy: PathBuf,
     line: Option<usize>,
+}
+
+/// エディタで何を書いているか。
+enum Purpose {
+    /// データディレクトリのファイルのコピー。
+    File {
+        target: EditTarget,
+        /// 編集を始めたときに読んだ内容と状態。
+        original: RawFile,
+    },
+    /// 分割するタスクのサブタスク (Neovim 版のスクラッチバッファの代わり)。
+    Split { key: String, project: SplitProject },
+}
+
+impl EditSession {
+    /// 知らせに出す名前。
+    fn name(&self) -> String {
+        match &self.purpose {
+            Purpose::File { target, .. } => target.name(),
+            Purpose::Split { .. } => "the subtasks".to_string(),
+        }
+    }
+
+    /// コピーを残す (書き戻せなかったときに、編集した内容を失わないため)。残した場所を返す。
+    fn keep(self) -> PathBuf {
+        let name = self.copy.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        self.dir.keep().join(name)
+    }
 }
 
 /// 今の画面。Queue は一覧から開く全画面で、`Esc` で一覧へ戻る。
@@ -458,8 +492,7 @@ impl App {
     /// `Ctrl-c` で終えたときなど) のものもコピーを残して返す (編集した内容を黙って消さないため)。
     pub fn finish(&mut self) -> Vec<PathBuf> {
         if let Some(session) = self.edit.take() {
-            let name = session.target.file_name();
-            self.kept_copies.push(session.dir.keep().join(name));
+            self.kept_copies.push(session.keep());
         }
         std::mem::take(&mut self.kept_copies)
     }
@@ -586,6 +619,7 @@ impl App {
             Mode::FixEdit { .. } => return self.handle_fix_edit(key),
             Mode::NewName { .. } => return self.handle_new_name(key),
             Mode::InsertTemplate(_) => return self.handle_insert_template(key),
+            Mode::SplitProject { .. } => return self.handle_split_project(key),
         }
         if self.screen == Screen::Search && self.search.typing {
             return self.handle_search_input(key);
@@ -608,7 +642,9 @@ impl App {
 
     pub fn handle_paste(&mut self, text: &str) {
         match &mut self.mode {
-            Mode::WaitInput { input, .. } | Mode::NewName { input, .. } => input.paste(text),
+            Mode::WaitInput { input, .. } | Mode::NewName { input, .. } | Mode::SplitProject { input, .. } => {
+                input.paste(text)
+            }
             Mode::InsertTemplate(insert) => insert.input.paste(text),
             Mode::Form(form) => form.paste(text),
             Mode::Normal if self.screen == Screen::Search && self.search.typing => {
@@ -728,6 +764,7 @@ impl App {
             Action::Sort => self.sort(),
             Action::Add => self.open_add(),
             Action::Edit => self.open_edit(),
+            Action::Split => self.ask_split(),
             Action::Help => self.mode = Mode::Help,
             Action::Quit => self.quit = true,
         }
@@ -1112,8 +1149,7 @@ impl App {
                 let copy = dir.path().join(target.file_name());
                 fs::write(&copy, &original.bytes)?;
                 Ok(EditSession {
-                    target,
-                    original,
+                    purpose: Purpose::File { target, original },
                     dir,
                     copy,
                     line,
@@ -1139,15 +1175,16 @@ impl App {
     pub fn run_editor(&mut self) {
         self.editor_requested = false;
         let Some(session) = self.edit.take() else { return };
-        let name = session.target.name();
+        let name = session.name();
         self.messages.clear();
         match (self.editor)(&session.copy, session.line) {
             Ok(true) => {}
             Ok(false) => {
-                let text = format!(
-                    "the editor ({}) exited with an error; {name} was not changed",
-                    self.editor_name
-                );
+                let result = match &session.purpose {
+                    Purpose::File { .. } => format!("{name} was not changed"),
+                    Purpose::Split { .. } => "the task was not split".to_string(),
+                };
+                let text = format!("the editor ({}) exited with an error; {result}", self.editor_name);
                 self.message(Level::Warning, text);
                 return self.reload();
             }
@@ -1164,7 +1201,19 @@ impl App {
                 return self.reload();
             }
         };
-        if edited == session.original.bytes {
+        match &session.purpose {
+            Purpose::File { .. } => self.save_file(session, edited),
+            Purpose::Split { .. } => self.save_split(session, &edited),
+        }
+    }
+
+    /// 編集したファイルのコピーを確かめて書き戻す。
+    fn save_file(&mut self, session: EditSession, edited: Vec<u8>) {
+        let name = session.name();
+        let Purpose::File { target, original } = &session.purpose else {
+            return;
+        };
+        if edited == original.bytes {
             self.message(Level::Info, format!("{name} was not changed"));
             return self.reload();
         }
@@ -1174,7 +1223,7 @@ impl App {
             Changed,
         }
         let saved = self.write(false, |ws| {
-            match ops::write_edited(&ws.data_dir, &ws.names, &session.target, &session.original, &edited) {
+            match ops::write_edited(&ws.data_dir, &ws.names, target, original, &edited) {
                 Ok(()) => Ok(Saved::Yes),
                 Err(EditedError::Invalid(problems)) => Ok(Saved::Invalid(problems)),
                 Err(EditedError::Write(WriteError::Changed { .. })) => Ok(Saved::Changed),
@@ -1185,16 +1234,13 @@ impl App {
             Some(Saved::Yes) => self.message(Level::Info, format!("saved {name}")),
             Some(Saved::Invalid(problems)) => {
                 self.message(Level::Error, format!("{name} was not saved: {}", problems.join("; ")));
-                self.mode = Mode::FixEdit {
-                    name: name.clone(),
-                    problems,
-                };
+                self.mode = Mode::FixEdit { name, problems };
                 self.edit = Some(session);
             }
             // 書けなかった。編集した内容を失わないよう、コピーを残して場所を知らせる。
             // 場所は切り詰められないよう、行を分けて出す。
             Some(Saved::Changed) => {
-                let kept = session.dir.keep().join(session.target.file_name());
+                let kept = session.keep();
                 let text = format!(
                     "{name} was changed while you were editing and was not saved. Your copy:\n{}",
                     kept.display()
@@ -1202,11 +1248,133 @@ impl App {
                 self.message(Level::Error, text);
                 self.kept_copies.push(kept);
             }
-            None => {
-                let kept = session.dir.keep().join(session.target.file_name());
-                let text = format!("{name} was not saved. Your copy:\n{}", kept.display());
-                self.message(Level::Warning, text);
-                self.kept_copies.push(kept);
+            None => self.keep_unsaved(session),
+        }
+    }
+
+    /// 書いたサブタスクを読み、元のタスクを置き換える。
+    fn save_split(&mut self, session: EditSession, edited: &[u8]) {
+        let Purpose::Split { key, project } = &session.purpose else {
+            return;
+        };
+        let read = match std::str::from_utf8(edited) {
+            Ok(text) => split::read_subtasks(&store::split_lines(text), self.today),
+            Err(_) => Err(vec!["the file is not valid UTF-8".to_string()]),
+        };
+        let subtasks = match read {
+            Ok(subtasks) => subtasks,
+            Err(problems) => {
+                self.message(Level::Error, format!("the task was not split: {}", problems.join("; ")));
+                self.mode = Mode::FixEdit {
+                    name: session.name(),
+                    problems,
+                };
+                self.edit = Some(session);
+                return;
+            }
+        };
+        if subtasks.is_empty() {
+            self.message(
+                Level::Info,
+                "no subtasks were written, so nothing was split".to_string(),
+            );
+            return self.reload();
+        }
+        let done = self.write(true, |ws| {
+            let split = ops::split_task(&ws.data_dir, &ws.names, ws.today, key, project, subtasks)?;
+            // 編集と同じく、期日をチェックし、todo.md なら並べ替える。分割は済んでいるので、失敗は分けて返す。
+            let dues = edit::check_dues_and_sort(ws, split.file == FileKind::Todo);
+            Ok((split, dues))
+        });
+        let Some((split, dues)) = done else {
+            return self.keep_unsaved(session);
+        };
+        self.message(Level::Info, format!("split into {} task(s)", split.tasks.len()));
+        if let Some(path) = &split.created_project {
+            let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            self.message(Level::Info, format!("created {}/{name}", project::DIR));
+        }
+        self.report_after_write(Some(dues), "split");
+        if let Some(first) = split.tasks.first() {
+            self.select_task(first);
+        }
+    }
+
+    /// 書き込めなかった編集のコピーを残し、場所を知らせる。
+    fn keep_unsaved(&mut self, session: EditSession) {
+        let result = match &session.purpose {
+            Purpose::File { target, .. } => format!("{} was not saved", target.name()),
+            Purpose::Split { .. } => "the task was not split".to_string(),
+        };
+        let kept = session.keep();
+        let text = format!("{result}. Your copy:\n{}", kept.display());
+        self.message(Level::Warning, text);
+        self.kept_copies.push(kept);
+    }
+
+    /// 分割を始める。サブタスクのプロジェクトを尋ねる (Neovim 版と同じく、初期値は元のタスクのプロジェクト)。
+    fn ask_split(&mut self) {
+        let Some(row) = self.target() else { return };
+        if row.task.status == Status::Done {
+            return self.message(Level::Warning, "completed tasks cannot be split".to_string());
+        }
+        let input = LineInput::new(row.task.project.as_deref().unwrap_or_default());
+        self.mode = Mode::SplitProject {
+            row: Box::new(row),
+            input,
+        };
+    }
+
+    /// サブタスクのプロジェクトの入力。`Enter` でサブタスクを書くファイルを `$EDITOR` で開き、`Esc` で取り消す。
+    /// 空にするとプロジェクトを外す (Neovim 版と同じ)。
+    fn handle_split_project(&mut self, key: Key) {
+        let Mode::SplitProject { row, input } = &mut self.mode else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Enter => {
+                let text = input.text().trim().to_string();
+                let project = if text.is_empty() {
+                    SplitProject::Remove
+                } else if row.task.project.as_deref() == Some(text.trim_start_matches('+')) {
+                    // 元のプロジェクトのままなら、名前を確かめない (Neovim 版で作った名前のままでも分割できるように。
+                    // ファイル名に使えない名前なら、ファイルは作らない)。
+                    SplitProject::Keep
+                } else {
+                    match project::check_tag(&text) {
+                        Ok(tag) if row.task.project.as_deref() == Some(tag.as_str()) => SplitProject::Keep,
+                        Ok(tag) => SplitProject::Set(tag),
+                        // 直せるように、入力は残す。
+                        Err(e) => return self.message(Level::Error, e.to_string()),
+                    }
+                };
+                let row = row.clone();
+                self.mode = Mode::Normal;
+                let (seed, line) = split::seed(&row.task);
+                let session = tempfile::Builder::new()
+                    .prefix("gtodo-split-")
+                    .tempdir()
+                    .and_then(|dir| {
+                        let copy = dir.path().join("subtasks.md");
+                        fs::write(&copy, seed)?;
+                        Ok(EditSession {
+                            purpose: Purpose::Split { key: row.key, project },
+                            dir,
+                            copy,
+                            line: Some(line),
+                        })
+                    });
+                match session {
+                    Ok(session) => {
+                        self.edit = Some(session);
+                        self.editor_requested = true;
+                    }
+                    Err(e) => self.message(Level::Error, format!("failed to make a file for the subtasks: {e}")),
+                }
+            }
+            _ => {
+                input.handle(key);
             }
         }
     }
