@@ -1175,10 +1175,9 @@ fn due_inbox_tasks_are_noted_when_they_are_not_moved_automatically() {
     let f = queue_fixture();
     f.write("gtodo.json", r#"{"auto_move_inbox_to_today": false}"#);
     let mut app = f.app();
-    assert_eq!(
-        last_message(&app),
-        "1 task(s) in inbox.md are due; they stay there because auto_move_inbox_to_today is off (Q to see them)"
-    );
+    // Waiting の期日の近いタスクの知らせも一緒に出る。
+    let note = "1 task(s) in inbox.md are due; they stay there because auto_move_inbox_to_today is off (Q to see them)";
+    assert!(app.messages.iter().any(|m| m.text == note), "{:?}", app.messages);
     press(&mut app, "j");
     assert!(app.messages.is_empty());
     // 日付が変わったときにも出す (日次の整理が警告していれば重ねない)。
@@ -2025,4 +2024,52 @@ fn edit_file_on_the_kanban_and_in_search_opens_the_file_of_the_column_or_task() 
     press_code(&mut app, KeyCode::Enter);
     edit_file(&mut app);
     assert_eq!(last(&opened), ("inbox.md".into(), Some(3)));
+}
+
+#[test]
+fn waiting_tasks_due_soon_are_noticed_once_per_task_and_day() {
+    let f = Fixture::new();
+    let todo = "# Todo\n\n## Today\n\n## Next\n\n## Waiting\n\n- [ ] 見積もり wait:bob due:2026-11-17 id:aaaaaa\n\
+                - [ ] 来週 wait:bob due:2026-11-23 id:bbbbbb\n\n## Someday\n";
+    f.write("todo.md", todo);
+    let mut app = f.app();
+    assert_eq!(
+        last_message(&app),
+        "Waiting tasks due soon:\n- 見積もり (due: 2026-11-17)"
+    );
+    let rows = screen(&mut app, 80, 14);
+    assert!(
+        rows.iter().any(|r| r == "warning: Waiting tasks due soon:"),
+        "{rows:#?}"
+    );
+    // 同じタスクは知らせ直さない (Neovim 版が ID を付けても)。
+    press_code(&mut app, KeyCode::Esc);
+    app.tick();
+    f.write("todo.md", &todo.replace("id:aaaaaa", "id:ffffff"));
+    app.tick();
+    assert!(app.messages.is_empty());
+    // 新しく該当したタスクがあれば、該当するものをすべて出す。
+    f.write(
+        "todo.md",
+        &todo.replace(
+            "## Someday",
+            "- [ ] 返事 wait:alice due:2026-11-15 id:cccccc\n\n## Someday",
+        ),
+    );
+    app.tick();
+    assert_eq!(
+        last_message(&app),
+        "Waiting tasks due soon:\n- 見積もり (due: 2026-11-17)\n- 返事 (due: 2026-11-15)"
+    );
+    // 日付が変わったら知らせ直す (2 日後までに入った「来週」は、まだ入らない)。
+    press_code(&mut app, KeyCode::Esc);
+    f.today.set(date("2026-11-17"));
+    app.tick();
+    assert!(
+        app.messages
+            .iter()
+            .any(|m| m.level == Level::Warning && m.text.starts_with("Waiting tasks due soon:\n- 見積もり")),
+        "{:?}",
+        app.messages
+    );
 }

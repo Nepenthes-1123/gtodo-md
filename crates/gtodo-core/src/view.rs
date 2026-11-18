@@ -90,6 +90,25 @@ pub fn wait_queue<'a>(entries: impl IntoIterator<Item = Entry<'a>>) -> Vec<(&'a 
     by_person.into_iter().collect()
 }
 
+/// Waiting のセクションの未完了タスクのうち、期日が `today` の `days` 日後まで (過ぎたものを含む) のもの。
+/// ファイル内の順。
+///
+/// Lua 版 (`timer.lua` の `check_waiting_tasks`) と同じく、期日を文字列として比べる
+/// (`YYYY-MM-DD` なら日付の順と同じ。`due:someday` のような日付でない期日は対象にならない)。
+pub fn waiting_due_soon<'a>(todo: &'a Document, names: &SectionNames, today: NaiveDate, days: u64) -> Vec<Entry<'a>> {
+    let limit = (today + chrono::Days::new(days)).format("%Y-%m-%d").to_string();
+    let waiting = names.name(SectionKey::Waiting);
+    entries(FileKind::Todo, todo)
+        .filter(|e| e.section == Some(waiting) && e.task().status == Status::Open)
+        .filter(|e| {
+            e.task()
+                .due
+                .as_deref()
+                .is_some_and(|due| !due.is_empty() && due <= limit.as_str())
+        })
+        .collect()
+}
+
 /// 検索の対象ファイル (Lua 版と同じく、キャンセル済みは含めない)。
 pub const SEARCH_FILES: [FileKind; 3] = [FileKind::Inbox, FileKind::Todo, FileKind::Done];
 
@@ -151,6 +170,25 @@ mod tests {
 
     fn contents<'a>(entries: impl IntoIterator<Item = &'a Entry<'a>>) -> Vec<&'a str> {
         entries.into_iter().map(|e| e.task().content.as_str()).collect()
+    }
+
+    #[test]
+    fn waiting_tasks_due_within_the_days_are_picked_like_lua() {
+        let d = doc("## Today
+- [ ] 今日のセクション due:2026-01-31
+## Waiting
+- [ ] 過ぎた due:2026-01-20
+- [ ] 2日後 due:2026-02-02
+- [ ] 3日後 due:2026-02-03
+- [x] 済み due:2026-01-31
+- [ ] 期日なし
+- [ ] いつか due:someday
+## Someday
+");
+        let names = SectionNames::default();
+        let soon = waiting_due_soon(&d, &names, date("2026-01-31"), 2);
+        assert_eq!(contents(&soon), ["過ぎた", "2日後"]);
+        assert!(waiting_due_soon(&d, &names, date("2026-01-01"), 2).is_empty());
     }
 
     #[test]
