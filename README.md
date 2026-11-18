@@ -294,15 +294,15 @@ cargo fmt --all -- --check
 
 ホストに C リンカ (Ubuntu では `build-essential`) があれば、通常どおり `cargo test` も使えます。
 
-GitHub Actions (`.github/workflows/ci.yml`) は、`main` への push と pull request のたびに Linux と Windows でテストと clippy を、Linux で fmt を実行します。
+GitHub Actions (`.github/workflows/ci.yml`) は、`main` への push と pull request のたびに Linux・macOS・Windows でテストと clippy を、Linux で fmt を実行します。
 
 ### リリース
 
-1. `crates/gtodo/Cargo.toml` と `crates/gtodo-core/Cargo.toml` の `version` を上げ、`CHANGELOG.md` に `## v<版> (<日付>)` の節を書く
-2. `main` で `v<版>` のタグを付けて push する (`git tag v0.1.0` → `git push origin v0.1.0`)
-3. GitHub Actions の Release (`.github/workflows/release.yml`) が、各 OS のバイナリ (`gtodo-v<版>-<ターゲット>.tar.gz`、Windows は `.zip`) と `SHA256SUMS` を下書きのリリースに置く。リリースノートは `CHANGELOG.md` のその版の節。確かめてから公開する
+1. `crates/gtodo/Cargo.toml` と `crates/gtodo-core/Cargo.toml` の `version` を上げ、`CHANGELOG.md` に `## v<版> (<日付>)` の節を書いて `main` へ入れる
+2. GitHub の Actions の画面で Release (`.github/workflows/release.yml`) を選び、「Run workflow」で `main` を選んで、作るタグ (`v0.2.0` など) を入れて実行する。手元のクローンは要りません。ビルドがすべて通った後に、ワークフローが `main` の先頭へ `v<版>` のタグを付けます (手元から `git push origin v0.2.0` でタグを push しても同じように動きます)
+3. ワークフローが各 OS のバイナリ (`gtodo-v<版>-<ターゲット>.tar.gz`、Windows は `.zip`)・`SHA256SUMS`・attestations を作り、`Release v<版>` という下書きのリリースに置く。リリースノートは `CHANGELOG.md` のその版の節。確かめてから公開する
 
-タグと `Cargo.toml` の版が食い違うと、ビルドの前に止まります。`release.yml` を変えた pull request では、リリースを作らずにビルドだけを試します。
+タグと `Cargo.toml` の版が食い違うとき、画面から `main` 以外で実行したとき、そのタグが既にあるときは、ビルドの前に止まります。タグを入れずに画面から実行したときと、`release.yml` を変えた pull request では、リリースを作らずにビルドだけを試します。
 
 ## ライセンス
 

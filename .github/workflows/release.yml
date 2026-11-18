@@ -1,7 +1,11 @@
 name: Release
 
-# `v*` のタグを push すると、各 OS のバイナリを作って下書きのリリースに置く。公開は利用者が確かめてから行う。
-# このファイルを変えた pull request では、リリースを作らずにビルドだけ試す (テストは ci.yml が macOS を含めて走らせる)。
+# 各 OS のバイナリを作って下書きのリリースに置く。公開は利用者が確かめてから行う。始め方は 2 つ:
+# - `v*` のタグを push する
+# - Actions の画面から main で実行し、作るタグ (`v0.2.0` など) を入れる。ビルドが通った後にタグを付ける
+#   (手元にクローンが無くても出せるように)
+# このファイルを変えた pull request と、タグを入れずに実行したときは、リリースを作らずにビルドだけ試す
+# (テストは ci.yml が macOS を含めて走らせる)。
 on:
   push:
     tags: ["v*"]
@@ -9,12 +13,19 @@ on:
     paths:
       - .github/workflows/release.yml
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create, e.g. v0.2.0 (must match crates/gtodo/Cargo.toml; run on main). Leave empty to only build."
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # 出すリリースのタグ。空ならビルドだけ。入力は式で run に埋め込まず、環境変数で渡す (シェルに解釈させないため)。
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || (github.event_name == 'push' && github.ref_name || '') }}
 
 jobs:
   build:
@@ -61,11 +72,22 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' crates/gtodo/Cargo.toml | head -n 1)
           test -n "$version"
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          if [[ -n "$TAG" ]]; then
             # タグと Cargo.toml の版が食い違ったまま出さない。
-            if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
-              echo "::error::tag $GITHUB_REF_NAME does not match the version in crates/gtodo/Cargo.toml ($version)"
+            if [[ "$TAG" != "v$version" ]]; then
+              echo "::error::tag $TAG does not match the version in crates/gtodo/Cargo.toml ($version)"
               exit 1
+            fi
+            # 画面から実行してタグを付けるときは、ビルドの前に確かめる (通らないなら待たせない)。
+            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+              if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+                echo "::error::run the release on main (got $GITHUB_REF)"
+                exit 1
+              fi
+              if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+                echo "::error::tag $TAG already exists"
+                exit 1
+              fi
             fi
           fi
           echo "name=gtodo-v$version-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
@@ -106,7 +128,7 @@ jobs:
   release:
     name: Draft release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -127,20 +149,38 @@ jobs:
         if: ${{ !github.event.repository.private }}
         with:
           subject-path: dist/gtodo-*
+      # 画面から実行したときは、ビルドが通ったここでタグを付ける。GITHUB_TOKEN で push したタグは
+      # ワークフローを起動しないので、このワークフローが二重に走ることはない。
+      - name: Create tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          # このジョブだけを再実行した (タグを付けた後に失敗した) ときは、同じコミットを指すタグをそのまま使う。
+          existing=$(git ls-remote --tags origin "refs/tags/$TAG^{}" | cut -f1)
+          if [[ -n "$existing" ]]; then
+            if [[ "$existing" == "$GITHUB_SHA" ]]; then exit 0; fi
+            echo "::error::tag $TAG already exists and points to $existing, not $GITHUB_SHA"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=${TAG#v}
           # CHANGELOG.md のその版の節 (`## v0.1.0` から次の `## ` の前まで) をリリースノートにする。
+          # 前後の空行は除く (中の空行は残す)。
           awk -v head="## v$version" '
             index($0, head) == 1 { found = 1; next }
             found && /^## / { exit }
-            found { print }
+            found && /^[[:space:]]*$/ { if (started) blank++; next }
+            found { for (; blank > 0; blank--) print ""; started = 1; print }
           ' CHANGELOG.md > notes.md 2>/dev/null || true
           if [ -s notes.md ]; then
             notes=(--notes-file notes.md)
           else
             notes=(--generate-notes)
           fi
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "$GITHUB_REF_NAME" "${notes[@]}"
+          gh release create "$TAG" dist/* --draft --verify-tag --title "Release $TAG" "${notes[@]}"
