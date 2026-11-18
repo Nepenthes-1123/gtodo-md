@@ -11,6 +11,7 @@ publish = false
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 gtodo-core.workspace = true
 open.workspace = true
 pulldown-cmark.workspace = true

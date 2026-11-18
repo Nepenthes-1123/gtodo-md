@@ -11,6 +11,7 @@ rust-version = "1.88"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 gtodo-core = { path = "crates/gtodo-core" }
 open = "5"
 pulldown-cmark = { version = "0.13", default-features = false }
