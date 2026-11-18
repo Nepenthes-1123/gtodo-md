@@ -12,7 +12,7 @@
 - [x] Vim の単語境界判定に使う文字クラス表の生成 (`scripts/gen-vim-charclass.lua`)
 - [x] ビルド・テスト・lint を通す
 - [x] Docker 上でビルド・テストする手順 (`scripts/cargo-docker`)
-- [x] CI (GitHub Actions): Linux と Windows でテスト・clippy、Linux で fmt
+- [x] CI (GitHub Actions): Linux と Windows でテスト・clippy、Linux で fmt (macOS はリポジトリを公開した後の M4 で足した)
 - [x] Windows 向けのビルドを確かめる手順 (Docker 上で `x86_64-pc-windows-gnu` へクロスコンパイルし、clippy とビルドを通す)
 - [x] Windows 上でテストを通す (CI の `windows-latest`)。クロスコンパイルではビルドが通ることしか確かめられないため。書き込み系で Windows では挙動が変わる箇所は次のように扱う
   - 他のプロセスが共有を許さずに開いているファイルの置き換えは拒まれる: 待って再試行し、閉じられれば置き換え、閉じられなければ何も書かずに失敗することを Windows 専用のテストで確かめる。
