@@ -12,7 +12,7 @@
 - [x] Vim の単語境界判定に使う文字クラス表の生成 (`scripts/gen-vim-charclass.lua`)
 - [x] ビルド・テスト・lint を通す
 - [x] Docker 上でビルド・テストする手順 (`scripts/cargo-docker`)
-- [x] CI (GitHub Actions): Linux と Windows でテスト・clippy、Linux で fmt
+- [x] CI (GitHub Actions): Linux と Windows でテスト・clippy、Linux で fmt (macOS はリポジトリを公開した後の M4 で足した)
 - [x] Windows 向けのビルドを確かめる手順 (Docker 上で `x86_64-pc-windows-gnu` へクロスコンパイルし、clippy とビルドを通す)
 - [x] Windows 上でテストを通す (CI の `windows-latest`)。クロスコンパイルではビルドが通ることしか確かめられないため。書き込み系で Windows では挙動が変わる箇所は次のように扱う
   - 他のプロセスが共有を許さずに開いているファイルの置き換えは拒まれる: 待って再試行し、閉じられれば置き換え、閉じられなければ何も書かずに失敗することを Windows 専用のテストで確かめる。
@@ -90,9 +90,10 @@ CLI (`gtodo`)
 Neovim 版にある機能は M3 でほぼそろった。M4 では、他の人が入れて使える形にし、最初のリリース (v0.1.0) を出す。
 決めたことは下の「M4 で決めたこと」にある。
 
-- [ ] macOS で確かめる。今は Linux と Windows だけで、macOS ではパスの既定 (`~/.config`・`~/.local/share`。Neovim 版も macOS でこの場所を使う)・一時ディレクトリ・端末の動きを一度も確かめていない
+- [x] macOS で確かめる。これまでは Linux と Windows だけで、macOS ではパスの既定 (`~/.config`・`~/.local/share`。Neovim 版も macOS でこの場所を使う)・一時ディレクトリを一度も確かめていなかった
   - 公開するまでは、リリース用のビルドでだけ macOS を動かす (非公開のリポジトリでは macOS の Actions は Linux の約 10 倍の単価で、PR ごとに走らせると無料枠を早く使い切るため)
-  - 公開した後に、PR ごとの CI (`ci.yml`) に `macos-latest` を足す (公開リポジトリの Actions は無料)
+  - 公開した後に、PR ごとの CI (`ci.yml`) に `macos-latest` を足した (2026-11-18)。テストは変えずに通った
+  - 端末の動き (TUI を実際の端末で開いたとき) は、macOS では手で確かめていない (テストは ratatui の `TestBackend` に描く)
 - [x] リリースの仕組み: `v*` のタグを push すると、GitHub Actions が各 OS のバイナリを作り、GitHub Releases へ置く
   - 対象: Linux x86_64・aarch64 (musl で静的にリンクし、glibc の版に左右されないようにする)、macOS aarch64・x86_64、Windows x86_64
   - ファイル名は `gtodo-v<版>-<ターゲット>.tar.gz` (Windows は `.zip`)。mise の `github:` バックエンドなどが、名前から OS と CPU を選べるようにする
@@ -105,8 +106,8 @@ Neovim 版にある機能は M3 でほぼそろった。M4 では、他の人が
 - [x] README を利用者向けに書き直す: 「開発中です」を外し、インストール (GitHub Releases から。mise なら `mise use -g github:Nepenthes-1123/gtodo-md`)・最初の起動 (データディレクトリの決まり方・Neovim 版との共有)・CLI と TUI の使い方の順にする。開発者向けの内容は後ろへ
 - [ ] v0.1.0 を出す。リリースの作業は利用者が確かめてから行う (このリポジトリの作業環境からはタグを push できないため、タグも利用者が付ける)。次の順にする
   1. `CHANGELOG.md` に日付を入れる (2026-11-18。タグを付ける日がずれたら直す)
-  2. リポジトリを公開する (公開の操作は利用者が行う)。タグより先にする。attestations は、タグを push したときに公開されていないと付かない
-  3. PR ごとの CI に `macos-latest` を足し、macOS でテストが通ることを確かめる。通れば `CHANGELOG.md` の「macOS は CI でテストを走らせていません」を消す
+  2. リポジトリを公開する (公開の操作は利用者が行う)。タグより先にする。attestations は、タグを push したときに公開されていないと付かない (済み。2026-11-18)
+  3. PR ごとの CI に `macos-latest` を足し、macOS でテストが通ることを確かめる。通れば `CHANGELOG.md` の「macOS は CI でテストを走らせていません」を消す (済み)
   4. `v0.1.0` のタグを push する。下書きのリリースができるので、確かめてから公開する
 
 ### gtodo-md.nvim 側の対応 (M4)

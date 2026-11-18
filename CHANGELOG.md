@@ -36,4 +36,4 @@
 ### 対応 OS
 
 Linux (x86_64・aarch64)、macOS (Apple シリコン・Intel)、Windows (x86_64)。
-macOS はこの版の時点では、CI でテストを走らせていません (リポジトリを公開した後に足します)。
+テストは Linux (x86_64)・macOS (Apple シリコン)・Windows で走らせています。Linux (aarch64) は起動だけを確かめ、macOS (Intel) は動かして確かめていません。
