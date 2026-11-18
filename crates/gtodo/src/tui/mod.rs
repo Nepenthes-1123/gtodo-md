@@ -8,6 +8,7 @@ mod input;
 mod kanban;
 mod keymap;
 mod markdown;
+mod projects;
 mod queue;
 mod search;
 

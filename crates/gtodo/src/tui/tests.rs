@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use chrono::NaiveDate;
-use gtodo_core::store::FileKind;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -174,7 +173,7 @@ fn hints_follow_the_selected_task_and_tab() {
     // 完了したタスクは移せないので、移動の案内を出さない。
     assert_eq!(
         footer(&mut app),
-        "x 未完了に戻す  c キャンセル  e 編集  a 追加  o 並べ替え  Q Queue  K カンバン  ? ヘルプ  q 終了"
+        "x 未完了に戻す  c キャンセル  e 編集  a 追加  o 並べ替え  Q Queue  K カンバン  P プロジェクト  ? ヘルプ  q 終了"
     );
 
     press(&mut app, "4");
@@ -187,12 +186,15 @@ fn hints_follow_the_selected_task_and_tab() {
     press(&mut app, "3");
     assert_eq!(
         footer(&mut app),
-        "a 追加  o 並べ替え  Q Queue  K カンバン  ? ヘルプ  q 終了"
+        "a 追加  o 並べ替え  Q Queue  K カンバン  P プロジェクト  ? ヘルプ  q 終了"
     );
 
     // done.md は見るだけ。
     press(&mut app, "6");
-    assert_eq!(footer(&mut app), "a 追加  Q Queue  K カンバン  ? ヘルプ  q 終了");
+    assert_eq!(
+        footer(&mut app),
+        "a 追加  Q Queue  K カンバン  P プロジェクト  ? ヘルプ  q 終了"
+    );
 }
 
 #[test]
@@ -942,6 +944,8 @@ fn project_files_and_tags_in_use_are_offered_as_candidates() {
     let f = Fixture::new();
     fs::create_dir(f.path().join("projects")).unwrap();
     f.write("projects/garden.md", "---\ntitle: 庭\n---\n");
+    // アーカイブしたプロジェクトは候補にしない (Neovim 版と同じ)。
+    f.write("projects/old.md", "---\ntitle: 昔\nstatus: archived\n---\n");
     let mut app = f.app();
     press(&mut app, "a");
     press(&mut app, "x");
@@ -961,9 +965,9 @@ fn project_files_and_tags_in_use_are_offered_as_candidates() {
         (task.project.as_deref(), task.context.as_deref()),
         (Some("work"), Some("office"))
     );
-    // projects/*.md は作らない (プロジェクトファイルは M3)。
+    // タスクにタグを書いただけでは projects/*.md を作らない (Neovim 版と同じ)。
     press_code(&mut app, KeyCode::Enter);
-    assert_eq!(fs::read_dir(f.path().join("projects")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(f.path().join("projects")).unwrap().count(), 2);
 }
 
 #[test]
@@ -1899,7 +1903,7 @@ fn an_edit_that_fails_the_neovim_checks_can_be_edited_again() {
     assert_eq!(
         app.mode,
         Mode::FixEdit {
-            file: FileKind::Todo,
+            name: "todo.md".into(),
             problems: vec!["required sections are missing: ## Waiting".into()]
         }
     );
@@ -1935,13 +1939,7 @@ fn an_edit_that_fails_the_neovim_checks_can_be_discarded() {
     let opened = fake_editor(&mut app, |_, text| text.replace("# Inbox", "Inbox"));
     press(&mut app, "1");
     edit_file(&mut app);
-    assert!(matches!(
-        app.mode,
-        Mode::FixEdit {
-            file: FileKind::Inbox,
-            ..
-        }
-    ));
+    assert!(matches!(&app.mode, Mode::FixEdit { name, .. } if name == "inbox.md"));
     let copy = opened.borrow()[0].0.clone();
     assert!(copy.exists());
     press_code(&mut app, KeyCode::Esc);
@@ -2072,4 +2070,147 @@ fn waiting_tasks_due_soon_are_noticed_once_per_task_and_day() {
         "{:?}",
         app.messages
     );
+}
+
+/// プロジェクトの画面を試すためのデータ。site はファイルがあり、work はタスクにだけ使われている。
+fn project_fixture() -> Fixture {
+    let f = Fixture::new();
+    fs::create_dir(f.path().join("projects")).unwrap();
+    f.write(
+        "projects/site.md",
+        "---\ntitle: サイト改修\ntag: site\ncreated: 2026-11-01\ndue: 2026-12-01\nstatus: active\nmembers: []\n---\n\n## Overview\n",
+    );
+    f.write("inbox.md", "# Inbox\n\n- [ ] 原稿 +site id:111111\n");
+    f.write(
+        "done.md",
+        "# Done\n\n## 2026-11\n\n- [x] 要件 +site completed_at:2026-11-02 id:f00001\n",
+    );
+    f
+}
+
+#[test]
+fn the_projects_screen_shows_progress_and_tags_without_files() {
+    let f = project_fixture();
+    let mut app = f.app();
+    // 今日1 (+work) を選んで開くと、そのプロジェクトを選ぶ。
+    press(&mut app, "P");
+    assert_eq!(app.screen, Screen::Projects);
+    let rows = screen(&mut app, 90, 12);
+    assert_eq!(rows[0], " Projects 2");
+    assert_eq!(
+        rows[2..4],
+        [
+            "  [█████░░░░░] 50% (1/2 done)  site  サイト改修  due:2026-12-01",
+            "▌ [░░░░░░░░░░] 0% (0/1 done)  work  (ファイルなし)"
+        ]
+    );
+    let footer = screen(&mut app, 120, 12).pop().unwrap();
+    assert!(
+        footer.starts_with("Enter タスクを検索  E ファイルを作る  a 追加  Tab アーカイブ済み  Esc 一覧へ"),
+        "{footer}"
+    );
+    // Enter でそのプロジェクトのタスクを検索する。
+    press(&mut app, "k");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Search);
+    assert_eq!(app.search.input.text(), "+site ");
+    assert!(!app.search.typing);
+    assert_eq!(app.search.results.len(), 2, "inbox.md and done.md tasks with +site");
+}
+
+#[test]
+fn projects_are_archived_and_restored_from_the_projects_screen() {
+    let f = project_fixture();
+    let mut app = f.app();
+    press(&mut app, "1P");
+    assert_eq!(app.projects.selected().unwrap().tag, "site");
+    press(&mut app, "X");
+    assert_eq!(last_message(&app), "archived site");
+    assert!(f.read("projects/site.md").contains("\nstatus: archived\n"));
+    assert!(app.projects.rows.iter().all(|r| r.tag != "site"));
+    // Tab でアーカイブしたものを見て、X で戻す。
+    press_code(&mut app, KeyCode::Tab);
+    assert_eq!(screen(&mut app, 80, 10)[0], " Projects (archived) 1");
+    press(&mut app, "X");
+    assert_eq!(last_message(&app), "restored site");
+    assert!(f.read("projects/site.md").contains("\nstatus: active\n"));
+    // ファイルの無いプロジェクトはアーカイブできない。
+    press_code(&mut app, KeyCode::Tab);
+    press(&mut app, "G");
+    press(&mut app, "X");
+    assert!(last_message(&app).contains("projects/work.md does not exist"));
+}
+
+#[test]
+fn new_projects_are_created_and_opened_in_the_editor() {
+    let f = project_fixture();
+    let mut app = f.app();
+    let opened = fake_editor(&mut app, |_, text| text.replace("title:\n", "title: 新規\n"));
+    press(&mut app, "Pa");
+    assert!(matches!(app.mode, Mode::NewProject { .. }));
+    // すでにある名前なら、作らずにそれを選ぶ。
+    press(&mut app, "site");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(last_message(&app), "projects/site.md already exists");
+    assert_eq!(app.projects.selected().unwrap().tag, "site");
+    assert!(!app.editor_requested());
+    press(&mut app, "a");
+    // ファイル名にできない名前は、直した名前を添えて断る (入力は残す)。
+    press(&mut app, "a/b");
+    press_code(&mut app, KeyCode::Enter);
+    assert!(matches!(app.mode, Mode::NewProject { .. }));
+    assert!(
+        last_message(&app).contains(r#"use "a-b" instead"#),
+        "{}",
+        last_message(&app)
+    );
+    for _ in 0..3 {
+        press_code(&mut app, KeyCode::Backspace);
+    }
+    press(&mut app, "launch");
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.editor_requested());
+    app.run_editor();
+    let (copy, _, text) = opened.borrow()[0].clone();
+    assert_eq!(copy.file_name().unwrap(), "launch.md");
+    assert!(
+        text.starts_with("---\ntitle:\ntag: launch\ncreated: 2026-11-16\n"),
+        "{text}"
+    );
+    assert!(f.read("projects/launch.md").contains("title: 新規\n"));
+    app.tick();
+    assert_eq!(app.projects.selected().unwrap().tag, "launch");
+    assert_eq!(app.projects.selected().unwrap().title.as_deref(), Some("新規"));
+}
+
+#[test]
+fn project_files_are_checked_like_neovim_when_edited_by_hand() {
+    let f = project_fixture();
+    let mut app = f.app();
+    // ファイルの無い work は、E で作ってから開く。
+    let opened = fake_editor(&mut app, |n, text| match n {
+        0 => text.replace("title:", "title: 仕事"),
+        _ => text.replace("tag: site", "tag: other"),
+    });
+    press(&mut app, "PG");
+    press(&mut app, "E");
+    app.run_editor();
+    assert!(f.read("projects/work.md").contains("title: 仕事\ntag: work\n"));
+    assert_eq!(opened.borrow().len(), 1);
+    // tag を変えると、Neovim 版と同じく保存しない。
+    press(&mut app, "gg");
+    assert_eq!(app.projects.selected().unwrap().tag, "site");
+    press(&mut app, "E");
+    app.run_editor();
+    assert_eq!(
+        app.mode,
+        Mode::FixEdit {
+            name: "projects/site.md".into(),
+            problems: vec!["tag must be the file name (site)".into()]
+        }
+    );
+    assert!(f.read("projects/site.md").contains("tag: site\n"));
+    press(&mut app, "n");
+    assert_eq!(last_message(&app), "discarded the changes to projects/site.md");
 }

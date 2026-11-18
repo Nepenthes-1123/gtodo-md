@@ -118,6 +118,10 @@ pub enum Action {
     Open,
     /// ファイルを `$EDITOR` で開く。
     EditFile,
+    /// プロジェクト画面を開く。
+    OpenProjects,
+    /// プロジェクト画面で、アーカイブする (アーカイブしたものの表示では復元する)。
+    Archive,
     /// Queue などから一覧へ戻る。`Esc` に固定で、割り当てを変えられない (案内に出すためだけにある)。
     Back,
     Help,
@@ -156,11 +160,13 @@ impl Action {
             Sort,
             OpenQueue,
             OpenKanban,
+            OpenProjects,
             Search,
             OpenLink,
             SwitchView,
             Open,
             EditFile,
+            Archive,
             Help,
             Quit,
         ]);
@@ -198,6 +204,8 @@ impl Action {
             SwitchView => "switch_view".into(),
             Open => "open".into(),
             EditFile => "edit_file".into(),
+            OpenProjects => "projects".into(),
+            Archive => "archive".into(),
             Back => "back".into(),
             Help => "help".into(),
             Quit => "quit".into(),
@@ -448,6 +456,8 @@ impl Default for Keymap {
             (vec![Key::plain(KeyCode::Tab)], SwitchView),
             (vec![Key::plain(KeyCode::Enter)], Open),
             (vec![Key::char('E')], EditFile),
+            (vec![Key::char('P')], OpenProjects),
+            (vec![Key::char('X')], Archive),
             (vec![Key::char('?')], Help),
             // Esc は終了に割り当てない。戻る・取り消すだけにする (lazygit・lazydocker と同じ)。
             // vim を使う人は癖で押すため、一覧で押して終了すると困る。

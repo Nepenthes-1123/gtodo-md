@@ -4,6 +4,7 @@
 
 use chrono::NaiveDate;
 use gtodo_core::ops::Destination;
+use gtodo_core::project;
 use gtodo_core::search::Hit;
 use gtodo_core::sections::SectionKey;
 use gtodo_core::store::FileKind;
@@ -106,6 +107,21 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
             draw_queue(frame, app, theme, list_area);
         }
         Screen::Kanban => draw_kanban(frame, app, theme, tabs_area, list_area),
+        Screen::Projects => {
+            let title = if app.projects.archived {
+                "Projects (archived)"
+            } else {
+                "Projects"
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {title} {}", app.projects.rows.len()),
+                    theme.accent().add_modifier(Modifier::BOLD),
+                )),
+                tabs_area,
+            );
+            draw_projects(frame, app, theme, list_area);
+        }
         Screen::Search => {
             let cursor = draw_search_bar(frame, app, theme, tabs_area);
             if app.search.typing && app.mode == Mode::Normal {
@@ -117,8 +133,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, theme: Theme) {
     frame.render_widget(Paragraph::new(messages), message_area);
     frame.render_widget(Paragraph::new(footer), footer_area);
 
-    if let Mode::WaitInput { input, .. } = &app.mode {
-        let x = footer_area.x + (WAIT_PROMPT.width() + input.cursor_width()) as u16;
+    let prompt = match &app.mode {
+        Mode::WaitInput { input, .. } => Some((WAIT_PROMPT, input)),
+        Mode::NewProject { input } => Some((NEW_PROJECT_PROMPT, input)),
+        _ => None,
+    };
+    if let Some((prompt, input)) = prompt {
+        let x = footer_area.x + (prompt.width() + input.cursor_width()) as u16;
         let y = footer_area.y + footer_area.height.saturating_sub(1);
         frame.set_cursor_position((x.min(area.right().saturating_sub(1)), y));
     }
@@ -390,6 +411,8 @@ fn message_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
 /// Neovim 版の入力欄と同じ問いかけ。
 const WAIT_PROMPT: &str = "Waiting for (empty to skip/remove): ";
 
+const NEW_PROJECT_PROMPT: &str = "New project name: ";
+
 fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
     match &app.mode {
         Mode::WaitInput { row, input } => vec![
@@ -406,8 +429,18 @@ fn footer_lines(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
             Line::styled(format!("→ cancelled.md: {content}"), theme.dim()),
             Line::from(Span::styled("Cancel this task? [y/N]", theme.key())),
         ],
-        Mode::FixEdit { file, problems } => vec![
-            Line::styled(format!("{}: {}", file.file_name(), problems.join("; ")), theme.dim()),
+        Mode::NewProject { input } => vec![
+            Line::styled(
+                format!("→ {}/<name>.md (the same name as the +project tag)", project::DIR),
+                theme.dim(),
+            ),
+            Line::from(vec![
+                Span::styled(NEW_PROJECT_PROMPT, theme.key()),
+                Span::raw(input.text().to_string()),
+            ]),
+        ],
+        Mode::FixEdit { name, problems } => vec![
+            Line::styled(format!("{name}: {}", problems.join("; ")), theme.dim()),
             Line::from(Span::styled("Edit again? [y/n] (n discards your changes)", theme.key())),
         ],
         Mode::ChooseLink { .. } => {
@@ -514,7 +547,9 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
     {
         add(Action::OpenLink, "リンクを開く".to_string());
     }
-    add(Action::Add, "追加".to_string());
+    if app.screen != Screen::Projects {
+        add(Action::Add, "追加".to_string());
+    }
     match app.screen {
         Screen::List => {
             if app.tab().writable() {
@@ -522,6 +557,34 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
             }
             add(Action::OpenQueue, "Queue".to_string());
             add(Action::OpenKanban, "カンバン".to_string());
+            add(Action::OpenProjects, "プロジェクト".to_string());
+        }
+        Screen::Projects => {
+            if let Some(row) = app.projects.selected() {
+                add(Action::Open, "タスクを検索".to_string());
+                let edit = if row.has_file {
+                    "ファイルを開く"
+                } else {
+                    "ファイルを作る"
+                };
+                add(Action::EditFile, edit.to_string());
+                if row.has_file {
+                    let archive = if app.projects.archived {
+                        "復元"
+                    } else {
+                        "アーカイブ"
+                    };
+                    add(Action::Archive, archive.to_string());
+                }
+            }
+            add(Action::Add, "追加".to_string());
+            let view = if app.projects.archived {
+                "進行中"
+            } else {
+                "アーカイブ済み"
+            };
+            add(Action::SwitchView, view.to_string());
+            hints.push((Action::Back, "Esc".to_string(), "一覧へ".to_string()));
         }
         Screen::Queue => {
             if selected.is_some() {
@@ -569,8 +632,9 @@ fn normal_hints(app: &App) -> Vec<(Action, String, String)> {
 
 /// 幅に収まるまで、重要でない案内から外す。`?` (ヘルプ) は外さない (外したキーもヘルプで分かるように)。
 fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(String, String)> {
-    const DROP_ORDER: [Action; 18] = [
+    const DROP_ORDER: [Action; 21] = [
         Action::Quit,
+        Action::OpenProjects,
         Action::Sort,
         Action::OpenKanban,
         Action::OpenQueue,
@@ -584,6 +648,8 @@ fn fit_hints(mut hints: Vec<(Action, String, String)>, width: usize) -> Vec<(Str
         Action::MoveNext,
         Action::MoveToday,
         Action::Add,
+        Action::Archive,
+        Action::EditFile,
         Action::Open,
         Action::SwitchView,
         Action::NextTab,
@@ -628,16 +694,27 @@ fn description(app: &App, action: Action) -> String {
         Action::ToggleDone => "完了と未完了を切り替える".to_string(),
         Action::Cancel => "キャンセルする (cancelled.md へ移す。確認あり)".to_string(),
         Action::Sort => "期日が来たタスクを移し、並べ替える".to_string(),
-        Action::Add => "タスクを追加する (追加先の初期値は開いているタブ)".to_string(),
+        Action::Add => {
+            "タスクを追加する (追加先の初期値は開いているタブ)。プロジェクト画面では新しいプロジェクトを作る".to_string()
+        }
         Action::Edit => "タスクを編集する".to_string(),
         Action::OpenQueue => "Queue を開く (期日・待ち先ごとの一覧)".to_string(),
         Action::OpenKanban => "カンバンを開く (h/l などのタブのキーで列を移る)".to_string(),
         Action::OpenLink => "リンクを開く (複数あれば選ぶ)".to_string(),
         Action::Search => "検索 (本文の語・+project・@context・wait:。結果の中では入力欄へ戻る)".to_string(),
-        Action::SwitchView => "表示を切り替える (Queue は期日別と待ち先別、検索はすべて・未完了・完了)".to_string(),
-        Action::Open => "Queue: 選んでいるタスクを一覧で開く".to_string(),
+        Action::SwitchView => {
+            "表示を切り替える (Queue は期日別と待ち先別、検索はすべて・未完了・完了、プロジェクトは進行中とアーカイブ済み)"
+                .to_string()
+        }
+        Action::Open => {
+            "Queue・検索・カンバン: 選んでいるタスクを一覧で開く。プロジェクト画面: そのプロジェクトのタスクを検索する"
+                .to_string()
+        }
+        Action::OpenProjects => "プロジェクト画面を開く (選んでいるタスクのプロジェクトを選ぶ)".to_string(),
+        Action::Archive => "プロジェクト画面: アーカイブする (アーカイブしたものの表示では復元する)".to_string(),
         Action::EditFile => {
-            "ファイルを $EDITOR で開く (選んでいるタスクの行へ。保存前に Neovim 版と同じ検証をする)".to_string()
+            "ファイルを $EDITOR で開く (選んでいるタスクの行へ。プロジェクト画面ではプロジェクトファイル。保存前に Neovim 版と同じ検証をする)"
+                .to_string()
         }
         Action::Back => "一覧へ戻る".to_string(),
         Action::Help => "このヘルプ".to_string(),
@@ -1549,6 +1626,66 @@ fn draw_link_choice(frame: &mut Frame, links: &[String], cursor: usize, theme: T
         Paragraph::new(lines).block(Block::bordered().title(" リンクを開く ").border_style(theme.accent())),
         popup,
     );
+}
+
+/// プロジェクト画面。進捗のバー (Neovim 版と同じ形)・名前・タイトル・期日を 1 行に並べる。
+fn draw_projects(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {
+    let block = Block::new().borders(Borders::TOP).border_style(theme.dim());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let height = usize::from(inner.height);
+    app.page_height = height;
+    let width = usize::from(inner.width);
+    let view = &mut app.projects;
+    if view.rows.is_empty() {
+        let text = if view.archived {
+            "  アーカイブしたプロジェクトはありません"
+        } else {
+            "  プロジェクトはありません (a で作る)"
+        };
+        frame.render_widget(Paragraph::new(Line::styled(text, theme.dim())), inner);
+        return;
+    }
+    if view.cursor < view.offset {
+        view.offset = view.cursor;
+    } else if height > 0 && view.cursor >= view.offset + height {
+        view.offset = view.cursor + 1 - height;
+    }
+    let lines: Vec<Line> = view
+        .rows
+        .iter()
+        .enumerate()
+        .skip(view.offset)
+        .take(height)
+        .map(|(i, row)| {
+            let selected = i == view.cursor;
+            let mut text = format!("{}  {}", row.progress.bar(), row.tag);
+            match (&row.title, row.has_file) {
+                (Some(title), _) => text.push_str(&format!("  {title}")),
+                (None, false) => text.push_str("  (ファイルなし)"),
+                (None, true) => {}
+            }
+            if let Some(due) = &row.due {
+                text.push_str(&format!("  due:{due}"));
+            }
+            let style = match (selected, row.has_file) {
+                (true, _) => Style::new().add_modifier(Modifier::BOLD),
+                (false, false) => theme.dim(),
+                (false, true) => Style::new(),
+            };
+            let gutter = if selected {
+                Span::styled(GUTTER, theme.accent())
+            } else {
+                Span::raw(" ")
+            };
+            Line::from(vec![
+                gutter,
+                Span::raw(" "),
+                Span::styled(truncate(&text, width.saturating_sub(2)), style),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ use crate::commands::add::{Fields, To};
 use crate::commands::edit::Fields as EditFields;
 use crate::commands::list::Target;
 use crate::commands::move_task::To as MoveTo;
+use crate::commands::project::ProjectCommand;
 use crate::workspace::Workspace;
 
 /// GTD-style todo manager backed by Markdown, compatible with gtodo-md.nvim.
@@ -139,6 +140,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Project files (projects/<tag>.md): list, show, create, archive and restore
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
 }
 
 fn main() -> ExitCode {
@@ -234,5 +240,6 @@ fn run(cli: Cli, out: &mut String) -> Result<()> {
         Command::Queue { wait } => commands::queue::run(&ws, wait, out),
         Command::Sort => commands::sort::run(&ws, &mut warn, out),
         Command::Stats { json } => commands::stats::run(&ws, json, out),
+        Command::Project { command } => commands::project::run(&ws, command, &mut warn, out),
     }
 }
