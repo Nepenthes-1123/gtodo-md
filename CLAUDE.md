@@ -22,6 +22,7 @@ cargo fmt --all            # 列幅は 120 (rustfmt.toml)
 nvim --clean --headless -l scripts/gen-golden-task.lua <path/to/gtodo-md.nvim>
 nvim --clean --headless -l scripts/gen-golden-markdown.lua <path/to/gtodo-md.nvim>
 nvim --clean --headless -l scripts/gen-golden-logic.lua <path/to/gtodo-md.nvim>
+nvim --clean --headless -l scripts/gen-golden-recurring.lua <path/to/gtodo-md.nvim>
 nvim --clean --headless -l scripts/gen-vim-charclass.lua > crates/gtodo-core/src/vim_class.rs
 ```
 
@@ -42,16 +43,17 @@ OS で分かれるコード (`#[cfg(unix)]` や `std::os::unix` を使うテス�
   - `guard.rs` — 書く内容から、読んだときにあった見出し (トップヘッダー・必須セクション・`## YYYY-MM`) が消えていないかの確認 (Lua 版 `validate.lua` の保存時の検査に相当)。
   - `config.rs` — `config.json` と `data_dir` の場所の解決 (Neovim 版と共有する規則)。OS ごとの場所の規則は `Platform` で受け取り、どの OS 上でもテストする (パスの区切りや絶対パスの判定はホスト OS の規則になる)。
   - `settings.rs` — `data_dir/gtodo.json` (セクション名など、データの形と自動処理の設定。Neovim 版と共有する)。
-  - `state.rs` — `.state.json` の読み書き。知らないキーも保ったまま書き戻す。`last_sections` は Neovim 版の記録であり、CLI から書き換えてはならない。
+  - `state.rs` — `.state.json` の読み書き。知らないキーも保ったまま書き戻す。`last_sections` は Neovim 版の記録であり、CLI から書き換えてはならない。`recurring` (定期タスクをどの日まで確かめたか) は両方のツールが読み書きする (空ならキーごと消す。Lua 版が空のテーブルを `[]` と書くため)。
   - `lock.rs` — `.gtodo.lock` (Neovim 版と共有する排他ロック)。
   - `logic/` — タスクリストに対する操作 (並べ替え・期日による昇格・完了タスクの取り出し・履歴への追記)。Lua 版 `logic/` の移植で、ファイルには触れない。
-  - `daily.rs` — 日次ロールオーバー (完了タスクの移動・期日による昇格・並べ替え。1 日 1 回を `.state.json` の `last_opened` で判定する)。ロックは呼び出し元が持つ。
+  - `daily.rs` — 日次ロールオーバー (完了タスクの移動・定期タスクの作成・期日による昇格・並べ替え。1 日 1 回を `.state.json` の `last_opened` で判定する)。定期タスクの記録は inbox.md へ書いた直後に書く (後の手順が失敗して整理をやり直すときに、同じ回を足し直さないため)。ロックは呼び出し元が持つ。
   - `ops.rs` — `data_dir` のファイルを読み、`logic/` の操作をして書き戻す。2 ファイルにまたがる移動の書き込み順 (追記してから削除) もここで固定する。ロックは呼び出し元が持つ。
   - `input.rs` — 利用者が入力したタスクの本文と項目 (期日・タグ・優先度・待ち先) の読み取りと検証。CLI の `add`・`edit`・`move --wait` と TUI のフォームで共有する (同じ入力がツールによって違うタスクにならないように)。
   - `key.rs` — タスクを指定するキー (ID、または行の内容から作る一時キー `~xxxxxx`) と、キーからのタスクの検索。一時キーのハッシュ (FNV-1a) を変えると既存のキーが無効になる。
   - `view.rs` — 読み取り専用のビュー (一覧・Queue・件数)。CLI と TUI で共有する。
   - `project.rs` — プロジェクトファイル (`projects/<tag>.md`) のフロントマター・雛形・名前の確かめ方・手で編集したときの検証・進捗の数え方 (Lua 版 `ui/project.lua` と `validate.lua` と同じ規則)。書き込み (作成・`status:` の書き換え) は `ops.rs`。
   - `template.rs` — テンプレート (`templates/<name>.md`) の名前・記法メモ・プレースホルダーの埋め方・挿入するタスクの作り方 (Lua 版 `ui/template.lua` と同じ規則)。書き込み (作成・アーカイブの移動・inbox.md への挿入) は `ops.rs`。
+  - `recurring.rs` — 定期タスクの定義 (テンプレートのフロントマターの `type: recurring`・`repeat:`・`values:`) の読み取りと、「その日に作るか」「次に足す日」の判定 (Lua 版 `logic/recurring.lua` と同じ規則。ファイルには触れない)。テンプレートを読んで inbox.md へ足すのは `ops.rs` の `create_recurring`、どの日まで確かめたかの記録 (`.state.json` の `recurring`) は `daily.rs` が inbox.md へ書いた後に書く。
   - `split.rs` — タスクの分割で、サブタスクが元のタスクから引き継ぐ項目と、サブタスクを書くファイルの読み方 (Lua 版 `ui/split.lua` の分割)。書き込みは `ops.rs` の `split_task`。
   - `search.rs` — 検索の書き方と一致の規則 (本文の語は部分一致、タグは完全一致・打っている途中は前方一致、NFKC と小文字にそろえて比べる)。CLI の `search` と TUI の検索で共有する。
   - `lua_compat.rs` — Lua の `%s` / `vim.trim` と同じ範囲で空白を扱う補助。
@@ -68,7 +70,7 @@ OS で分かれるコード (`#[cfg(unix)]` や `std::os::unix` を使うテス�
 
 ## 互換性の不変条件
 
-- タスク行の解析結果・文字列化、ファイル構造の解析・書き出し、`logic/` の操作とタスクの完了・未完了・キャンセル (Lua 版 `editor.lua`) の結果は Lua 版と一致させる。`testdata/golden/*.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` / `markdown/cases.json` / `logic/cases.json` に足して再生成する。
+- タスク行の解析結果・文字列化、ファイル構造の解析・書き出し、`logic/` の操作とタスクの完了・未完了・キャンセル (Lua 版 `editor.lua`) の結果は Lua 版と一致させる。`testdata/golden/*.json` は Lua 版から生成した期待値であり、Rust 側に合わせて手で書き換えてはならない。文法に関わる不一致は Lua 版を正として直す。ケースを増やすときは `task_cases.json` / `markdown/cases.json` / `logic/cases.json` / `recurring/cases.json` に足して再生成する。
 - Lua 版の不具合と判断して挙動を変えた箇所は、ゴールデンテストに含めず、Rust 側の個別のテストと `ROADMAP.md` の決定事項に記録する。
 - Vim の正規表現を移植するときは、`\s` は `[ \t]`、`\w` は `[0-9A-Za-z_]`、`[:space:]` は `[\t\n\x0B\x0C\r ]` に置き換える。Rust の `\s`/`\w`/`\b` は Unicode の範囲で判定するため、そのまま使うと全角スペースや日本語の直後で結果が変わる。`\<` は `task.rs` の `is_vim_word_start` を使う。
 - 意図して Lua 版と挙動を変えた箇所は、コードコメントに理由を書く (例: `date.rs` の夏時間の扱い)。

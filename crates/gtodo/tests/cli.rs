@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use std::time::SystemTime;
 
 use chrono::{Days, Local};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -1237,6 +1237,88 @@ fn templates_are_created_inserted_into_the_inbox_and_archived() {
     assert!(!f.run(&["template", "insert", "weekly"]).status.success());
     assert_eq!(f.stdout(&["template", "restore", "weekly"]), "restored weekly\n");
     assert!(!f.run(&["template", "new", "a/b"]).status.success());
+}
+
+/// 定期タスクは一覧に指定と次に足す日を出し、書き込むコマンドの日次の整理で inbox.md へ足して、期日が
+/// 今日なら Today へ移す。手で挿入するときは values: の値を使う。
+#[test]
+fn recurring_templates_are_listed_and_added_by_the_daily_rollover() {
+    let f = sample();
+    fs::create_dir_all(f.data_dir().join("templates")).unwrap();
+    f.write(".state.json", r#"{"last_opened":"2000-01-01"}"#);
+    // どの日に試しても当たるよう、すべての曜日を並べる。
+    f.write(
+        "templates/daily.md",
+        "---\ntype: recurring\nrepeat: mon, tue, wed, thu, fri, sat, sun\nvalues:\n  who: 田中\n---\n\
+         - [ ] {{who}} と朝会 due:+0d\n",
+    );
+    f.write(
+        "templates/broken.md",
+        "---\ntype: recurring\nrepeat: someday\n---\n- [ ] x\n",
+    );
+    let today = today_str();
+    let tomorrow = (Local::now().date_naive() + Days::new(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let listed = f.stdout(&["template", "list"]);
+    assert!(
+        listed.contains(&format!(
+            "daily   1 task(s)  {{{{who}}}}  repeat: mon, tue, wed, thu, fri, sat, sun (next {today})"
+        )),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("broken  1 task(s)  recurring: repeat: \"someday\" is not a day"),
+        "{listed}"
+    );
+    let json = f.json(&["template", "list", "--json"]);
+    let daily = json.as_array().unwrap().iter().find(|t| t["name"] == "daily").unwrap();
+    assert_eq!(
+        (
+            daily["recurring"].clone(),
+            daily["next"].clone(),
+            daily["error"].clone()
+        ),
+        (json!(true), json!(today), Value::Null)
+    );
+
+    let out = f.run(&["sort"]);
+    assert!(out.status.success());
+    // 日次の整理の知らせは、ほかの準備の知らせと同じく stderr へ出る。
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("added 1 recurring task(s) to inbox.md: daily ({today})")),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("some recurring templates were skipped:\n  broken: "),
+        "{stderr}"
+    );
+    let todo = read(&f, "todo.md");
+    assert!(todo.contains(&format!("- [ ] 田中 と朝会 due:{today} id:")), "{todo}");
+    let state: Value = serde_json::from_str(&read(&f, ".state.json")).unwrap();
+    assert_eq!(state["recurring"], json!({"daily": today}));
+    assert!(f.stdout(&["template", "list"]).contains(&format!("(next {tomorrow})")));
+
+    // 同じ日にもう一度整理しても足さない (整理は 1 日 1 回)。
+    let again = f.run(&["sort"]);
+    assert!(!String::from_utf8_lossy(&again.stderr).contains("recurring"));
+
+    // 手で挿入するときは、--set で渡さなかった値に values: の値を使う。
+    let out = f.stdout(&["template", "insert", "daily", "--base", "2030-01-02"]);
+    assert!(out.starts_with("added 1 task(s) from daily to inbox.md: "), "{out}");
+    assert!(read(&f, "inbox.md").contains("- [ ] 田中 と朝会 due:2030-01-02 id:"));
+    f.stdout(&[
+        "template",
+        "insert",
+        "daily",
+        "--base",
+        "2030-01-02",
+        "--set",
+        "who=佐藤",
+    ]);
+    assert!(read(&f, "inbox.md").contains("- [ ] 佐藤 と朝会 due:2030-01-02 id:"));
 }
 
 #[test]

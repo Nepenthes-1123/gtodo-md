@@ -3,6 +3,17 @@
 各版の変更点です。版の付け方は [Semantic Versioning](https://semver.org/lang/ja/) に従います。
 共有設定 (`config.json`・`gtodo.json`) は v0.1.0 から、前の版と互換のある変え方 (項目を足す) だけにします。
 
+## 未リリース
+
+一緒に使う gtodo-md.nvim も、定期タスクに対応した版にしてください (下記)。
+
+### 新機能
+
+- 定期タスク: テンプレートの先頭のフロントマターに `type: recurring` と `repeat:` (曜日・毎月の日・月末・何週目かの曜日・毎年の月日) を書くと、当たる日の日次の整理でそのタスクを inbox.md へ足します。Neovim 版と同じ書き方・同じ規則で、どちらが先に整理しても 1 回だけ足します ([gtodo-md.nvim#158](https://github.com/Nepenthes-1123/gtodo-md.nvim/issues/158))
+- `template list` (`--json` も) と TUI のテンプレート画面に、定期タスクの指定と次に足す日を出します
+- `template insert` は、`--set` で渡さなかったプレースホルダーに、テンプレートの `values:` の値を使います。TUI では尋ねるときの初期値にします
+- `template new` の記法メモに、定期タスクの書き方を足しました (Neovim 版と同じ文面)
+
 ## v0.1.0 (2026-11-18)
 
 最初のリリースです。[gtodo-md.nvim](https://github.com/Nepenthes-1123/gtodo-md.nvim) v0.3.1 以降と同じデータディレクトリを、同時に使えます。

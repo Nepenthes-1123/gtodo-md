@@ -9,7 +9,7 @@ use gtodo_core::search::Hit;
 use gtodo_core::sections::SectionKey;
 use gtodo_core::store::FileKind;
 use gtodo_core::task::{Status, Task};
-use gtodo_core::template;
+use gtodo_core::template::{self, Recurrence};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -1756,6 +1756,16 @@ fn draw_templates(frame: &mut Frame, app: &mut App, theme: Theme, area: Rect) {
             );
             for name in &row.placeholders {
                 text.push_str(&format!("  {{{{{name}}}}}"));
+            }
+            match &row.recurrence {
+                Some(Recurrence::Valid { repeat, next }) => {
+                    text.push_str(&format!("  repeat: {repeat}"));
+                    if let Some(next) = next {
+                        text.push_str(&format!(" (next {})", next.format("%Y-%m-%d")));
+                    }
+                }
+                Some(Recurrence::Invalid(error)) => text.push_str(&format!("  recurring: {error}")),
+                None => {}
             }
             let style = if selected {
                 Style::new().add_modifier(Modifier::BOLD)

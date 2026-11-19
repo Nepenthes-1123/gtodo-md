@@ -5,7 +5,7 @@
 //! メモリ上のタスクは表示のためだけに持ち、書き戻さない。操作はロックを取ってからファイルを
 //! 読み直し、タスクのキーで探して書く (CLI と同じ `ops`)。表示が古くても他のツールの変更を潰さない。
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -24,8 +24,10 @@ use gtodo_core::ops::{
     self, Destination, EditTarget, EditedError, Moved, ProjectError, SplitProject, TemplateError, Wait,
 };
 use gtodo_core::project;
+use gtodo_core::recurring;
 use gtodo_core::sections::{SectionKey, SectionNames};
 use gtodo_core::split;
+use gtodo_core::state::State;
 use gtodo_core::store::{self, DataDir, FileKind, RawFile, Stamp};
 use gtodo_core::task::{Status, Task};
 use gtodo_core::template;
@@ -192,6 +194,8 @@ pub struct InsertTemplate {
     pub placeholders: Vec<String>,
     /// 答えた値 (`placeholders` の前から順に)。すべて答えたら基準日を尋ねる。
     values: Vec<String>,
+    /// フロントマターの `values:` に書いた値。尋ねるときの初期値にする (Neovim 版と同じ)。
+    defaults: BTreeMap<String, String>,
     pub input: LineInput,
 }
 
@@ -199,6 +203,14 @@ impl InsertTemplate {
     /// 今尋ねているプレースホルダー。`None` なら基準日を尋ねている。
     pub fn asking(&self) -> Option<&str> {
         self.placeholders.get(self.values.len()).map(String::as_str)
+    }
+
+    /// 今尋ねていることの入力欄 (プレースホルダーなら `values:` の値、基準日なら `today` を初めから入れる)。
+    fn next_input(&self) -> LineInput {
+        match self.asking() {
+            Some(name) => LineInput::new(self.defaults.get(name).map(String::as_str).unwrap_or_default()),
+            None => LineInput::new("today"),
+        }
     }
 }
 
@@ -1428,7 +1440,11 @@ impl App {
         let mut warnings = Vec::new();
         let dir = self.templates_dir();
         let keep = self.templates.selected().map(|r| r.name.clone());
-        self.templates.rows = templates::rows(&dir, self.today, &mut warnings);
+        // 読むだけなので、壊れた .state.json は記録が無いものとして扱う (壊れていることは日次の整理が知らせる)。
+        let state = State::read(&self.ws.data_dir.state_file()).ok();
+        let rollover = recurring::next_rollover(state.as_ref().and_then(State::last_opened), self.today);
+        let records = (!self.templates.archived).then(|| state.as_ref().map(State::recurring).unwrap_or_default());
+        self.templates.rows = templates::rows(&dir, self.today, rollover, records.as_ref(), &mut warnings);
         self.templates.signature = projects::signature(&dir);
         if !keep.is_some_and(|name| self.templates.select_name(&name)) {
             self.templates.cursor = self.templates.cursor.min(self.templates.rows.len().saturating_sub(1));
@@ -1468,15 +1484,16 @@ impl App {
                 format!("template {name} has no task lines (E to edit it)"),
             );
         }
-        let placeholders = template::placeholder_names(&file.lines);
-        let input = LineInput::new(if placeholders.is_empty() { "today" } else { "" });
-        self.mode = Mode::InsertTemplate(Box::new(InsertTemplate {
+        let mut insert = InsertTemplate {
             name,
+            placeholders: template::placeholder_names(&file.lines),
+            defaults: template::default_values(&file.lines),
             lines: file.lines,
-            placeholders,
             values: Vec::new(),
-            input,
-        }));
+            input: LineInput::new(""),
+        };
+        insert.input = insert.next_input();
+        self.mode = Mode::InsertTemplate(Box::new(insert));
     }
 
     /// テンプレートの挿入で尋ねている間のキー。`Enter` で次へ進み、最後 (基準日) で挿入する。`Esc` で取り消す。
@@ -1490,8 +1507,7 @@ impl App {
                 Some(name) => match template::check_value(&name, insert.input.text()) {
                     Ok(value) => {
                         insert.values.push(value);
-                        let next = if insert.asking().is_some() { "" } else { "today" };
-                        insert.input = LineInput::new(next);
+                        insert.input = insert.next_input();
                     }
                     // 直せるように、入力は残す。
                     Err(e) => self.message(Level::Error, e.to_string()),

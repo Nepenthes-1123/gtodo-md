@@ -98,6 +98,33 @@ fn prepare(
         if r.completed > 0 {
             note(format!("moved {} completed task(s) to done.md", r.completed));
         }
+        if !r.recurring.ids.is_empty() {
+            let from: Vec<String> = r
+                .recurring
+                .created
+                .iter()
+                .map(|(name, day)| format!("{name} ({})", day.format("%Y-%m-%d")))
+                .collect();
+            note(format!(
+                "added {} recurring task(s) to inbox.md: {}",
+                r.recurring.ids.len(),
+                from.join(", ")
+            ));
+        }
+        if !r.recurring.skipped.is_empty() {
+            let skipped: Vec<String> = r
+                .recurring
+                .skipped
+                .iter()
+                .map(|(name, reason)| format!("\n  {name}: {reason}"))
+                .collect();
+            warn(format!("some recurring templates were skipped:{}", skipped.concat()));
+        }
+        if let Some(e) = r.recurring_not_recorded {
+            warn(format!(
+                "{e}; the recurring tasks added today may be added again at the next daily rollover"
+            ));
+        }
         let mut dues = r.dues;
         if checks_dues {
             dues.inbox_due.clear();

@@ -3,7 +3,7 @@
 //! ロックは取らない。Neovim 版の自動処理と重ならないよう、呼び出し元が
 //! [`crate::lock::Lock`] を持ったまま呼ぶ。
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -15,6 +15,7 @@ use crate::key::{self, FindError};
 use crate::logic::{completion, due, history, sort};
 use crate::lua_compat;
 use crate::project;
+use crate::recurring;
 use crate::sections::{SectionKey, SectionNames};
 use crate::split;
 use crate::store::{self, DataDir, FileKind, RawFile, ReadError, Stamp};
@@ -277,6 +278,118 @@ pub fn insert_tasks(
     }
     inbox.write()?;
     Ok(ids)
+}
+
+/// [`create_recurring`] の結果。
+#[derive(Debug, Default)]
+pub struct RecurringOutcome {
+    /// inbox.md へ足したタスクの ID (足した順)。
+    pub ids: Vec<String>,
+    /// タスクを足したテンプレートと、その回の日。
+    pub created: Vec<(String, NaiveDate)>,
+    /// 飛ばしたテンプレートと、その理由。
+    pub skipped: Vec<(String, String)>,
+    /// 新しい記録 (`.state.json` の `recurring`)。呼び出し元が、inbox.md へ書いた後に記録する。
+    pub records: BTreeMap<String, String>,
+}
+
+/// 定期タスクのテンプレート (`templates/*.md` のうち `type: recurring` のもの) から、`today` の分までの
+/// タスクを inbox.md へ足す (Lua 版 `recurring.lua` と同じ規則)。
+///
+/// `recorded` (どの日まで確かめたか) より後で今日までに当たる日のうち、最後の 1 回分だけを足す。
+/// 記録の無いテンプレートは今日の分だけを見る。相対の期日はその回の日から数える。`{{名前}}` は
+/// フロントマターの `values:` の値で埋め、値の無い名前やタグにできない値があれば、そのテンプレートは
+/// 飛ばして記録も進めない。テンプレートは名前の順に読む (Lua 版と同じ結果にするため)。
+///
+/// 新しい記録は、アーカイブ・削除したテンプレートの分を含めずに作り直す (復元したときに、アーカイブして
+/// いた間の回をさかのぼって作らないように)。記録は前へだけ進める (時計が戻っても戻さない)。
+/// `.state.json` へは書かない: 呼び出し元が、inbox.md へ書いた後に記録する (先に記録すると、足す前に
+/// 止まったときにその回が失われる。後なら重複で済む — `append_then_remove` と同じ判断)。
+pub fn create_recurring(
+    data_dir: &DataDir,
+    names: &SectionNames,
+    today: NaiveDate,
+    recorded: &BTreeMap<String, String>,
+) -> Result<RecurringOutcome, OpError> {
+    let dir = data_dir.root().join(template::DIR);
+    let mut template_names = template::list_names(&dir).map_err(|source| ReadError::Io {
+        path: dir.clone(),
+        source,
+    })?;
+    template_names.sort();
+
+    let mut outcome = RecurringOutcome::default();
+    let mut tasks = Vec::new();
+    let today_str = today.format("%Y-%m-%d").to_string();
+    for name in template_names {
+        let def = match store::read_file(&template::path(data_dir, &name)) {
+            Ok(file) => recurring::read_definition(&file.lines),
+            Err(e) => {
+                // 読めないものは、直るまで記録を動かさない (Lua 版は読めないと空のテンプレートとして扱う)。
+                outcome.skipped.push((name.clone(), e.to_string()));
+                if let Some(last) = recorded.get(&name) {
+                    outcome.records.insert(name, last.clone());
+                }
+                continue;
+            }
+        };
+        if let Some(error) = def.error {
+            // 直るまで記録は動かさない (直った後に、逃した回の最後の 1 回分を作る)。
+            outcome.skipped.push((name.clone(), error));
+            if let Some(last) = recorded.get(&name) {
+                outcome.records.insert(name, last.clone());
+            }
+            continue;
+        }
+        let (true, Some(rules)) = (def.recurring, def.rules.as_deref()) else {
+            continue;
+        };
+        let last = recorded.get(&name);
+        let after = last.and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+        let mut advance = true;
+        if let Some(occurrence) = recurring::latest_occurrence(rules, after, today) {
+            match placeholder_values(&def) {
+                Ok(values) => {
+                    let found = template::tasks(&def.body, occurrence, &values);
+                    if found.is_empty() {
+                        outcome.skipped.push((name.clone(), "no task lines".into()));
+                    } else {
+                        tasks.extend(found);
+                        outcome.created.push((name.clone(), occurrence));
+                    }
+                }
+                Err(reason) => {
+                    outcome.skipped.push((name.clone(), reason));
+                    advance = false;
+                }
+            }
+        }
+        let record = match last {
+            // 時計が戻った場合でも、記録は前へだけ進める (日付の文字列は辞書順で比べられる)。
+            Some(last) if !advance || last.as_str() > today_str.as_str() => last.clone(),
+            None if !advance => continue,
+            _ => today_str.clone(),
+        };
+        outcome.records.insert(name, record);
+    }
+    if !tasks.is_empty() {
+        outcome.ids = insert_tasks(data_dir, names, today, tasks)?;
+    }
+    Ok(outcome)
+}
+
+/// テンプレートの `{{名前}}` に入れる値を、フロントマターの `values:` から決める。
+fn placeholder_values(def: &recurring::Definition) -> Result<HashMap<String, String>, String> {
+    let mut values = HashMap::new();
+    for name in template::placeholder_names(&def.body) {
+        let raw = def
+            .values
+            .get(&name)
+            .ok_or_else(|| format!("no value for {{{{{name}}}}} under 'values:'"))?;
+        let value = template::check_value(&name, raw).map_err(|e| e.to_string())?;
+        values.insert(name, value);
+    }
+    Ok(values)
 }
 
 /// `projects/<tag>.md` を Lua 版と同じ雛形で作る。すでにあればエラー (上書きしない)。作ったパスを返す。
