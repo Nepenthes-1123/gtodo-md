@@ -184,23 +184,67 @@ fn may_be_being_removed(e: &io::Error) -> bool {
     cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied
 }
 
-fn remove_if_stale(path: &Path, now: SystemTime) -> io::Result<()> {
-    let modified = match fs::metadata(path) {
-        Ok(meta) => meta.modified()?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        // 消している途中なら古いかどうかは関係ない。続く作成で、取れたかどうかが決まる。
-        Err(e) if may_be_being_removed(&e) => return Ok(()),
-        Err(e) => return Err(e),
-    };
+fn is_stale(modified: SystemTime, now: SystemTime, after: Duration) -> bool {
     // 時計がずれて未来の時刻になっているロックは、古いとは判断できないので残す。
-    if now.duration_since(modified).is_ok_and(|age| age > STALE_AFTER) {
-        match fs::remove_file(path) {
-            // 他のプロセスが先に消した場合。
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            other => other?,
-        }
+    now.duration_since(modified).is_ok_and(|age| age > after)
+}
+
+/// 片付けている間だけ置くファイル (ロックファイルの名前に `.break` を足したもの)。
+const BREAK_SUFFIX: &str = ".break";
+
+/// 片付け用のファイルがこれより古ければ、片付けている途中で止まったプロセスの残骸とみなして消す。
+/// 片付けは一瞬で終わるので、ロックより短くする (残ると、その間は誰もロックの残骸を片付けられない)。
+const BREAK_STALE_AFTER: Duration = Duration::from_secs(10);
+
+/// 古いロック (残骸) を片付ける。
+///
+/// 片付けは片付け用のファイル (`.gtodo.lock.break`) を排他的に作れたプロセスだけが行い、作れたら古いかを
+/// 確かめ直してから消す。確かめずに消すと、2 つのプロセスがほぼ同時に古いと判断したとき、先に片付けて
+/// 新しいロックを作ったプロセスのロックを、後のプロセスが消して排他を崩す。片付けを 1 つずつにすれば、
+/// 後のプロセスが確かめ直すときには新しいロックが見え、消さない。
+///
+/// 残る隙間: 60 秒を超えて持っていたプロセスが、確かめ直してから消すまでの一瞬に解放し、さらに別の
+/// プロセスがその一瞬に取ると、その新しいロックを消す。止まったプロセスの残骸 (ふつうの場合) では起きない。
+fn remove_if_stale(path: &Path, now: SystemTime) -> io::Result<()> {
+    if !stale_at(path, now, STALE_AFTER)? {
+        return Ok(());
     }
-    Ok(())
+    let mut break_path = path.as_os_str().to_owned();
+    break_path.push(BREAK_SUFFIX);
+    let break_path = PathBuf::from(break_path);
+    match OpenOptions::new().write(true).create_new(true).open(&break_path) {
+        Ok(_) => {}
+        // 他のプロセスが片付けている。止まったプロセスの残骸なら消し、今回は任せる。
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists || may_be_being_removed(&e) => {
+            if stale_at(&break_path, now, BREAK_STALE_AFTER)? {
+                remove_quietly(&break_path)?;
+            }
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    }
+    let result = stale_at(path, now, STALE_AFTER).and_then(|stale| if stale { remove_quietly(path) } else { Ok(()) });
+    remove_quietly(&break_path)?;
+    result
+}
+
+/// `path` があり、`after` より古いか。無いか、消している途中なら偽。
+fn stale_at(path: &Path, now: SystemTime, after: Duration) -> io::Result<bool> {
+    match fs::metadata(path) {
+        Ok(meta) => Ok(is_stale(meta.modified()?, now, after)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        // 消している途中なら古いかどうかは関係ない。続く作成で、取れたかどうかが決まる。
+        Err(e) if may_be_being_removed(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// 消す。他のプロセスが先に消していればそれでよい。
+fn remove_quietly(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound || may_be_being_removed(&e) => Ok(()),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +330,69 @@ mod tests {
             .set_modified(old)
             .unwrap();
         assert!(Lock::try_acquire(dir.path()).unwrap().is_some());
+    }
+
+    /// 古い印のファイルを置く。
+    fn write_old(path: &Path, age: Duration) {
+        fs::write(path, "12345 0").unwrap();
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() - age)
+            .unwrap();
+    }
+
+    /// 2 つのプロセスがほぼ同時に古いロックを片付けると、先に取り直したプロセスのロックを後のプロセスが
+    /// 消して、2 つとも取れてしまうことがあった (古いロックに 8 つが同時に取りに行くと、約 1% の回で起きた)。
+    #[test]
+    fn many_processes_cleaning_up_a_stale_lock_at_once_let_only_one_hold_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LOCK_FILE);
+        for round in 0..500 {
+            write_old(&path, Duration::from_secs(120));
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    let dir = dir.path().to_path_buf();
+                    thread::spawn(move || {
+                        barrier.wait();
+                        Lock::try_acquire(&dir).unwrap()
+                    })
+                })
+                .collect();
+            let held: Vec<Lock> = handles.into_iter().filter_map(|h| h.join().unwrap()).collect();
+            assert_eq!(held.len(), 1, "round {round}");
+            for lock in held {
+                lock.release().unwrap();
+            }
+            assert!(!dir.path().join(".gtodo.lock.break").exists(), "round {round}");
+        }
+    }
+
+    #[test]
+    fn a_stale_lock_is_left_while_another_process_is_cleaning_it_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LOCK_FILE);
+        write_old(&path, Duration::from_secs(120));
+        fs::write(dir.path().join(".gtodo.lock.break"), "").unwrap();
+        assert!(Lock::try_acquire(dir.path()).unwrap().is_none());
+        assert!(path.exists());
+    }
+
+    /// 片付けている途中で止まったプロセスの残骸は消し、次の試みで片付けられるようにする。
+    #[test]
+    fn a_cleanup_left_behind_by_a_stopped_process_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LOCK_FILE);
+        let break_path = dir.path().join(".gtodo.lock.break");
+        write_old(&path, Duration::from_secs(120));
+        write_old(&break_path, Duration::from_secs(11));
+        assert!(Lock::try_acquire(dir.path()).unwrap().is_none());
+        assert!(!break_path.exists());
+        assert!(Lock::try_acquire(dir.path()).unwrap().is_some());
+        assert!(!break_path.exists());
     }
 
     #[test]
