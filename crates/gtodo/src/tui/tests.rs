@@ -2281,6 +2281,65 @@ fn templates_are_inserted_after_asking_placeholders_and_the_base_date() {
     assert!(inbox.contains("- [ ] 田中 に連絡 id:"), "{inbox}");
 }
 
+/// 定期タスクは一覧に指定と次に足す日を出し、日付が変わった整理で inbox.md へ足す。手で挿入するときは
+/// values: の値を初めから入れて尋ねる。
+#[test]
+fn recurring_templates_show_their_days_are_added_on_a_new_day_and_prefill_values() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.path().join("templates")).unwrap();
+    f.write(
+        "templates/standup.md",
+        "---\ntype: recurring\nrepeat: mon, thu\nvalues:\n  who: 田中\n---\n- [ ] {{who}} と朝会\n",
+    );
+    f.write("templates/broken.md", "---\ntype: recurring\n---\n- [ ] x\n");
+    let mut app = f.app();
+    press(&mut app, "T");
+    // 今日 (2026-11-16 月) の整理は済んでいるので、次は木曜。
+    let rows = screen(&mut app, 100, 12);
+    let row = |rows: &[String], name: &str| rows.iter().find(|r| r.contains(name)).cloned().unwrap();
+    assert!(
+        row(&rows, "standup").ends_with("standup  1 task(s)  {{who}}  repeat: mon, thu (next 2026-11-19)"),
+        "{rows:#?}"
+    );
+    assert!(
+        row(&rows, "broken").ends_with("broken   1 task(s)  recurring: a recurring template needs 'repeat:'"),
+        "{rows:#?}"
+    );
+
+    f.today.set(date("2026-11-19"));
+    app.tick();
+    assert!(
+        f.read("inbox.md").contains("- [ ] 田中 と朝会 id:"),
+        "{}",
+        f.read("inbox.md")
+    );
+    assert!(
+        app.messages
+            .iter()
+            .any(|m| m.text == "added 1 recurring task(s) to inbox.md: standup (2026-11-19)"),
+        "{:?}",
+        app.messages
+    );
+    assert!(
+        f.read(".state.json")
+            .contains(r#""recurring":{"standup":"2026-11-19"}"#)
+    );
+    press(&mut app, "T");
+    let rows = screen(&mut app, 100, 12);
+    assert!(row(&rows, "standup").ends_with("(next 2026-11-23)"), "{rows:#?}");
+
+    let i = app.templates.rows.iter().position(|r| r.name == "standup").unwrap();
+    app.templates.cursor = i;
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(
+        screen(&mut app, 100, 12).pop().unwrap(),
+        "Value for {{who}} (blank to omit): 田中"
+    );
+    press_code(&mut app, KeyCode::Enter);
+    press_code(&mut app, KeyCode::Enter);
+    assert_eq!(f.read("inbox.md").matches("- [ ] 田中 と朝会 id:").count(), 2);
+}
+
 #[test]
 fn due_template_tasks_move_to_today_like_add() {
     let f = template_fixture();

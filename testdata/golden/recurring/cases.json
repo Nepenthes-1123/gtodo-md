@@ -1,0 +1,194 @@
+{
+  "repeat": [
+    "mon",
+    "Mon, 15 ,end, 2nd TUE, last fri, 04-01, 4-1",
+    "sun, sat",
+    "1, 31",
+    "01",
+    "1st sun, 3rd wed, 4th sat",
+    "02-29",
+    "12-31",
+    "",
+    "  ",
+    "funday",
+    "monday",
+    "0",
+    "32",
+    "5th mon",
+    "2nd",
+    "02-30",
+    "04-31",
+    "13-01",
+    "mon,",
+    "mon,,tue",
+    "2026-04-01",
+    "1st  tue",
+    "１５"
+  ],
+  "occurs": {
+    "from": "2026-01-01",
+    "to": "2028-12-31",
+    "specs": [
+      "mon",
+      "thu, sun",
+      "15",
+      "31",
+      "30",
+      "29",
+      "end",
+      "2nd tue",
+      "1st mon",
+      "4th thu",
+      "last fri",
+      "last sun",
+      "02-29",
+      "04-01",
+      "02-28, 02-29",
+      "1, end, last mon"
+    ]
+  },
+  "latest": [
+    { "spec": "thu", "after": null, "today": "2026-11-19" },
+    { "spec": "wed", "after": null, "today": "2026-11-19" },
+    { "spec": "mon, wed", "after": "2026-11-10", "today": "2026-11-17" },
+    { "spec": "mon, wed", "after": "2026-11-10", "today": "2026-11-19" },
+    { "spec": "thu", "after": "2026-11-19", "today": "2026-11-19" },
+    { "spec": "thu", "after": "2026-11-20", "today": "2026-11-19" },
+    { "spec": "04-01", "after": "2020-01-01", "today": "2026-11-19" },
+    { "spec": "02-29", "after": "2025-01-01", "today": "2026-11-19" },
+    { "spec": "02-29", "after": "2027-03-01", "today": "2028-03-05" },
+    { "spec": "31", "after": "2026-11-01", "today": "2026-12-01" },
+    { "spec": "last fri", "after": "2026-10-01", "today": "2026-11-29" },
+    { "spec": "mon", "after": "not-a-date", "today": "2026-11-30" },
+    { "spec": "mon", "after": null, "today": "2026-02-30" }
+  ],
+  "next": [
+    { "spec": "thu", "from": "2026-11-19" },
+    { "spec": "04-01", "from": "2026-11-19" },
+    { "spec": "02-29", "from": "2026-03-01" },
+    { "spec": "02-29", "from": "2027-03-01" },
+    { "spec": "31", "from": "2026-11-15" },
+    { "spec": "last sun", "from": "2026-12-27" },
+    { "spec": "mon", "from": "bad" }
+  ],
+  "definitions": [
+    ["- [ ] a", "- [ ] b"],
+    ["---", "type: recurring", "repeat: mon", "---", "- [ ] a"],
+    ["---\r", "type: recurring\r", "# comment", "repeat: \"mon, thu\"", "values:", "  project: site", "", "  # c", "  who: '田中'", "other: x", "  ignored: y", "---", "- [ ] {{who}} {{project}}"],
+    ["---", "values:", "  project: site", "---", "- [ ] {{project}}"],
+    ["---", "repeat: mon", "---"],
+    ["---", "type: weekly", "repeat: mon", "---"],
+    ["---", "type: recurring", "---"],
+    ["---", "type: recurring", "repeat: someday", "---"],
+    ["---", "type: recurring", "repeat: mon", "- [ ] not closed"],
+    ["<!--", "---", "type: recurring", "repeat: mon", "---", "-->"],
+    ["  ---", "type: recurring", "repeat: mon", "---", "- [ ] indented opener"],
+    ["---", "type:recurring", "repeat:mon", "values:", "\tproject:\tsite", "---", "- [ ] tabs and no spaces"],
+    ["---", "type: \"recurring\"", "repeat: 'end'", "values: x", "  project: site", "---", "- [ ] values with a value is not a block"],
+    ["---", "Type: recurring", "repeat: mon", "---", "- [ ] keys are case sensitive"],
+    ["---", "type: recurring", "repeat: mon", "values:", "  日本語: x", "  a-b: y", "  ok_1: z", "---", "- [ ] value names"],
+    ["---", "---", "- [ ] empty front matter"]
+  ],
+  "create": [
+    {
+      "name": "occurs_today",
+      "today": "2026-11-19",
+      "templates": {
+        "weekly": ["---", "type: recurring", "repeat: thu", "---", "<!-- memo -->", "- [ ] 週報を書く +work due:+1d"]
+      },
+      "recurring": {}
+    },
+    {
+      "name": "already_checked_today",
+      "today": "2026-11-19",
+      "templates": {
+        "weekly": ["---", "type: recurring", "repeat: thu", "---", "- [ ] 週報"]
+      },
+      "recurring": { "weekly": "2026-11-19" }
+    },
+    {
+      "name": "latest_missed_occurrence",
+      "today": "2026-11-19",
+      "templates": {
+        "standup": ["---", "type: recurring", "repeat: mon, wed", "---", "- [ ] 朝会 due:+0d", "- [ ] (A) 準備 due:fri @office"]
+      },
+      "recurring": { "standup": "2026-11-10" }
+    },
+    {
+      "name": "new_template_does_not_catch_up",
+      "today": "2026-11-19",
+      "templates": {
+        "standup": ["---", "type: recurring", "repeat: wed", "---", "- [ ] 朝会"]
+      },
+      "recurring": {}
+    },
+    {
+      "name": "values",
+      "today": "2026-11-19",
+      "templates": {
+        "site": ["---", "type: recurring", "repeat: thu", "values:", "  project: +site", "  context:", "  who: 田中", "---", "- [ ] {{who}} さんに確認 {{project}} {{context}}", "- [ ] {{context}} 片付け {{project}}"]
+      },
+      "recurring": {}
+    },
+    {
+      "name": "missing_value",
+      "today": "2026-11-19",
+      "templates": {
+        "site": ["---", "type: recurring", "repeat: thu", "---", "- [ ] 確認 {{project}}"]
+      },
+      "recurring": { "site": "2026-11-12" }
+    },
+    {
+      "name": "bad_value",
+      "today": "2026-11-19",
+      "templates": {
+        "site": ["---", "type: recurring", "repeat: thu", "values:", "  project: my site", "---", "- [ ] 確認 {{project}}"]
+      },
+      "recurring": {}
+    },
+    {
+      "name": "broken_and_ok",
+      "today": "2026-11-19",
+      "templates": {
+        "broken": ["---", "type: recurring", "repeat: someday", "---", "- [ ] x"],
+        "ok": ["---", "type: recurring", "repeat: thu", "---", "- [ ] y"]
+      },
+      "recurring": { "broken": "2026-11-01" }
+    },
+    {
+      "name": "name_order",
+      "today": "2026-11-19",
+      "templates": {
+        "b": ["---", "type: recurring", "repeat: thu", "---", "- [ ] B"],
+        "a": ["---", "type: recurring", "repeat: thu", "---", "- [ ] A1", "- [x] A2 completed_at:2026-01-01", "- [ ] A3 created:2025-01-01 id:abcdef"],
+        "manual": ["- [ ] 手で挿入する"]
+      },
+      "recurring": {}
+    },
+    {
+      "name": "prune_and_clock",
+      "today": "2026-11-19",
+      "templates": {
+        "weekly": ["---", "type: recurring", "repeat: fri", "---", "- [ ] x"],
+        "future": ["---", "type: recurring", "repeat: thu", "---", "- [ ] y"]
+      },
+      "recurring": { "weekly": "2026-11-12", "future": "2026-11-26", "archived": "2026-11-01" }
+    },
+    {
+      "name": "no_recurring_templates_left",
+      "today": "2026-11-19",
+      "templates": {
+        "manual": ["- [ ] 手で挿入する"]
+      },
+      "recurring": { "archived": "2026-11-01" }
+    },
+    {
+      "name": "no_task_lines",
+      "today": "2026-11-19",
+      "templates": {
+        "empty": ["---", "type: recurring", "repeat: thu", "---", "<!-- まだ書いていない -->"]
+      },
+      "recurring": {}
+    }
+  ]
+}

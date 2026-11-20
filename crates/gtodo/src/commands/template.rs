@@ -6,8 +6,10 @@ use std::fmt::Write;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Subcommand;
 use gtodo_core::ops;
+use gtodo_core::recurring;
+use gtodo_core::state::State;
 use gtodo_core::store;
-use gtodo_core::template;
+use gtodo_core::template::{self, Recurrence};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
@@ -38,7 +40,8 @@ pub enum TemplateCommand {
         /// Date that relative due dates (due:+3d, ...) count from (today, +3d, fri, 2026-07-02, ...)
         #[arg(long, default_value = "today")]
         base: String,
-        /// Value for a {{placeholder}} (every placeholder in the template must be given; an empty value omits it)
+        /// Value for a {{placeholder}} (needed for every placeholder without a value under `values:` in the
+        /// template's front matter; an empty value omits it)
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<String>,
     },
@@ -97,19 +100,46 @@ struct TemplateJson {
     path: String,
     tasks: usize,
     placeholders: Vec<String>,
+    /// 定期タスクか (`type: recurring`)。
+    recurring: bool,
+    /// `repeat:` に書かれた値 (定期タスクとして読めたとき)。
+    repeat: Option<String>,
+    /// 次に足す日 (アーカイブしたものの一覧では無し)。
+    next: Option<String>,
+    /// 定期タスクとして読めない理由。
+    error: Option<String>,
 }
 
 fn list(ws: &Workspace, archived: bool, json: bool, out: &mut String) -> Result<()> {
     let dir = ws.data_dir.root().join(template::DIR);
     let dir = if archived { dir.join(template::ARCHIVE_DIR) } else { dir };
     let names = template::list_names(&dir).with_context(|| format!("failed to read {}", dir.display()))?;
+    // 読むだけなので、壊れた .state.json は記録が無いものとして扱う (次に足す日の数え方が変わるだけ)。
+    let state = State::read(&ws.data_dir.state_file()).ok();
+    let records = state.as_ref().map(State::recurring).unwrap_or_default();
+    let rollover = recurring::next_rollover(state.as_ref().and_then(State::last_opened), ws.today);
     let mut rows = Vec::new();
     for name in names {
         let lines = store::read_file(&dir.join(format!("{name}.md")))?.lines;
+        let summary = template::summarize(&lines, ws.today, rollover, records.get(&name).map(String::as_str));
+        let (recurring, repeat, next, error) = match summary.recurrence {
+            Some(Recurrence::Valid { repeat, next }) => (
+                true,
+                Some(repeat),
+                next.filter(|_| !archived).map(|d| d.format("%Y-%m-%d").to_string()),
+                None,
+            ),
+            Some(Recurrence::Invalid(error)) => (false, None, None, Some(error)),
+            None => (false, None, None, None),
+        };
         rows.push(TemplateJson {
             path: dir.join(format!("{name}.md")).display().to_string(),
-            tasks: template::tasks(&lines, ws.today, &HashMap::new()).len(),
-            placeholders: template::placeholder_names(&lines),
+            tasks: summary.tasks,
+            placeholders: summary.placeholders,
+            recurring,
+            repeat,
+            next,
+            error,
             name,
         });
     }
@@ -136,6 +166,15 @@ fn list(ws: &Workspace, archived: bool, json: bool, out: &mut String) -> Result<
         for name in &row.placeholders {
             line.push_str(&format!("  {{{{{name}}}}}"));
         }
+        if let Some(repeat) = &row.repeat {
+            line.push_str(&format!("  repeat: {repeat}"));
+            if let Some(next) = &row.next {
+                line.push_str(&format!(" (next {next})"));
+            }
+        }
+        if let Some(error) = &row.error {
+            line.push_str(&format!("  recurring: {error}"));
+        }
         writeln!(out, "{line}")?;
     }
     Ok(())
@@ -160,6 +199,13 @@ fn insert(
         values.insert(key.to_string(), template::check_value(key, value)?);
     }
     let wanted = template::placeholder_names(&lines);
+    // --set で渡さなかった値は、フロントマターの values: の値を使う (Neovim 版では尋ねるときの初期値)。
+    for (key, value) in template::default_values(&lines) {
+        if wanted.contains(&key) && !values.contains_key(&key) {
+            let value = template::check_value(&key, &value).map_err(|e| anyhow!("values: in the template: {e}"))?;
+            values.insert(key, value);
+        }
+    }
     let missing: Vec<String> = wanted.iter().filter(|n| !values.contains_key(*n)).cloned().collect();
     if !missing.is_empty() {
         let sets: Vec<String> = missing.iter().map(|n| format!("--set {n}=...")).collect();

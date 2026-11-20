@@ -1,5 +1,6 @@
 //! `data_dir/.state.json` (Neovim 版と共有する状態) の読み書き。
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -92,6 +93,34 @@ impl State {
     pub fn set_last_opened(&mut self, date: NaiveDate) {
         self.values
             .insert("last_opened".into(), Value::String(date.format("%Y-%m-%d").to_string()));
+    }
+
+    /// 定期タスクのテンプレートごとに、どの日まで確かめたか (`recurring`。Neovim 版も読み書きする)。
+    /// 文字列でない値は読み飛ばす (無かったものとして、その日の分から確かめ直す。Lua 版と同じ)。
+    pub fn recurring(&self) -> BTreeMap<String, String> {
+        self.values
+            .get("recurring")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 定期タスクの記録を丸ごと置き換える。空ならキーごと消す (Lua 版と同じ。Lua は空のテーブルを `[]` と書き、
+    /// オブジェクトとして読めなくなるため、空のときは書かない)。
+    pub fn set_recurring(&mut self, records: &BTreeMap<String, String>) {
+        if records.is_empty() {
+            self.values.remove("recurring");
+        } else {
+            let map = records
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
+            self.values.insert("recurring".into(), Value::Object(map));
+        }
     }
 
     /// 書き戻す。読んだ後に他のプロセスが書き換えていたら、何も書かずにエラーを返す。
@@ -205,6 +234,25 @@ mod tests {
             fs::read_to_string(&path).unwrap(),
             r#"{"last_opened":"2026-01-31","last_notify_time":1}"#
         );
+    }
+
+    #[test]
+    fn recurring_records_are_read_and_replaced() {
+        let (_d, path) = write(r#"{"recurring":{"weekly":"2026-11-19","bad":1},"other":true}"#);
+        let mut state = State::read(&path).unwrap();
+        assert_eq!(
+            state.recurring(),
+            BTreeMap::from([("weekly".to_string(), "2026-11-19".to_string())])
+        );
+        state.set_recurring(&BTreeMap::from([("a".to_string(), "2026-11-20".to_string())]));
+        state.write(&path).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            r#"{"other":true,"recurring":{"a":"2026-11-20"}}"#
+        );
+        state.set_recurring(&BTreeMap::new());
+        state.write(&path).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"other":true}"#);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! テンプレートに書いたタスク行を、挿入するときに inbox.md へ足す。アーカイブは
 //! `templates/archive/<name>.md` へ動かすこと。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -52,7 +52,8 @@ pub fn archived_path(data_dir: &DataDir, name: &str) -> PathBuf {
     data_dir.root().join(DIR).join(ARCHIVE_DIR).join(format!("{name}.md"))
 }
 
-/// 新しいテンプレートの中身 (Lua 版 `ensure_template_file` の記法メモと同じ)。
+/// 新しいテンプレートの中身 (Lua 版 `ensure_template_file` の記法メモと同じ。定期タスクの書き方の例は
+/// コメントの中にあるので、フロントマターとしては読まれない)。
 pub fn seed() -> String {
     [
         "<!--",
@@ -61,6 +62,18 @@ pub fn seed() -> String {
         "+project/@context の代わりに {{project}}/{{context}} と書くと、挿入時に値を尋ねられます(複数プロジェクトで使い回すテンプレート向け)",
         "優先度は内容の先頭に (A) のように付与 (例: - [ ] (A) 重要なタスク)",
         "このコメント行は挿入時に自動で無視されます",
+        "",
+        "定期タスクにするには、ファイルの先頭 (このコメントより前) に次のように書きます:",
+        "  ---",
+        "  type: recurring",
+        "  repeat: mon, thu",
+        "  values:",
+        "    project: site",
+        "  ---",
+        "repeat には mon〜sun (曜日)、1〜31 (日。その月に無い日は月末)、end (月末)、",
+        "2nd tue / last fri (何週目かの曜日)、04-01 (毎年の月日) を , で区切って並べます",
+        "当たる日の日次の整理で inbox.md へ足し、due:+3d はその日から数えます",
+        "values: には {{名前}} に入れる値を書きます (手で挿入するときは初期値になります)",
         "-->",
         "",
     ]
@@ -177,7 +190,7 @@ pub struct ValueError {
 }
 
 /// プレースホルダーに入れる値を整える。前後の空白を除き、`{{project}}`・`{{context}}` ではタグの頭の
-/// `+`・`@` も除く (Lua 版は除かず `++site` になる)。タグに空白を含む値は、後ろが本文へ混ざって別の
+/// `+`・`@` も除く (Lua 版と同じ)。タグに空白を含む値は、後ろが本文へ混ざって別の
 /// タスクになるので断る。
 pub fn check_value(name: &str, value: &str) -> Result<String, ValueError> {
     let value = crate::lua_compat::trim(value);
@@ -222,6 +235,53 @@ pub fn tasks(lines: &[String], base: NaiveDate, values: &HashMap<String, String>
             task
         })
         .collect()
+}
+
+/// 定期タスクの指定 (一覧に出す)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recurrence {
+    /// 読めた。`next` は次に足す日 (アーカイブしたものの一覧では `None`)。
+    Valid { repeat: String, next: Option<NaiveDate> },
+    /// 定期タスクとして読めない (理由)。
+    Invalid(String),
+}
+
+/// 一覧に出すテンプレートの情報 (CLI の `template list` と TUI のテンプレート画面で共有する)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    /// 挿入されるタスクの数。
+    pub tasks: usize,
+    /// 挿入するときに尋ねるプレースホルダー。
+    pub placeholders: Vec<String>,
+    /// 定期タスクでなければ `None`。
+    pub recurrence: Option<Recurrence>,
+}
+
+/// テンプレートの行を一覧のためにまとめる。`rollover` は次の日次の整理の日 (`recurring::next_rollover`)、
+/// `recorded` は `.state.json` に記録された、どの日まで確かめたか。
+pub fn summarize(lines: &[String], today: NaiveDate, rollover: NaiveDate, recorded: Option<&str>) -> Summary {
+    let def = crate::recurring::read_definition(lines);
+    let recurrence = match (&def.error, &def.rules) {
+        (Some(error), _) => Some(Recurrence::Invalid(error.clone())),
+        (None, Some(rules)) => {
+            let recorded = recorded.and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+            Some(Recurrence::Valid {
+                repeat: def.repeat_text.clone().unwrap_or_default(),
+                next: crate::recurring::next_creation(rules, recorded, rollover),
+            })
+        }
+        (None, None) => None,
+    };
+    Summary {
+        tasks: tasks(lines, today, &HashMap::new()).len(),
+        placeholders: placeholder_names(lines),
+        recurrence,
+    }
+}
+
+/// フロントマターの `values:` に書いた値 (手で挿入するときの初期値。定期タスクはこの値で埋める)。
+pub fn default_values(lines: &[String]) -> BTreeMap<String, String> {
+    crate::recurring::read_definition(lines).values
 }
 
 #[cfg(test)]
@@ -277,6 +337,30 @@ mod tests {
             resolve_placeholders("- [ ] a {{project}} {{context}} b", &values(&[])),
             "- [ ] a b"
         );
+    }
+
+    #[test]
+    fn summaries_show_the_repeat_and_the_next_day() {
+        let t = lines("---\ntype: recurring\nrepeat: thu\nvalues:\n  who: 田中\n---\n- [ ] {{who}} に確認\n");
+        let s = summarize(&t, date("2026-11-19"), date("2026-11-20"), Some("2026-11-19"));
+        assert_eq!((s.tasks, s.placeholders), (1, vec!["who".to_string()]));
+        assert_eq!(
+            s.recurrence,
+            Some(Recurrence::Valid {
+                repeat: "thu".into(),
+                next: Some(date("2026-11-26"))
+            })
+        );
+        assert_eq!(default_values(&t).get("who").map(String::as_str), Some("田中"));
+        let bad = lines("---\ntype: recurring\n---\n- [ ] a\n");
+        assert!(matches!(
+            summarize(&bad, date("2026-11-19"), date("2026-11-19"), None).recurrence,
+            Some(Recurrence::Invalid(_))
+        ));
+        let today = date("2026-11-19");
+        assert_eq!(summarize(&lines("- [ ] a\n"), today, today, None).recurrence, None);
+        // 新しいテンプレートの記法メモにある例は、定期タスクとして読まれない。
+        assert_eq!(summarize(&lines(&seed()), today, today, None).recurrence, None);
     }
 
     #[test]

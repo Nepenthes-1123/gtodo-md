@@ -3,7 +3,7 @@
 use chrono::NaiveDate;
 
 use crate::logic::due::DueOutcome;
-use crate::ops::{self, OpError};
+use crate::ops::{self, OpError, RecurringOutcome};
 use crate::sections::SectionNames;
 use crate::state::{State, StateError};
 use crate::store::DataDir;
@@ -14,6 +14,11 @@ pub struct Rollover {
     /// done.md へ移した完了タスクの数。
     pub completed: usize,
     pub dues: DueOutcome,
+    /// 定期タスク (足したもの・飛ばしたテンプレート)。
+    pub recurring: RecurringOutcome,
+    /// 定期タスクをどの日まで確かめたかを `.state.json` に記録できなかった理由。記録できなければ、
+    /// 次に整理するときに同じ回をもう一度足しうる。
+    pub recurring_not_recorded: Option<StateError>,
     /// 実行したことを `.state.json` に記録できなかった理由。記録できなければ次の機会にもう一度実行される。
     pub not_recorded: Option<StateError>,
 }
@@ -26,8 +31,9 @@ pub enum RolloverError {
     Op(#[from] OpError),
 }
 
-/// 今日まだ実行していなければ、完了タスクを done.md へ移し、期日が来たタスクを Today へ移して
-/// 並べ替え、`.state.json` の `last_opened` に今日を記録する。今日すでに実行していれば `None`。
+/// 今日まだ実行していなければ、完了タスクを done.md へ移し、定期タスクを inbox.md へ足し、期日が来た
+/// タスクを Today へ移して並べ替え、`.state.json` の `last_opened` に今日を記録する。今日すでに実行して
+/// いれば `None`。
 ///
 /// ロックは取らない。Neovim 版の日次ロールオーバーと重ならないよう、呼び出し元が
 /// [`crate::lock::Lock`] を持ったまま呼ぶ。途中で失敗したら記録しないので、次の機会にやり直される。
@@ -39,11 +45,27 @@ pub fn rollover(
 ) -> Result<Option<Rollover>, RolloverError> {
     let path = data_dir.state_file();
     let today_str = today.format("%Y-%m-%d").to_string();
-    if State::read(&path)?.last_opened() == Some(today_str.as_str()) {
+    let state = State::read(&path)?;
+    if state.last_opened() == Some(today_str.as_str()) {
         return Ok(None);
     }
 
     let completed = ops::move_completed(data_dir, names, today)?;
+    // 定期タスクは期日の確認より前に足す (期日が今日以前のタスクを、この整理の中で Today へ移すため。
+    // Lua 版と同じ順)。どの日まで確かめたかは inbox.md へ書いた直後に記録する: 後の手順が失敗して
+    // 整理をやり直すときに、同じ回をもう一度足さないように。
+    let recorded = state.recurring();
+    let recurring = ops::create_recurring(data_dir, names, today, &recorded)?;
+    let recurring_not_recorded = if recurring.records == recorded {
+        None
+    } else {
+        State::read(&path)
+            .and_then(|mut state| {
+                state.set_recurring(&recurring.records);
+                state.write(&path)
+            })
+            .err()
+    };
     let dues = ops::check_dues(data_dir, names, today, auto_move_inbox)?;
     if completed > 0 || dues.todo_changed {
         ops::sort_todo(data_dir, names, today)?;
@@ -60,6 +82,8 @@ pub fn rollover(
     Ok(Some(Rollover {
         completed,
         dues,
+        recurring,
+        recurring_not_recorded,
         not_recorded,
     }))
 }
@@ -114,6 +138,30 @@ mod tests {
                 .unwrap()
                 .contains("id:cccccc")
         );
+    }
+
+    #[test]
+    fn recurring_tasks_are_added_recorded_and_promoted_when_due() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("templates")).unwrap();
+        // 2026-02-03 は火曜。
+        fs::write(
+            dir.path().join("templates/standup.md"),
+            "---\ntype: recurring\nrepeat: tue\n---\n- [ ] 朝会 due:+0d\n- [ ] 週末の準備 due:fri\n",
+        )
+        .unwrap();
+        let r = run(dir.path()).unwrap();
+        assert_eq!(r.recurring.ids.len(), 2);
+        assert_eq!(r.recurring.created, [("standup".to_string(), today())]);
+        assert!(r.recurring_not_recorded.is_none());
+        assert_eq!(r.dues.moved, 1);
+        let todo = fs::read_to_string(dir.path().join("todo.md")).unwrap();
+        assert!(todo.contains("- [ ] 朝会 due:2026-02-03"), "{todo}");
+        let inbox = fs::read_to_string(dir.path().join("inbox.md")).unwrap();
+        assert!(inbox.contains("- [ ] 週末の準備 due:2026-02-06"), "{inbox}");
+        let state: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.path().join(".state.json")).unwrap()).unwrap();
+        assert_eq!(state["recurring"], serde_json::json!({"standup": "2026-02-03"}));
     }
 
     #[test]
