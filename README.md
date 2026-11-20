@@ -30,10 +30,10 @@ macOS 版は署名していないので、ブラウザで取ったファイル�
 
 ```sh
 mise use -g github:Nepenthes-1123/gtodo-md          # 最新の版
-mise use -g github:Nepenthes-1123/gtodo-md@0.1.0    # 版を固定する
+mise use -g github:Nepenthes-1123/gtodo-md@0.1.1    # 版を固定する
 ```
 
-mise は既定で、公開から 24 時間たっていない版を入れません (`minimum_release_age`)。出たばかりの版は、`@0.1.0` のように版を指定して入れてください。
+mise は既定で、公開から 24 時間たっていない版を入れません (`minimum_release_age`)。出たばかりの版は、`@0.1.1` のように版を指定して入れてください。
 入れるときに、上の attestations も mise が確かめます。
 
 ### ソースから
@@ -46,7 +46,7 @@ cargo install --locked --git https://github.com/Nepenthes-1123/gtodo-md gtodo
 
 ## はじめに
 
-- Neovim 版と一緒に使うなら、gtodo-md.nvim v0.3.1 以降にしてください (データディレクトリの場所とセクション名を、同じ設定ファイルから読む版です)。
+- Neovim 版と一緒に使うなら、gtodo-md.nvim v0.3.1 以降にしてください (データディレクトリの場所とセクション名を、同じ設定ファイルから読む版です)。定期タスクを使うなら v0.3.2 以降にしてください。
 - データディレクトリは、Neovim 版と同じ規則で決まります (下記の「設定」)。Neovim 版を使っていれば、何も設定しなくても同じ場所を見ます。
 - gtodo はデータディレクトリを作りません。初めて使うときは、作ってから始めてください (`mkdir -p ~/.local/share/gtodo-md`。中のファイルは最初に書き込むときに、Neovim 版と同じ雛形で作られます)。
 

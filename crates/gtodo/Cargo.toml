@@ -1,6 +1,6 @@
 [package]
 name = "gtodo"
-version = "0.1.0"
+version = "0.1.1"
 description = "GTD-style todo manager backed by Markdown, compatible with gtodo-md.nvim"
 edition.workspace = true
 license.workspace = true
